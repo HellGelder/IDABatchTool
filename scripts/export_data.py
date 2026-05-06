@@ -9,8 +9,9 @@ IDAPython-скрипт для экспорта данных из IDA Pro в JSON
 """
 import json
 import os
+import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import List, Dict, Any, Optional, Set
 
 import idaapi
 import idautils
@@ -82,12 +83,16 @@ def _decompile_function(ea: int, hexrays_available: bool) -> str:
         return f"Неизвестная ошибка: {e}"
 
 
+def _strip_symbol_version(name: str) -> str:
+    """Удаляет суффикс версии символа (@@GLIBC_2.4, @OPENSSL_1_1_0 и т.п.)."""
+    return re.sub(r'@+[\w.]+$', '', name)
+
+
 def _normalize_func_name(name: str) -> str:
-    """Удаляет стандартные префиксы и применяет demangle."""
+    """Demangle и чистка префиксов."""
     demangled = idc.demangle_name(name, idc.get_inf_attr(idc.INF_SHORT_DN))
     if demangled:
         name = demangled
-    # Удаляем известные префиксы
     for prefix in ('sub_', 'j_', 'def_', 'nullsub_'):
         if name.startswith(prefix):
             name = name[len(prefix):]
@@ -96,7 +101,7 @@ def _normalize_func_name(name: str) -> str:
 
 
 # ------------------------------------------------------------
-# Парсинг ELF‑зависимостей
+# Парсинг ELF‑зависимостей (DT_NEEDED)
 # ------------------------------------------------------------
 def _parse_elf_dependencies(filepath: str) -> List[str]:
     try:
@@ -122,7 +127,79 @@ def _parse_elf_dependencies(filepath: str) -> List[str]:
 
 
 # ------------------------------------------------------------
-# Построение карты экспортов внутренних библиотек
+# Разрешение импортов через DT_VERNEED
+# ------------------------------------------------------------
+def _resolve_import_libraries(filepath: str) -> Dict[str, str]:
+    """
+    Читает DT_VERNEED и строит словарь:
+        {имя_символа: имя_библиотеки}
+    Использует pyelftools.
+    """
+    try:
+        from elftools.elf.elffile import ELFFile
+        from elftools.elf.dynamic import DynamicSection
+        from elftools.elf.sections import SymbolTableSection
+    except ImportError:
+        print("[IDAPython] pyelftools не установлен – пропуск разрешения импортов.")
+        return {}
+
+    resolver = {}
+    try:
+        with open(filepath, 'rb') as f:
+            elffile = ELFFile(f)
+
+            # Ищем динамические секции
+            dynsym = elffile.get_section_by_name('.dynsym')
+            if not dynsym:
+                for sec in elffile.iter_sections():
+                    if isinstance(sec, SymbolTableSection):
+                        dynsym = sec
+                        break
+            if not dynsym:
+                return {}
+
+            # Ищем verneed (может быть несколько)
+            verneed_sections = []
+            for sec in elffile.iter_sections():
+                if sec.header.get('sh_type') == 'SHT_GNU_verneed':
+                    verneed_sections.append(sec)
+
+            if not verneed_sections:
+                # Нет версионных данных – используем только Internal
+                return {}
+
+            # Извлекаем символы и индексы версий
+            sym_version_indices = {}
+            for ver_section in elffile.iter_sections():
+                if ver_section.header.get('sh_type') == 'SHT_GNU_versym':
+                    for i, entry in enumerate(ver_section.iter_symbols()):
+                        sym_version_indices[i] = entry['vs_val']
+
+            # Строим отображение индекс версии -> имя библиотеки
+            version_index_to_lib = {}
+            for verneed in verneed_sections:
+                for file_entry in verneed.iter_versions():
+                    lib_name = file_entry.name
+                    for ver in file_entry.get_versions():
+                        version_index_to_lib[ver['ndx']] = lib_name
+
+            # Сопоставляем символы с библиотеками
+            for i, sym in enumerate(dynsym.iter_symbols()):
+                if sym.entry['st_shndx'] == 'SHN_UNDEF' and sym.name:
+                    vs_val = sym_version_indices.get(i)
+                    if vs_val is not None and vs_val > 1:  # 0=local, 1=global undefined
+                        lib = version_index_to_lib.get(vs_val)
+                        if lib:
+                            resolver[sym.name] = lib
+
+            return resolver
+    except Exception as e:
+        print(f"[IDAPython] Ошибка при разборе VERNEED: {e}")
+        return {}
+
+
+# ------------------------------------------------------------
+# Построение карты экспортов (внутренние библиотеки)
 # ------------------------------------------------------------
 def _build_export_map(search_dir: Optional[str]) -> Dict[str, str]:
     if not search_dir:
@@ -196,7 +273,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         hexrays_available = False
 
     # ----------------------------------------------------------------
-    # Экспорты
+    # Экспорты (собираем адреса)
     # ----------------------------------------------------------------
     exports: List[Dict[str, Any]] = []
     for i in range(idc.get_entry_qty()):
@@ -205,8 +282,10 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             addr = idc.get_entry(entry)
             name = idc.get_entry_name(addr)
             if name:
+                name = _strip_symbol_version(name) if is_elf else name
+                name = _normalize_func_name(name)
                 exports.append({
-                    "name": _normalize_func_name(name),
+                    "name": name,
                     "address": f"0x{addr:X}",
                     "ordinal": entry
                 })
@@ -215,8 +294,10 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         for ea in idautils.Functions():
             name = idc.get_func_name(ea)
             if name and not name.startswith(("sub_", "j_", "def_", "nullsub_")):
+                name = _strip_symbol_version(name) if is_elf else name
+                name = _normalize_func_name(name)
                 exports.append({
-                    "name": _normalize_func_name(name),
+                    "name": name,
                     "address": f"0x{ea:X}",
                     "ordinal": len(exports)
                 })
@@ -278,7 +359,8 @@ def export_to_json(output_path: Optional[str] = None) -> None:
 
         def callback(ea, name, ordinal):
             if name:
-                demangled = _normalize_func_name(name)
+                clean = _strip_symbol_version(name) if is_elf else name
+                demangled = _normalize_func_name(clean)
                 raw_imports.append({
                     "name": demangled,
                     "module": module_name,
@@ -292,28 +374,36 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             pass
 
     # ----------------------------------------------------------------
-    # Разрешение импортов для ELF через внутренние библиотеки
+    # Разрешение импортов ELF через VERNEED + Internal
     # ----------------------------------------------------------------
     if is_elf:
+        # VERNEED – прямое указание библиотеки для каждого символа
+        verneed_map = _resolve_import_libraries(idc.get_input_file_path())
+
+        # Internal – через export_map
         input_dir = _get_argv_param("inputdir")
         if not input_dir:
             input_dir = os.path.dirname(idc.get_input_file_path())
         export_map = _build_export_map(input_dir)
+
         for imp in raw_imports:
             sym = imp["name"]
-            lib = export_map.get(sym)
-            if lib:
-                imp["resolved_libs"] = [lib]
-                imp["module_display"] = lib  # можно будет заменить маркерами в генераторе
+            resolved = set()
+
+            # Проверяем Internal
+            if sym in export_map:
+                resolved.add(f"Internal/{export_map[sym]}")
+
+            # Проверяем VERNEED (точная привязка через версии)
+            if sym in verneed_map:
+                resolved.add(verneed_map[sym])
+
+            if resolved:
+                imp["resolved_libs"] = list(resolved)
+                imp["module_display"] = "/".join(sorted(resolved))
             else:
-                # оставляем поле для генератора
                 imp["resolved_libs"] = []
-                if imp["module"].startswith("."):
-                    imp["module_display"] = "ELF Section"
-                else:
-                    imp["module_display"] = imp["module"]
-        # Перемещаем elf_sections в отдельный список (секции без разрешения)
-        data["elf_sections"] = sorted({imp["module"] for imp in raw_imports if imp["module"].startswith(".")})
+                imp["module_display"] = imp["module"] if imp["module"] != "unknown" else "ELF"
     else:
         data["needed_libs"] = []
         data["elf_sections"] = []
@@ -321,7 +411,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
     data["imports"] = raw_imports
 
     # ----------------------------------------------------------------
-    # Сортировка функций: экспортные вперёд
+    # Сортировка функций
     # ----------------------------------------------------------------
     data["functions"].sort(
         key=lambda f: (0 if int(f["start_ea"], 16) in export_eas else 1,
