@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Сводный отчёт анализа</title>
+    <style>
+        :root {
+            --bg: #f5f5f5;
+            --card-bg: white;
+            --text: #303030;
+            --accent: #007aff;
+            --border: #d1d1d1;
+            --hover: #f0f0f5;
+        }
+        body {
+            font-family: "Segoe UI", system-ui, sans-serif;
+            font-size: 12px;
+            margin: 20px;
+            background: var(--bg);
+            color: var(--text);
+        }
+        h1, h2 { color: var(--accent); font-size: 14px; }
+        h3 {
+            font-size: 13px;
+            margin: 10px 0 4px;
+            color: #555;
+        }
+        .card {
+            background: var(--card-bg); border-radius: 10px;
+            margin: 12px 0; padding: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        ul { padding-left: 20px; }
+        li { margin: 4px 0; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .badge {
+            display: inline-block; background: var(--accent); color: white;
+            border-radius: 10px; padding: 2px 8px; font-size: 10px; margin-left: 8px;
+        }
+        .file-tree {
+            font-family: monospace;
+            margin: 0;
+            padding-left: 0;
+            list-style: none;
+        }
+        .file-tree li {
+            padding: 2px 0;
+        }
+        .category-description {
+            font-size: 11px;
+            color: #666;
+            margin: 0 0 8px 20px;
+            font-style: italic;
+        }
+        .module-description {
+            font-size: 11px;
+            color: #666;
+            margin-left: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Сводный отчёт анализа</h1>
+
+    <div class="card">
+        <h2>Общая информация</h2>
+        <p><strong>Директория анализа:</strong> {{ input_dir }}</p>
+        <p><strong>Исследовано модулей:</strong> {{ total_modules }}</p>
+        {% if ida_info %}
+        <h3>Характеристики IDA Pro</h3>
+        <ul>
+            <li><strong>Версия ядра:</strong> {{ ida_info.kernel_version }}</li>
+        </ul>
+        {% else %}
+        <p><em>Информация о версии IDA недоступна.</em></p>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2>Классификация импортированных модулей</h2>
+        {% if grouped_categories %}
+            {% for category in grouped_categories %}
+                <h3>{{ category.name }} <span class="badge">{{ category.count }}</span></h3>
+                {% if category.description %}
+                <p class="category-description">{{ category.description }}</p>
+                {% endif %}
+                <ul>
+                    {% for mod in category.modules %}
+                        <li><strong>{{ mod.name }}</strong><span class="module-description">: {{ mod.desc }}</span></li>
+                    {% endfor %}
+                </ul>
+            {% endfor %}
+        {% else %}
+        <p>Модули не найдены.</p>
+        {% endif %}
+    </div>
+
+    {% if elf_sections %}
+    <div class="card">
+        <h2>Обнаруженные секции ELF</h2>
+        <ul>
+            {% for sec in elf_sections %}
+            <li>{{ sec }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <div class="card">
+        <h2>Исследованные файлы</h2>
+        {% if reports %}
+        <ul class="file-tree">
+            {% for report in reports %}
+            <li>📄 <a href="{{ report.filename }}" target="_blank">{{ report.display_name }}</a></li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p>Файлы не найдены.</p>
+        {% endif %}
+    </div>
+</body>
+</html>

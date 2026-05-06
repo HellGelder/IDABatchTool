@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Отчёт: {{ file_name }}</title>
+    <style>
+        :root {
+            --bg: #f5f5f5;
+            --card-bg: white;
+            --text: #303030;
+            --accent: #007aff;
+            --border: #d1d1d1;
+            --hover: #f0f0f5;
+        }
+        body {
+            font-family: "Segoe UI", system-ui, sans-serif;
+            font-size: 12px;
+            margin: 20px;
+            background: var(--bg);
+            color: var(--text);
+        }
+        h1, h2 { color: var(--accent); font-size: 14px; }
+        .back-link {
+            display: block;
+            margin-bottom: 20px;
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .back-link:hover { text-decoration: underline; }
+        .search { margin-bottom: 15px; }
+        .search input {
+            width: 100%; padding: 10px; border: 1px solid var(--border);
+            border-radius: 6px; font-size: 12px;
+        }
+        .card {
+            background: var(--card-bg); border-radius: 10px;
+            margin: 12px 0; padding: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            cursor: pointer; font-weight: 600;
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 12px;
+        }
+        .card-body { display: none; margin-top: 8px; }
+        .card.open .card-body { display: block; }
+        table {
+            width: 100%; border-collapse: collapse; margin: 8px 0;
+            font-size: 11px;
+        }
+        th, td {
+            text-align: left; padding: 6px; border-bottom: 1px solid var(--border);
+        }
+        th { background: var(--hover); }
+        .code-block {
+            font-family: "Consolas", "Courier New", monospace;
+            white-space: pre-wrap;
+            background: #f0f0f5;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            line-height: 1.4;
+            overflow-x: auto;
+        }
+        .badge {
+            display: inline-block; background: var(--accent); color: white;
+            border-radius: 10px; padding: 2px 8px; font-size: 10px; margin-left: 8px;
+        }
+        .module-list {
+            columns: 2;
+            -webkit-columns: 2;
+            -moz-columns: 2;
+            list-style: none;
+            padding-left: 0;
+        }
+        .module-list li {
+            padding: 2px 0;
+            font-family: monospace;
+        }
+        .unknown-section {
+            margin-top: 16px;
+            border-left: 4px solid #ff9500;
+            padding-left: 16px;
+        }
+        .section-list {
+            columns: 2;
+            -webkit-columns: 2;
+            -moz-columns: 2;
+            list-style: none;
+            padding-left: 0;
+        }
+        .section-list li {
+            padding: 2px 0;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <a class="back-link" href="{{ back_link }}">← Назад к сводному отчёту</a>
+
+    <h1>Отчёт анализа: {{ file_name }}</h1>
+
+    <div class="search">
+        <input type="text" id="quickSearch" placeholder="Поиск по функциям, импортам, экспортам...">
+    </div>
+
+{% if is_elf %}
+    <h2>Необходимые библиотеки (.so) <span class="badge">{{ needed_libs|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Список библиотек</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if needed_libs %}
+            <ul class="module-list searchable">
+                {% for lib in needed_libs %}
+                <li>{{ lib }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}<p>Не найдено необходимых библиотек.</p>{% endif %}
+        </div>
+    </div>
+
+    <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Таблица импортов</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if imports %}
+            <table>
+                <tr><th>Имя</th><th>Адрес</th><th>Библиотека</th></tr>
+                {% for imp in imports %}
+                <tr class="searchable">
+                    <td>{{ imp.name }}</td><td>{{ imp.address }}</td><td>{{ imp.module }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            {% else %}<p>Нет импортируемых функций.</p>{% endif %}
+        </div>
+    </div>
+{% else %}
+    <!-- PE-режим: группировка по модулям -->
+    <h2>Импортированные модули (опознанные) <span class="badge">{{ known_modules|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Список модулей</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if known_modules %}
+            <ul class="module-list searchable">
+                {% for mod in known_modules %}
+                <li>{{ mod }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}<p>Нет опознанных модулей.</p>{% endif %}
+        </div>
+    </div>
+
+    {% if unknown_modules %}
+    <div class="unknown-section">
+        <h2>Импортированные модули (неопознанные) <span class="badge">{{ unknown_modules|length }}</span></h2>
+        <div class="card">
+            <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+                <span>Требуют ручного анализа</span><span>▾</span>
+            </div>
+            <div class="card-body">
+                <ul class="module-list searchable">
+                    {% for mod in unknown_modules %}
+                    <li>{{ mod }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Таблица импортов</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if imports %}
+            <table>
+                <tr><th>Имя</th><th>Модуль</th></tr>
+                {% for imp in imports %}
+                <tr class="searchable">
+                    <td>{{ imp.name }}</td><td>{{ imp.module }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            {% else %}<p>Нет импортируемых функций.</p>{% endif %}
+        </div>
+    </div>
+{% endif %}
+
+    <h2>Экспортируемые функции <span class="badge">{{ exports|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Таблица экспорта</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if exports %}
+            <table>
+                <tr><th>Имя</th><th>Адрес</th><th>Ординал</th></tr>
+                {% for exp in exports %}
+                <tr class="searchable">
+                    <td>{{ exp.name }}</td><td>{{ exp.address }}</td><td>{{ exp.ordinal }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            {% else %}<p>Нет экспортируемых функций.</p>{% endif %}
+        </div>
+    </div>
+
+    {% if elf_sections %}
+    <h2>Секции ELF <span class="badge">{{ elf_sections|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Обнаруженные секции</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            <ul class="section-list searchable">
+                {% for sec in elf_sections %}
+                <li>{{ sec }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <h2>Дизассемблированные функции <span class="badge">{{ functions|length }}</span></h2>
+    {% for func in functions %}
+    <div class="card">
+        <div class="card-header searchable" onclick="this.parentElement.classList.toggle('open')">
+            <span>{{ func.name }} <small>({{ func.start_ea }}, размер: {{ func.size }} байт)</small></span>
+            <span>▾</span>
+        </div>
+        <div class="card-body">
+            <strong>Hex-дамп:</strong>
+            <div class="code-block">{{ func.hexdump }}</div>
+
+            <strong>Дизассемблирование:</strong>
+            <div class="code-block">{{ func.instructions_text }}</div>
+
+            {% if func.pseudocode %}
+            <strong>Псевдокод:</strong>
+            <div class="code-block">{{ func.pseudocode }}</div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+
+    <script>
+        const searchInput = document.getElementById('quickSearch');
+        searchInput.addEventListener('input', function() {
+            const term = this.value.toLowerCase();
+            document.querySelectorAll('.searchable').forEach(el => {
+                el.style.display = el.textContent.toLowerCase().includes(term) ? '' : 'none';
+            });
+        });
+        document.querySelectorAll('.card').forEach((card, index) => {
+            if (index === 0) card.classList.add('open');
+        });
+    </script>
+</body>
+</html>
