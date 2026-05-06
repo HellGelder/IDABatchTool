@@ -71,6 +71,15 @@ class ReportGenerator:
             return "Собственный модуль проекта (внутренняя библиотека)"
         return classify_module(module_name)
 
+    def _category_label_for_module(self, module_name: str, input_dir: Optional[Path]) -> str:
+        """Возвращает краткий английский маркер категории для библиотеки."""
+        desc = self._classify_with_context(module_name, input_dir)
+        if "Собственный модуль" in desc:
+            cat_ru = "Внутренние модули проекта"
+        else:
+            cat_ru, _ = get_module_category_and_description(module_name)
+        return self.CATEGORY_LABELS.get(cat_ru, cat_ru)
+
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None,
                            reports_dir: Optional[Path] = None,
                            input_dir: Optional[Path] = None) -> Path:
@@ -141,12 +150,10 @@ class ReportGenerator:
                     module_counts[lib] = 0
             for mod, count in module_counts.items():
                 desc = self._classify_with_context(mod, input_dir)
-                # Определяем русскую категорию
                 if "Собственный модуль" in desc:
                     cat_ru = "Внутренние модули проекта"
                 else:
                     cat_ru, _ = get_module_category_and_description(mod)
-                # Переводим в метку
                 cat_label = self.CATEGORY_LABELS.get(cat_ru, cat_ru)
                 color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
@@ -181,12 +188,31 @@ class ReportGenerator:
         data["module_deps"] = sorted(module_deps, key=lambda x: (x["category"], x["name"]))
         # ----------------------------------------------------------
 
+        # --- Обработка импортов: для ELF формируем module_display с Internal/libname ---
+        if is_elf:
+            for imp in data.get("imports", []):
+                resolved = imp.get("resolved_libs", [])
+                if resolved:
+                    parts = []
+                    for lib in resolved:
+                        parts.append(f"Internal/{lib}")
+                    imp["module_display"] = "/".join(parts)
+                else:
+                    # Если ничего не разрешено, оставляем исходную метку (ELF Section или просто имя)
+                    imp["module_display"] = imp.get("module_display", "ELF")
+        else:
+            # Для PE просто сохраняем оригинальное имя модуля
+            for imp in data.get("imports", []):
+                imp["module_display"] = imp.get("module", imp.get("module_display", ""))
+
+        # ---------------------------------------------------------------
+
         if "elf_sections" not in data:
             data["elf_sections"] = []
         if "exports" not in data:
             data["exports"] = []
 
-        # Сортировка функций
+        # Сортировка функций: экспортные вперёд
         if "functions" in data and "exports" in data:
             export_names = {exp["name"] for exp in data["exports"]}
             data["functions"].sort(

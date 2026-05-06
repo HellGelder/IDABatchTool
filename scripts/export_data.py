@@ -42,7 +42,6 @@ def _format_hexdump_with_ascii(data: bytes, start_addr: int = 0) -> str:
 
 
 def _get_argv_param(prefix: str) -> Optional[str]:
-    """Извлекает значение параметра из ARGV, переданного скрипту."""
     for arg in idc.ARGV:
         if arg.startswith(prefix + "="):
             return arg.split("=", 1)[1].strip()
@@ -50,7 +49,6 @@ def _get_argv_param(prefix: str) -> Optional[str]:
 
 
 def _pseudocode_enabled() -> bool:
-    # Параметр командной строки имеет приоритет
     val = _get_argv_param("pseudocode")
     if val is not None:
         return val.lower() in ("1", "true", "yes")
@@ -84,6 +82,19 @@ def _decompile_function(ea: int, hexrays_available: bool) -> str:
         return f"Неизвестная ошибка: {e}"
 
 
+def _normalize_func_name(name: str) -> str:
+    """Удаляет стандартные префиксы и применяет demangle."""
+    demangled = idc.demangle_name(name, idc.get_inf_attr(idc.INF_SHORT_DN))
+    if demangled:
+        name = demangled
+    # Удаляем известные префиксы
+    for prefix in ('sub_', 'j_', 'def_', 'nullsub_'):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return name
+
+
 # ------------------------------------------------------------
 # Парсинг ELF‑зависимостей
 # ------------------------------------------------------------
@@ -111,10 +122,9 @@ def _parse_elf_dependencies(filepath: str) -> List[str]:
 
 
 # ------------------------------------------------------------
-# Построение карты экспортов (внутренние библиотеки проекта)
+# Построение карты экспортов внутренних библиотек
 # ------------------------------------------------------------
 def _build_export_map(search_dir: Optional[str]) -> Dict[str, str]:
-    """Сканирует все ELF-файлы в search_dir и возвращает {symbol_name: library_name}."""
     if not search_dir:
         return {}
     root = Path(search_dir)
@@ -129,7 +139,6 @@ def _build_export_map(search_dir: Optional[str]) -> Dict[str, str]:
     for elf_file in root.rglob('*'):
         if not elf_file.is_file():
             continue
-        # Быстрая проверка по сигнатуре
         try:
             with open(elf_file, 'rb') as f:
                 if f.read(4) != b'\x7fELF':
@@ -142,7 +151,7 @@ def _build_export_map(search_dir: Optional[str]) -> Dict[str, str]:
                 dynsym = elffile.get_section_by_name('.dynsym')
                 if not dynsym:
                     continue
-                lib_name = elf_file.name  # базовое имя файла
+                lib_name = elf_file.name
                 for sym in dynsym.iter_symbols():
                     if sym.entry['st_info']['bind'] == 'STB_GLOBAL' and sym.name:
                         export_map[sym.name] = lib_name
@@ -176,15 +185,9 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         "ida_info": ida_info
     }
 
-    # --------------------------------------------------------
-    # Зависимости ELF
-    # --------------------------------------------------------
     if is_elf:
         data["needed_libs"] = _parse_elf_dependencies(idc.get_input_file_path())
 
-    # --------------------------------------------------------
-    # Псевдокод
-    # --------------------------------------------------------
     pseudocode_enabled = _pseudocode_enabled()
     if pseudocode_enabled:
         print("[IDAPython] Генерация псевдокода включена (только для экспортных функций).")
@@ -192,9 +195,9 @@ def export_to_json(output_path: Optional[str] = None) -> None:
     else:
         hexrays_available = False
 
-    # --------------------------------------------------------
-    # Экспорты (сначала собираем адреса)
-    # --------------------------------------------------------
+    # ----------------------------------------------------------------
+    # Экспорты
+    # ----------------------------------------------------------------
     exports: List[Dict[str, Any]] = []
     for i in range(idc.get_entry_qty()):
         entry = idc.get_entry_ordinal(i)
@@ -202,18 +205,28 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             addr = idc.get_entry(entry)
             name = idc.get_entry_name(addr)
             if name:
-                exports.append({"name": name, "address": f"0x{addr:X}", "ordinal": entry})
+                exports.append({
+                    "name": _normalize_func_name(name),
+                    "address": f"0x{addr:X}",
+                    "ordinal": entry
+                })
+
     if not exports:
         for ea in idautils.Functions():
             name = idc.get_func_name(ea)
             if name and not name.startswith(("sub_", "j_", "def_", "nullsub_")):
-                exports.append({"name": name, "address": f"0x{ea:X}", "ordinal": len(exports)})
+                exports.append({
+                    "name": _normalize_func_name(name),
+                    "address": f"0x{ea:X}",
+                    "ordinal": len(exports)
+                })
+
     data["exports"] = exports
     export_eas: Set[int] = {int(exp["address"], 16) for exp in exports}
 
-    # --------------------------------------------------------
+    # ----------------------------------------------------------------
     # Функции
-    # --------------------------------------------------------
+    # ----------------------------------------------------------------
     for ea in idautils.Functions():
         name = idc.get_func_name(ea)
         func = idaapi.get_func(ea)
@@ -240,7 +253,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             pseudocode = _decompile_function(ea, hexrays_available)
 
         data["functions"].append({
-            "name": name,
+            "name": _normalize_func_name(name),
             "start_ea": f"0x{ea:X}",
             "size": size,
             "instructions_text": disassembly_text,
@@ -248,9 +261,9 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             "pseudocode": pseudocode
         })
 
-    # --------------------------------------------------------
+    # ----------------------------------------------------------------
     # Импорты
-    # --------------------------------------------------------
+    # ----------------------------------------------------------------
     try:
         import_module_count = ida_nalt.get_import_module_qty()
     except AttributeError:
@@ -265,8 +278,9 @@ def export_to_json(output_path: Optional[str] = None) -> None:
 
         def callback(ea, name, ordinal):
             if name:
+                demangled = _normalize_func_name(name)
                 raw_imports.append({
-                    "name": name,
+                    "name": demangled,
                     "module": module_name,
                     "address": f"0x{ea:X}"
                 })
@@ -277,25 +291,28 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         except AttributeError:
             pass
 
-    # --------------------------------------------------------
-    # Разрешение импортов через внутренние библиотеки
-    # --------------------------------------------------------
+    # ----------------------------------------------------------------
+    # Разрешение импортов для ELF через внутренние библиотеки
+    # ----------------------------------------------------------------
     if is_elf:
         input_dir = _get_argv_param("inputdir")
         if not input_dir:
-            # fallback – родительская папка анализируемого файла
             input_dir = os.path.dirname(idc.get_input_file_path())
         export_map = _build_export_map(input_dir)
         for imp in raw_imports:
             sym = imp["name"]
-            if sym in export_map:
-                imp["module"] = export_map[sym]  # заменяем на имя библиотеки
+            lib = export_map.get(sym)
+            if lib:
+                imp["resolved_libs"] = [lib]
+                imp["module_display"] = lib  # можно будет заменить маркерами в генераторе
             else:
-                # если модуль уже был внутренней секцией, оставляем пометку
+                # оставляем поле для генератора
+                imp["resolved_libs"] = []
                 if imp["module"].startswith("."):
-                    imp["module"] = "ELF Section"
-                # иначе оставляем как есть
-        # elf_sections можно оставить пустым или заполнить секциями, где не удалось разрешить
+                    imp["module_display"] = "ELF Section"
+                else:
+                    imp["module_display"] = imp["module"]
+        # Перемещаем elf_sections в отдельный список (секции без разрешения)
         data["elf_sections"] = sorted({imp["module"] for imp in raw_imports if imp["module"].startswith(".")})
     else:
         data["needed_libs"] = []
@@ -303,9 +320,9 @@ def export_to_json(output_path: Optional[str] = None) -> None:
 
     data["imports"] = raw_imports
 
-    # --------------------------------------------------------
+    # ----------------------------------------------------------------
     # Сортировка функций: экспортные вперёд
-    # --------------------------------------------------------
+    # ----------------------------------------------------------------
     data["functions"].sort(
         key=lambda f: (0 if int(f["start_ea"], 16) in export_eas else 1,
                        int(f["start_ea"], 16))
