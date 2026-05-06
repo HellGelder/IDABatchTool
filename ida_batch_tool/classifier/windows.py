@@ -168,6 +168,7 @@ _WINDOWS_SYSTEM_SERVICES = {
     "apphelp.dll": "AppHelp — Application Compatibility: реализация механизма совместимости приложений (shim engine). Позволяет старым приложениям работать на новых версиях Windows через слой совместимости.",
     "profapi.dll": "ProfApi — Profile API: управление пользовательскими профилями. Загрузка и выгрузка профилей, управление реестром профиля, уведомления об изменениях.",
     "win32u.dll": "Win32U — Windows 32-bit User-mode: содержит реализацию части user32 и gdi32 для поддержки UWP-приложений и изоляции syscall-интерфейса.",
+    "wdfldr.sys": "WDF Loader (Windows Driver Framework Loader) — загрузчик сред выполнения драйверов (KMDF/UMDF). Обеспечивает динамическую привязку и управление драйверами режима ядра, повышая стабильность системы.",
 }
 
 _WINDOWS_USB_DEVICE = {
