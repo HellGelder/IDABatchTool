@@ -105,21 +105,40 @@
     </div>
 
 {% if is_elf %}
-    <h2>Необходимые библиотеки (.so) <span class="badge">{{ needed_libs|length }}</span></h2>
+    <!-- Режим ELF: показываем импортированные библиотеки как модули -->
+    <h2>Импортированные библиотеки (опознанные) <span class="badge">{{ known_modules|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
             <span>Список библиотек</span><span>▾</span>
         </div>
         <div class="card-body">
-            {% if needed_libs %}
+            {% if known_modules %}
             <ul class="module-list searchable">
-                {% for lib in needed_libs %}
-                <li>{{ lib }}</li>
+                {% for mod in known_modules %}
+                <li>{{ mod }}</li>
                 {% endfor %}
             </ul>
-            {% else %}<p>Не найдено необходимых библиотек.</p>{% endif %}
+            {% else %}<p>Нет опознанных библиотек.</p>{% endif %}
         </div>
     </div>
+
+    {% if unknown_modules %}
+    <div class="unknown-section">
+        <h2>Импортированные библиотеки (неопознанные) <span class="badge">{{ unknown_modules|length }}</span></h2>
+        <div class="card">
+            <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+                <span>Требуют ручного анализа</span><span>▾</span>
+            </div>
+            <div class="card-body">
+                <ul class="module-list searchable">
+                    {% for mod in unknown_modules %}
+                    <li>{{ mod }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
     <div class="card">

@@ -44,14 +44,29 @@ class HtmlGeneratorWorker(QThread):
                     data = json.load(f)
                 if ida_info is None and "ida_info" in data:
                     ida_info = data["ida_info"]
-                for imp in data.get("imports", []):
-                    mod = imp.get("module")
-                    if not mod or mod.lower() == "unknown":
-                        continue
-                    if mod.startswith("."):
-                        global_elf_set.add(mod)
-                    else:
-                        global_modules_set.add(mod)
+
+                is_elf = data.get("is_elf", False)
+
+                # Сбор модулей и секций в зависимости от типа файла
+                if is_elf:
+                    # Для ELF: модули = needed_libs, секции = из импортов (начинаются с точки)
+                    for needed in data.get("needed_libs", []):
+                        global_modules_set.add(needed)
+                    for imp in data.get("imports", []):
+                        mod = imp.get("module", "")
+                        if mod.startswith("."):
+                            global_elf_set.add(mod)
+                else:
+                    # Для PE: модули из импортов, кроме секций
+                    for imp in data.get("imports", []):
+                        mod = imp.get("module")
+                        if not mod or mod.lower() == "unknown":
+                            continue
+                        if mod.startswith("."):
+                            global_elf_set.add(mod)
+                        else:
+                            global_modules_set.add(mod)
+
                 original_file = Path(data["file_name"]).name
                 source_full = Path(data["file_name"])
                 if not source_full.is_absolute():
@@ -63,7 +78,9 @@ class HtmlGeneratorWorker(QThread):
                 out_rel = rel.with_suffix(rel.suffix + ".html")
                 output_html = self.reports_dir / out_rel
                 output_html.parent.mkdir(parents=True, exist_ok=True)
-                self.generator.generate_from_json(json_path, output_html, reports_dir=self.reports_dir)
+                self.generator.generate_from_json(json_path, output_html,
+                                                  reports_dir=self.reports_dir,
+                                                  input_dir=self.input_dir)
                 link = out_rel.as_posix()
                 display = rel.as_posix()
                 report_links.append({"filename": link, "display_name": display})

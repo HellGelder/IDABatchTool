@@ -15,6 +15,27 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+# Расширения, характерные для исполняемых файлов и библиотек
+_INTERNAL_EXTS = {'.dll', '.so', '.dylib', '.exe', '.sys', '.bin', '.elf', '.o', '.ko', '.dex'}
+
+
+def _is_internal_module(module_name: str, input_dir: Optional[Path]) -> bool:
+    """Проверяет, существует ли файл module_name внутри input_dir (рекурсивно)."""
+    if input_dir is None:
+        return False
+    name_lower = module_name.lower()
+    # Точное совпадение имени файла
+    for f in input_dir.rglob('*'):
+        if f.is_file() and f.name.lower() == name_lower:
+            return True
+    # Совпадение по stem (имя без расширения) для известных расширений
+    stem = Path(module_name).stem.lower()
+    for ext in _INTERNAL_EXTS:
+        for f in input_dir.rglob(f'*{ext}'):
+            if f.stem.lower() == stem:
+                return True
+    return False
+
 
 class ReportGenerator:
     """Создаёт HTML-отчёты из JSON-файлов экспорта."""
@@ -27,8 +48,15 @@ class ReportGenerator:
         self.report_template = self.env.get_template("report.html")
         self.index_template = self.env.get_template("index.html")
 
+    def _classify_with_context(self, module_name: str, input_dir: Optional[Path]) -> str:
+        """Классифицирует модуль, но если он найден в input_dir – возвращает метку внутренней библиотеки."""
+        if _is_internal_module(module_name, input_dir):
+            return "Собственный модуль проекта (внутренняя библиотека)"
+        return classify_module(module_name)
+
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None,
-                           reports_dir: Optional[Path] = None) -> Path:
+                           reports_dir: Optional[Path] = None,
+                           input_dir: Optional[Path] = None) -> Path:
         if not json_path.exists():
             raise FileNotFoundError(f"JSON-файл не найден: {json_path}")
 
@@ -37,8 +65,24 @@ class ReportGenerator:
 
         is_elf: bool = data.get("is_elf", False)
 
-        # Для PE формируем списки опознанных/неопознанных модулей
-        if not is_elf:
+        # Списки модулей с учётом внутренних
+        if is_elf:
+            needed_libs = data.get("needed_libs", [])
+            known = []
+            unknown = []
+            for lib in needed_libs:
+                desc = self._classify_with_context(lib, input_dir)
+                if "Собственный модуль" in desc:
+                    known.append(lib)      # внутренние считаем опознанными
+                elif "Неопознанный" in desc:
+                    unknown.append(lib)
+                else:
+                    known.append(lib)
+            data["known_modules"] = sorted(known)
+            data["unknown_modules"] = sorted(unknown)
+            if "elf_sections" not in data:
+                data["elf_sections"] = []
+        else:
             known: List[str] = []
             unknown: List[str] = []
             elf: List[str] = []
@@ -53,12 +97,13 @@ class ReportGenerator:
                 if mod.startswith("."):
                     elf.append(mod)
                     continue
-                category = classify_module(mod)
-                if "Неопознанный" in category:
+                desc = self._classify_with_context(mod, input_dir)
+                if "Собственный модуль" in desc:
+                    known.append(mod)
+                elif "Неопознанный" in desc:
                     unknown.append(mod)
                 else:
                     known.append(mod)
-
             data["known_modules"] = sorted(known)
             data["unknown_modules"] = sorted(unknown)
             if "elf_sections" not in data:
@@ -66,14 +111,12 @@ class ReportGenerator:
 
         if "elf_sections" not in data:
             data["elf_sections"] = []
-
         if "exports" not in data:
             data["exports"] = []
 
-        # Сортировка функций: экспортные в начале
+        # Сортировка функций: экспортные вперёд
         if "functions" in data and "exports" in data:
             export_names = {exp["name"] for exp in data["exports"]}
-            # ключ: (0 если имя экспортное, иначе 1, затем start_ea)
             data["functions"].sort(
                 key=lambda f: (0 if f["name"] in export_names else 1,
                                int(f["start_ea"], 16))
@@ -107,16 +150,35 @@ class ReportGenerator:
         for report in reports:
             report["filename"] = quote(report["filename"])
 
+        # Группировка модулей с учётом внутренних
         categories: Dict[str, dict] = {}
         for mod in unique_modules:
-            cat, desc = get_module_category_and_description(mod)
-            categories.setdefault(cat, {"description": desc, "modules": []})
+            desc = self._classify_with_context(mod, input_dir)
+            cat, _ = get_module_category_and_description(mod)  # категория всё равно определяется по словарю
+            # Но если это внутренний модуль, мы можем выделить его в отдельную категорию
+            if "Собственный модуль" in desc:
+                cat = "Внутренние модули проекта"
+                cat_desc = "Библиотеки и исполняемые файлы, находящиеся внутри исследуемой директории."
+            else:
+                cat, cat_desc = get_module_category_and_description(mod)
+            categories.setdefault(cat, {"description": cat_desc, "modules": []})
             categories[cat]["modules"].append({
                 "name": mod,
-                "desc": classify_module(mod)
+                "desc": desc
             })
 
         grouped_list: List[dict] = []
+        # Категорию "Внутренние модули проекта" показываем первой, если есть
+        if "Внутренние модули проекта" in categories:
+            info = categories.pop("Внутренние модули проекта")
+            info["modules"] = sorted(info["modules"], key=lambda x: x["name"].lower())
+            grouped_list.append({
+                "name": "Внутренние модули проекта",
+                "description": info["description"],
+                "modules": info["modules"],
+                "count": len(info["modules"]),
+            })
+
         sorted_cats = sorted([c for c in categories if c != "Неопознанные модули"])
         if "Неопознанные модули" in categories:
             sorted_cats.append("Неопознанные модули")
