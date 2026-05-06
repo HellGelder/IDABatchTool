@@ -275,7 +275,7 @@ class MainWindow(QMainWindow):
         buttons_layout.addWidget(self.cancel_btn)
         scan_layout.addLayout(buttons_layout)
 
-        # Экспорт в JSON (чекбокс псевдокода здесь)
+        # Экспорт в JSON (чекбокс псевдокода над кнопкой)
         json_group = QGroupBox("Обработка результатов IDA")
         json_layout = QVBoxLayout(json_group)
 
@@ -283,21 +283,29 @@ class MainWindow(QMainWindow):
         self.json_progress_bar = QProgressBar()
         self.json_progress_bar.setRange(0, 100)
 
+        # Чекбокс псевдокода с информационной кнопкой
+        pseudocode_layout = QHBoxLayout()
+        self.pseudocode_check = QCheckBox("Включить псевдокод в JSON-экспорт")
+        self.pseudocode_check.setToolTip(
+            "Если включено, псевдокод будет сгенерирован только для экспортируемых функций."
+        )
+        self.pseudocode_check.setChecked(False)
+        pseudocode_layout.addWidget(self.pseudocode_check)
+        pseudocode_layout.addWidget(self._create_help_button(
+            "При включении псевдокод будет получен только для функций, "
+            "присутствующих в таблице экспорта.\n"
+            "Это значительно ускоряет экспорт и уменьшает размер JSON."
+        ))
+        pseudocode_layout.addStretch()
+
         self.json_export_btn = QPushButton("IDAtoJSON")
         self.json_export_btn.setEnabled(False)
         self.json_export_btn.setToolTip("Запустить экспорт данных из .i64 в JSON.")
 
-        self.pseudocode_check = QCheckBox("Включить псевдокод в JSON-экспорт")
-        self.pseudocode_check.setToolTip(
-            "Если включено, для каждой функции будет добавлен псевдокод в JSON-файл.\n"
-            "Это замедляет экспорт и увеличивает размер JSON."
-        )
-        self.pseudocode_check.setChecked(False)
-
         json_layout.addWidget(self.json_export_label)
         json_layout.addWidget(self.json_progress_bar)
+        json_layout.addLayout(pseudocode_layout)   # чекбокс с подсказкой
         json_layout.addWidget(self.json_export_btn, alignment=Qt.AlignLeft)
-        json_layout.addWidget(self.pseudocode_check)
 
         left_column.addWidget(scan_group)
         left_column.addWidget(json_group)

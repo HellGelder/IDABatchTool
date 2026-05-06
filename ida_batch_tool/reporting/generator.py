@@ -29,10 +29,6 @@ class ReportGenerator:
 
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None,
                            reports_dir: Optional[Path] = None) -> Path:
-        """
-        Генерирует индивидуальный HTML-отчёт из JSON-файла экспорта.
-        Возвращает путь к созданному HTML-файлу.
-        """
         if not json_path.exists():
             raise FileNotFoundError(f"JSON-файл не найден: {json_path}")
 
@@ -74,11 +70,19 @@ class ReportGenerator:
         if "exports" not in data:
             data["exports"] = []
 
+        # Сортировка функций: экспортные в начале
+        if "functions" in data and "exports" in data:
+            export_names = {exp["name"] for exp in data["exports"]}
+            # ключ: (0 если имя экспортное, иначе 1, затем start_ea)
+            data["functions"].sort(
+                key=lambda f: (0 if f["name"] in export_names else 1,
+                               int(f["start_ea"], 16))
+            )
+
         if output_html is None:
             output_html = json_path.with_suffix('.html')
         output_html.parent.mkdir(parents=True, exist_ok=True)
 
-        # Вычисляем ссылку на индекс
         if reports_dir is not None:
             try:
                 rel = output_html.relative_to(reports_dir)
@@ -100,18 +104,9 @@ class ReportGenerator:
                        reports: List[dict], unique_modules: List[str],
                        ida_info: Optional[Dict[str, Any]] = None,
                        elf_sections: Optional[List[str]] = None) -> Path:
-        """
-        Создаёт индексный файл index.html в reports_dir.
-
-        :param reports: список словарей {'filename': относительный_путь, 'display_name': текст}
-        :param unique_modules: список имён модулей (не секций) – для ELF это имена .so библиотек
-        :param elf_sections: список обнаруженных секций ELF
-        """
-        # Кодируем пробелы в ссылках
         for report in reports:
             report["filename"] = quote(report["filename"])
 
-        # Группировка модулей по категориям
         categories: Dict[str, dict] = {}
         for mod in unique_modules:
             cat, desc = get_module_category_and_description(mod)
