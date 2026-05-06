@@ -39,11 +39,12 @@ _ANDROID_MEDIA = {
 }
 
 _ANDROID_GRAPHICS = {
-    "libhwui.so": "Hardware UI Renderer (libhwui) — аппаратно-ускоренный рендерер пользовательского интерфейса Android. Использует Skia для 2D-графики и OpenGL ES/Vulkan для рендеринга. Отрисовывает View-иерархию в Android-приложениях.",
-    "libandroidfw.so": "Android Framework Library — управление ресурсами (res/values/*.xml), темами, конфигурациями, ассетами приложений.",
-    "libETC1.so": "ETC1 Texture Compression — поддержка формата сжатия текстур ETC1, используемого для экономии памяти GPU на Android-устройствах.",
+    "libhwui.so": "Hardware UI Renderer (libhwui) — аппаратно-ускоренный рендерер пользовательского интерфейса Android.",
+    "libandroidfw.so": "Android Framework Library — управление ресурсами, темами, конфигурациями, ассетами приложений.",
+    "libETC1.so": "ETC1 Texture Compression — поддержка формата сжатия текстур ETC1.",
     "libjpeg.so": "JPEG Library — кодирование и декодирование изображений в формате JPEG.",
     "libpng.so": "PNG Library — кодирование и декодирование изображений в формате PNG.",
+    "libjnigraphics.so": "Android JNI Graphics API — библиотека NDK для прямого доступа к пиксельным буферам объектов Bitmap. Позволяет блокировать, изменять и разблокировать пиксельные данные в нативном коде C/C++ через функции AndroidBitmap_getInfo(), AndroidBitmap_lockPixels() и AndroidBitmap_unlockPixels().",
 }
 
 _ANDROID_NETWORK = {

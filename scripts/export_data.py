@@ -3,13 +3,14 @@ IDAPython-скрипт для экспорта данных из IDA Pro в JSON
 Запускается через idat.exe -A -Sexport_data.py <файл.i64>
 Совместим с IDA Pro 9.3.
 
-Псевдокод добавляется только при установленной переменной окружения IDA_PSEUDOCODE=1
-или при передаче аргумента "pseudocode=1" в командной строке скрипта.
-Псевдокод генерируется **только для экспортируемых функций**.
+Параметры скрипта (передаются после имени скрипта в кавычках):
+    pseudocode=1          – генерировать псевдокод для экспортируемых функций
+    inputdir=<путь>       – корневая директория проекта для поиска internal-библиотек
 """
 import json
 import os
-from typing import List, Dict, Any, Optional, Set
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Set, Tuple
 
 import idaapi
 import idautils
@@ -17,11 +18,11 @@ import idc
 import ida_nalt
 import ida_bytes
 
+
 # ------------------------------------------------------------
 # Вспомогательные функции
 # ------------------------------------------------------------
 def _is_elf_file() -> bool:
-    """Проверяет, является ли файл ELF по первым байтам."""
     try:
         raw = ida_bytes.get_bytes(0, 4)
         return raw[:4] == b'\x7fELF'
@@ -30,7 +31,6 @@ def _is_elf_file() -> bool:
 
 
 def _format_hexdump_with_ascii(data: bytes, start_addr: int = 0) -> str:
-    """Возвращает строку hex-дампа с ASCII-представлением."""
     lines = []
     for offset in range(0, len(data), 16):
         chunk = data[offset:offset+16]
@@ -41,116 +41,127 @@ def _format_hexdump_with_ascii(data: bytes, start_addr: int = 0) -> str:
     return '\n'.join(lines)
 
 
-def _pseudocode_enabled() -> bool:
-    """Возвращает True, если псевдокод должен быть сгенерирован."""
-    # 1. Проверяем аргументы командной строки скрипта
+def _get_argv_param(prefix: str) -> Optional[str]:
+    """Извлекает значение параметра из ARGV, переданного скрипту."""
     for arg in idc.ARGV:
-        if arg.startswith("pseudocode="):
-            return arg.split("=", 1)[1].strip().lower() in ("1", "true", "yes")
-    # 2. Переменная окружения
+        if arg.startswith(prefix + "="):
+            return arg.split("=", 1)[1].strip()
+    return None
+
+
+def _pseudocode_enabled() -> bool:
+    # Параметр командной строки имеет приоритет
+    val = _get_argv_param("pseudocode")
+    if val is not None:
+        return val.lower() in ("1", "true", "yes")
     return os.environ.get('IDA_PSEUDOCODE', '0') == '1'
 
 
 def _try_init_hexrays() -> bool:
-    """
-    Инициализирует декомпилятор Hex‑Rays.
-    Возвращает True, если декомпилятор готов к работе.
-    """
     try:
         import ida_hexrays
         if ida_hexrays.init_hexrays_plugin():
             print("[IDAPython] Плагин Hex‑Rays успешно инициализирован.")
             return True
         else:
-            print("[IDAPython] Не удалось инициализировать Hex‑Rays. "
-                  "Проверьте наличие лицензии Hex‑Rays и правильность пути к idat.exe.")
+            print("[IDAPython] Не удалось инициализировать Hex‑Rays.")
             return False
     except ImportError:
-        print("[IDAPython] Модуль ida_hexrays не найден. "
-              "Убедитесь, что используете IDA Pro с Hex‑Rays (не IDA Free).")
+        print("[IDAPython] Модуль ida_hexrays не найден.")
         return False
 
 
 def _decompile_function(ea: int, hexrays_available: bool) -> str:
-    """
-    Декомпилирует функцию по адресу ea.
-    Возвращает строку с псевдокодом или сообщение об ошибке.
-    """
     if not hexrays_available:
-        return "Декомпилятор недоступен. Проверьте лицензию Hex‑Rays."
-
+        return "Декомпилятор недоступен."
     try:
         import ida_hexrays
         cfunc = ida_hexrays.decompile(ea)
-        if cfunc:
-            return str(cfunc)
-        else:
-            return "Декомпиляция не удалась (возможно, функция слишком большая или повреждена)."
+        return str(cfunc) if cfunc else "Декомпиляция не удалась."
     except ida_hexrays.DecompilationFailure as e:
         return f"Ошибка декомпиляции: {e}"
     except Exception as e:
-        return f"Неизвестная ошибка декомпиляции: {e}"
+        return f"Неизвестная ошибка: {e}"
 
 
 # ------------------------------------------------------------
-# Парсинг ELF‑зависимостей с помощью pyelftools
+# Парсинг ELF‑зависимостей
 # ------------------------------------------------------------
 def _parse_elf_dependencies(filepath: str) -> List[str]:
-    """
-    Извлекает список зависимостей (DT_NEEDED) из ELF‑файла
-    с использованием библиотеки pyelftools.
-    """
     try:
         from elftools.elf.elffile import ELFFile
-
         with open(filepath, 'rb') as f:
             elffile = ELFFile(f)
-
-            # Ищем секцию .dynamic
-            dynamic_section = elffile.get_section_by_name('.dynamic')
-            if not dynamic_section:
-                # Некоторые ELF-файлы не имеют имени '.dynamic', но есть тип SHT_DYNAMIC
-                for section in elffile.iter_sections():
-                    if section.header['sh_type'] == 'SHT_DYNAMIC':
-                        dynamic_section = section
+            dynamic = elffile.get_section_by_name('.dynamic')
+            if not dynamic:
+                for sec in elffile.iter_sections():
+                    if sec.header['sh_type'] == 'SHT_DYNAMIC':
+                        dynamic = sec
                         break
-
-            if not dynamic_section:
-                print("[IDAPython] Не удалось найти секцию .dynamic в ELF‑файле.")
+            if not dynamic:
+                print("[IDAPython] Секция .dynamic не найдена.")
                 return []
-
-            dependencies = []
-            for tag in dynamic_section.iter_tags():
-                if tag.entry.d_tag == 'DT_NEEDED':
-                    dependencies.append(tag.needed)
-
-            return dependencies
-
+            return [tag.needed for tag in dynamic.iter_tags() if tag.entry.d_tag == 'DT_NEEDED']
     except ImportError:
-        print("[IDAPython] Библиотека pyelftools не установлена. "
-              "Установите её командой: pip install pyelftools")
+        print("[IDAPython] pyelftools не установлен.")
         return []
     except Exception as e:
-        print(f"[IDAPython] Ошибка при парсинге ELF-зависимостей: {e}")
+        print(f"[IDAPython] Ошибка парсинга ELF: {e}")
         return []
+
+
+# ------------------------------------------------------------
+# Построение карты экспортов (внутренние библиотеки проекта)
+# ------------------------------------------------------------
+def _build_export_map(search_dir: Optional[str]) -> Dict[str, str]:
+    """Сканирует все ELF-файлы в search_dir и возвращает {symbol_name: library_name}."""
+    if not search_dir:
+        return {}
+    root = Path(search_dir)
+    if not root.is_dir():
+        return {}
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError:
+        return {}
+
+    export_map: Dict[str, str] = {}
+    for elf_file in root.rglob('*'):
+        if not elf_file.is_file():
+            continue
+        # Быстрая проверка по сигнатуре
+        try:
+            with open(elf_file, 'rb') as f:
+                if f.read(4) != b'\x7fELF':
+                    continue
+        except Exception:
+            continue
+        try:
+            with open(elf_file, 'rb') as f:
+                elffile = ELFFile(f)
+                dynsym = elffile.get_section_by_name('.dynsym')
+                if not dynsym:
+                    continue
+                lib_name = elf_file.name  # базовое имя файла
+                for sym in dynsym.iter_symbols():
+                    if sym.entry['st_info']['bind'] == 'STB_GLOBAL' and sym.name:
+                        export_map[sym.name] = lib_name
+        except Exception:
+            pass
+    return export_map
 
 
 # ------------------------------------------------------------
 # Основная функция экспорта
 # ------------------------------------------------------------
 def export_to_json(output_path: Optional[str] = None) -> None:
-    """
-    Собирает данные из открытой базы IDA и записывает JSON.
-    """
-    idaapi.auto_wait()  # гарантируем завершение автоанализа
+    idaapi.auto_wait()
 
     if output_path is None:
         idb_path = idc.get_idb_path()
         output_path = idb_path + ".export.json"
 
     is_elf = _is_elf_file()
-
-    # Информация о версии IDA
     kernel_version = idaapi.get_kernel_version()
     ida_info = {"kernel_version": kernel_version}
 
@@ -165,22 +176,25 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         "ida_info": ida_info
     }
 
-    # Для ELF получаем зависимости через pyelftools
+    # --------------------------------------------------------
+    # Зависимости ELF
+    # --------------------------------------------------------
     if is_elf:
         data["needed_libs"] = _parse_elf_dependencies(idc.get_input_file_path())
 
-    # Нужен ли псевдокод?
+    # --------------------------------------------------------
+    # Псевдокод
+    # --------------------------------------------------------
     pseudocode_enabled = _pseudocode_enabled()
     if pseudocode_enabled:
         print("[IDAPython] Генерация псевдокода включена (только для экспортных функций).")
         hexrays_available = _try_init_hexrays()
     else:
-        print("[IDAPython] Генерация псевдокода отключена.")
         hexrays_available = False
 
-    # ----------------------------------------------------------------
-    # Экспорты (собираем сначала, чтобы затем использовать множество адресов)
-    # ----------------------------------------------------------------
+    # --------------------------------------------------------
+    # Экспорты (сначала собираем адреса)
+    # --------------------------------------------------------
     exports: List[Dict[str, Any]] = []
     for i in range(idc.get_entry_qty()):
         entry = idc.get_entry_ordinal(i)
@@ -188,30 +202,18 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             addr = idc.get_entry(entry)
             name = idc.get_entry_name(addr)
             if name:
-                exports.append({
-                    "name": name,
-                    "address": f"0x{addr:X}",
-                    "ordinal": entry
-                })
-
+                exports.append({"name": name, "address": f"0x{addr:X}", "ordinal": entry})
     if not exports:
         for ea in idautils.Functions():
             name = idc.get_func_name(ea)
             if name and not name.startswith(("sub_", "j_", "def_", "nullsub_")):
-                exports.append({
-                    "name": name,
-                    "address": f"0x{ea:X}",
-                    "ordinal": len(exports)
-                })
-
+                exports.append({"name": name, "address": f"0x{ea:X}", "ordinal": len(exports)})
     data["exports"] = exports
-
-    # Множество адресов экспортных функций для быстрой проверки
     export_eas: Set[int] = {int(exp["address"], 16) for exp in exports}
 
-    # ----------------------------------------------------------------
+    # --------------------------------------------------------
     # Функции
-    # ----------------------------------------------------------------
+    # --------------------------------------------------------
     for ea in idautils.Functions():
         name = idc.get_func_name(ea)
         func = idaapi.get_func(ea)
@@ -219,7 +221,6 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             continue
         size = func.size()
 
-        # Дизассемблирование
         instructions = []
         for head in idautils.Heads(ea, ea + size):
             mnem = idc.print_insn_mnem(head)
@@ -228,14 +229,12 @@ def export_to_json(output_path: Optional[str] = None) -> None:
                 instructions.append(f"0x{head:X}  {mnem} {op_str}")
         disassembly_text = '\n'.join(instructions)
 
-        # Hex-дамп
         try:
             raw = ida_bytes.get_bytes(ea, size)
             hexdump = _format_hexdump_with_ascii(raw, ea) if raw else ""
         except Exception:
             hexdump = "недоступно"
 
-        # Псевдокод – только если включён и функция экспортная
         pseudocode = ""
         if pseudocode_enabled and ea in export_eas:
             pseudocode = _decompile_function(ea, hexrays_available)
@@ -249,9 +248,9 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             "pseudocode": pseudocode
         })
 
-    # ----------------------------------------------------------------
-    # Импорты и ELF-зависимости
-    # ----------------------------------------------------------------
+    # --------------------------------------------------------
+    # Импорты
+    # --------------------------------------------------------
     try:
         import_module_count = ida_nalt.get_import_module_qty()
     except AttributeError:
@@ -278,28 +277,35 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         except AttributeError:
             pass
 
+    # --------------------------------------------------------
+    # Разрешение импортов через внутренние библиотеки
+    # --------------------------------------------------------
     if is_elf:
-        # Для ELF уже заполнен needed_libs через pyelftools
-        # Приводим имена секций в raw_imports к стандартному виду
+        input_dir = _get_argv_param("inputdir")
+        if not input_dir:
+            # fallback – родительская папка анализируемого файла
+            input_dir = os.path.dirname(idc.get_input_file_path())
+        export_map = _build_export_map(input_dir)
         for imp in raw_imports:
-            mod = imp["module"]
-            if mod.startswith('.'):
-                imp["module"] = "ELF Section"
-        # elf_sections заполним ниже
+            sym = imp["name"]
+            if sym in export_map:
+                imp["module"] = export_map[sym]  # заменяем на имя библиотеки
+            else:
+                # если модуль уже был внутренней секцией, оставляем пометку
+                if imp["module"].startswith("."):
+                    imp["module"] = "ELF Section"
+                # иначе оставляем как есть
+        # elf_sections можно оставить пустым или заполнить секциями, где не удалось разрешить
+        data["elf_sections"] = sorted({imp["module"] for imp in raw_imports if imp["module"].startswith(".")})
     else:
         data["needed_libs"] = []
-        # Для PE добавим elf_sections (пустой)
         data["elf_sections"] = []
 
     data["imports"] = raw_imports
 
-    # ----------------------------------------------------------------
-    # Экспорты уже собраны
-    # ----------------------------------------------------------------
-
-    # ----------------------------------------------------------------
+    # --------------------------------------------------------
     # Сортировка функций: экспортные вперёд
-    # ----------------------------------------------------------------
+    # --------------------------------------------------------
     data["functions"].sort(
         key=lambda f: (0 if int(f["start_ea"], 16) in export_eas else 1,
                        int(f["start_ea"], 16))

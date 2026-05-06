@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from PySide6.QtCore import QThread, Signal
 
@@ -15,12 +15,15 @@ class ExportWorker(QThread):
     error_occurred = Signal(str)
 
     def __init__(self, idb_files: List[Path], script_path: Path,
-                 idat_path: str, max_workers: int, parent=None):
+                 idat_path: str, max_workers: int,
+                 script_args: Optional[Dict[str, str]] = None,
+                 parent=None):
         super().__init__(parent)
         self.idb_files = idb_files
         self.script_path = script_path
         self.idat_path = idat_path
         self.max_workers = max_workers
+        self.script_args = script_args or {}
         self.results: Dict[Path, bool] = {}
         self._cancel = False
 
@@ -28,7 +31,10 @@ class ExportWorker(QThread):
         analyzer = IDAAnalyzer(idat_path=self.idat_path, max_workers=self.max_workers)
         analyzer.set_progress_callback(self._on_progress)
         try:
-            self.results = analyzer.run_script_on_batch(self.idb_files, self.script_path)
+            self.results = analyzer.run_script_on_batch(
+                self.idb_files, self.script_path,
+                script_args=self.script_args
+            )
             succeeded = sum(1 for v in self.results.values() if v)
             self.finished.emit(succeeded, len(self.results))
         except Exception as e:

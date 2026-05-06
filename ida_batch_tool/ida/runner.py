@@ -116,7 +116,8 @@ class IDAAnalyzer:
     # Выполнение скрипта на существующих .i64/.idb
     # ------------------------------------------------------------------
     def run_script_on_idb(self, idb_path: Path, script_path: Path,
-                          output_dir: Optional[Path] = None) -> bool:
+                          output_dir: Optional[Path] = None,
+                          script_args: Optional[Dict[str, str]] = None) -> bool:
         if not idb_path.exists():
             logger.error(f"Database not found: {idb_path}")
             return False
@@ -127,20 +128,28 @@ class IDAAnalyzer:
         out_dir = output_dir or idb_path.parent
         log_path = out_dir / (idb_path.stem + "_script.log")
 
-        cmd = [self.idat, "-A", f"-S{script_path}", f"-L{log_path}", str(idb_path)]
+        # Формируем команду скрипта с аргументами
+        if script_args:
+            args_str = " ".join(f"{k}={v}" for k, v in script_args.items())
+            script_cmd = f'"{script_path}" {args_str}'
+        else:
+            script_cmd = f'"{script_path}"'
 
-        logger.info(f"Running script on {idb_path.name}: {cmd}")
+        cmd = [self.idat, "-A", f"-S{script_cmd}", f"-L{log_path}", str(idb_path)]
+
+        logger.info(f"Running script on {idb_path.name}: {script_cmd}")
         return self._run_process(cmd, idb_path, None, log_path, keep_log_on_error=True)
 
     def run_script_on_batch(self, idb_files: List[Path], script_path: Path,
-                            output_dir: Optional[Path] = None) -> Dict[Path, bool]:
+                            output_dir: Optional[Path] = None,
+                            script_args: Optional[Dict[str, str]] = None) -> Dict[Path, bool]:
         total = len(idb_files)
         results: Dict[Path, bool] = {}
         completed = 0
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_file = {
-                executor.submit(self.run_script_on_idb, f, script_path, output_dir): f
+                executor.submit(self.run_script_on_idb, f, script_path, output_dir, script_args): f
                 for f in idb_files
             }
             for future in as_completed(future_to_file):

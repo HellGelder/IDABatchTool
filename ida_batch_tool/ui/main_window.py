@@ -575,10 +575,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Скрипт не найден: {script_path}")
             return
 
+        # Формируем аргументы скрипта
+        script_args = {}
         if self.pseudocode_check.isChecked():
-            os.environ['IDA_PSEUDOCODE'] = '1'
-        else:
-            os.environ.pop('IDA_PSEUDOCODE', None)
+            script_args["pseudocode"] = "1"
+        script_args["inputdir"] = input_dir
 
         self.export_in_progress = True
         self.json_export_btn.setEnabled(False)
@@ -591,7 +592,8 @@ class MainWindow(QMainWindow):
         idat_path = get_ida_executable()
 
         self.export_worker = ExportWorker(
-            idb_files, script_path, idat_path, max_workers
+            idb_files, script_path, idat_path, max_workers,
+            script_args=script_args
         )
         self.export_worker.progress_updated.connect(self._on_json_export_progress)
         self.export_worker.error_occurred.connect(self._on_error)
@@ -610,7 +612,6 @@ class MainWindow(QMainWindow):
         self._export_succeeded = succeeded
         self._export_total = total
         self.html_generate_btn.setEnabled(True)
-        os.environ.pop('IDA_PSEUDOCODE', None)
         self.html_progress_label.setText("Готов к созданию HTML")
 
     # ------------------------------------------------------------------
