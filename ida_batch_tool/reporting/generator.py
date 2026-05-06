@@ -15,12 +15,10 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-# Расширения для внутренних модулей
 _INTERNAL_EXTS = {'.dll', '.so', '.dylib', '.exe', '.sys', '.bin', '.elf', '.o', '.ko', '.dex'}
 
 
 def _is_internal_module(module_name: str, input_dir: Optional[Path]) -> bool:
-    """Проверяет, существует ли файл module_name внутри input_dir (рекурсивно)."""
     if input_dir is None:
         return False
     name_lower = module_name.lower()
@@ -39,14 +37,25 @@ class ReportGenerator:
     """Создаёт HTML-отчёты из JSON-файлов экспорта."""
 
     CATEGORY_COLORS = {
-        "Системные библиотеки ОС": "#4CAF50",
-        "Криптография и безопасность": "#FF9800",
-        "Сеть и коммуникации": "#2196F3",
-        "Графика и мультимедиа": "#9C27B0",
-        "Среды выполнения, научные и ML-библиотеки": "#00BCD4",
-        "Работа с данными, архивация и XML": "#795548",
-        "Внутренние модули проекта": "#607D8B",
-        "Неопознанные модули": "#F44336",
+        "System": "#4CAF50",
+        "Crypto": "#FF9800",
+        "Network": "#2196F3",
+        "Graphics": "#9C27B0",
+        "Runtime": "#00BCD4",
+        "Data": "#795548",
+        "Internal": "#607D8B",
+        "Unknown": "#F44336",
+    }
+
+    CATEGORY_LABELS = {
+        "Системные библиотеки ОС": "System",
+        "Криптография и безопасность": "Crypto",
+        "Сеть и коммуникации": "Network",
+        "Графика и мультимедиа": "Graphics",
+        "Среды выполнения, научные и ML-библиотеки": "Runtime",
+        "Работа с данными, архивация и XML": "Data",
+        "Внутренние модули проекта": "Internal",
+        "Неопознанные модули": "Unknown",
     }
 
     def __init__(self) -> None:
@@ -73,7 +82,7 @@ class ReportGenerator:
 
         is_elf: bool = data.get("is_elf", False)
 
-        # --- Старый блок: known/unknown модули (оставлен для совместимости, в новом шаблоне не используется) ---
+        # --- Старый блок known/unknown (оставлен для совместимости) ---
         if is_elf:
             needed_libs = data.get("needed_libs", [])
             known = []
@@ -116,9 +125,9 @@ class ReportGenerator:
             data["unknown_modules"] = sorted(unknown)
             if "elf_sections" not in data:
                 data["elf_sections"] = sorted(elf)
-        # ------------------------------------------------------------------------------------------------
+        # --------------------------------------------------------------
 
-        # --- Новый блок: module_deps для сетки ---
+        # --- Новый блок module_deps ---
         module_deps: List[Dict[str, Any]] = []
         if is_elf:
             module_counts: Dict[str, int] = {}
@@ -132,15 +141,17 @@ class ReportGenerator:
                     module_counts[lib] = 0
             for mod, count in module_counts.items():
                 desc = self._classify_with_context(mod, input_dir)
-                cat, _ = get_module_category_and_description(mod)
+                # Определяем русскую категорию
                 if "Собственный модуль" in desc:
-                    cat = "Внутренние модули проекта"
-                elif "Неопознанный" in desc:
-                    cat = "Неопознанные модули"
-                color = self.CATEGORY_COLORS.get(cat, "#9E9E9E")
+                    cat_ru = "Внутренние модули проекта"
+                else:
+                    cat_ru, _ = get_module_category_and_description(mod)
+                # Переводим в метку
+                cat_label = self.CATEGORY_LABELS.get(cat_ru, cat_ru)
+                color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
                     "name": mod,
-                    "category": cat,
+                    "category": cat_label,
                     "count": count,
                     "description": desc,
                     "color": color,
@@ -154,28 +165,28 @@ class ReportGenerator:
                 module_counts[mod] = module_counts.get(mod, 0) + 1
             for mod, count in module_counts.items():
                 desc = self._classify_with_context(mod, input_dir)
-                cat, _ = get_module_category_and_description(mod)
                 if "Собственный модуль" in desc:
-                    cat = "Внутренние модули проекта"
-                elif "Неопознанный" in desc:
-                    cat = "Неопознанные модули"
-                color = self.CATEGORY_COLORS.get(cat, "#9E9E9E")
+                    cat_ru = "Внутренние модули проекта"
+                else:
+                    cat_ru, _ = get_module_category_and_description(mod)
+                cat_label = self.CATEGORY_LABELS.get(cat_ru, cat_ru)
+                color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
                     "name": mod,
-                    "category": cat,
+                    "category": cat_label,
                     "count": count,
                     "description": desc,
                     "color": color,
                 })
         data["module_deps"] = sorted(module_deps, key=lambda x: (x["category"], x["name"]))
-        # --------------------------------------------------------------
+        # ----------------------------------------------------------
 
         if "elf_sections" not in data:
             data["elf_sections"] = []
         if "exports" not in data:
             data["exports"] = []
 
-        # Сортировка функций: экспортные вперёд
+        # Сортировка функций
         if "functions" in data and "exports" in data:
             export_names = {exp["name"] for exp in data["exports"]}
             data["functions"].sort(
