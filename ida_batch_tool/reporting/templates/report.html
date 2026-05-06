@@ -66,32 +66,50 @@
             display: inline-block; background: var(--accent); color: white;
             border-radius: 10px; padding: 2px 8px; font-size: 10px; margin-left: 8px;
         }
-        .module-list {
-            columns: 2;
-            -webkit-columns: 2;
-            -moz-columns: 2;
-            list-style: none;
-            padding-left: 0;
+        .deps-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 8px;
         }
-        .module-list li {
-            padding: 2px 0;
+        .dep-item {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--card-bg);
+        }
+        .dep-marker {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+        .dep-info {
+            flex: 1;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+        }
+        .dep-name {
+            font-weight: 600;
             font-family: monospace;
         }
-        .unknown-section {
-            margin-top: 16px;
-            border-left: 4px solid #ff9500;
-            padding-left: 16px;
+        .dep-count {
+            background: var(--hover);
+            padding: 1px 6px;
+            border-radius: 4px;
+            color: var(--text);
         }
-        .section-list {
-            columns: 2;
-            -webkit-columns: 2;
-            -moz-columns: 2;
-            list-style: none;
-            padding-left: 0;
+        .dep-category {
+            font-style: italic;
+            opacity: 0.8;
         }
-        .section-list li {
-            padding: 2px 0;
-            font-family: monospace;
+        .dep-desc {
+            cursor: help;
         }
     </style>
 </head>
@@ -104,41 +122,36 @@
         <input type="text" id="quickSearch" placeholder="Поиск по функциям, импортам, экспортам...">
     </div>
 
-{% if is_elf %}
-    <!-- Режим ELF: показываем импортированные библиотеки как модули -->
-    <h2>Импортированные библиотеки (опознанные) <span class="badge">{{ known_modules|length }}</span></h2>
+    <!-- Зависимости (единый блок для PE и ELF) -->
+    <h2>Зависимости <span class="badge">{{ module_deps|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-            <span>Список библиотек</span><span>▾</span>
+            <span>Прямые зависимости</span><span>▾</span>
         </div>
         <div class="card-body">
-            {% if known_modules %}
-            <ul class="module-list searchable">
-                {% for mod in known_modules %}
-                <li>{{ mod }}</li>
+            {% if module_deps %}
+            <div class="deps-grid searchable">
+                {% for dep in module_deps %}
+                <div class="dep-item">
+                    <div class="dep-marker" style="background-color: {{ dep.color }};"></div>
+                    <div class="dep-info">
+                        <span class="dep-name">{{ dep.name }}</span>
+                        {% if dep.count > 0 %}
+                        <span class="dep-count">{{ dep.count }} функций</span>
+                        {% endif %}
+                        <span class="dep-category">{{ dep.category }}</span>
+                        {% if dep.description %}
+                        <span class="dep-desc" title="{{ dep.description }}">ℹ️</span>
+                        {% endif %}
+                    </div>
+                </div>
                 {% endfor %}
-            </ul>
-            {% else %}<p>Нет опознанных библиотек.</p>{% endif %}
+            </div>
+            {% else %}
+            <p>Нет зависимостей.</p>
+            {% endif %}
         </div>
     </div>
-
-    {% if unknown_modules %}
-    <div class="unknown-section">
-        <h2>Импортированные библиотеки (неопознанные) <span class="badge">{{ unknown_modules|length }}</span></h2>
-        <div class="card">
-            <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-                <span>Требуют ручного анализа</span><span>▾</span>
-            </div>
-            <div class="card-body">
-                <ul class="module-list searchable">
-                    {% for mod in unknown_modules %}
-                    <li>{{ mod }}</li>
-                    {% endfor %}
-                </ul>
-            </div>
-        </div>
-    </div>
-    {% endif %}
 
     <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
     <div class="card">
@@ -148,71 +161,18 @@
         <div class="card-body">
             {% if imports %}
             <table>
-                <tr><th>Имя</th><th>Адрес</th><th>Библиотека</th></tr>
+                <tr><th>Имя</th><th>{{ "Адрес" if not is_elf else "" }}</th><th>Библиотека</th></tr>
                 {% for imp in imports %}
                 <tr class="searchable">
-                    <td>{{ imp.name }}</td><td>{{ imp.address }}</td><td>{{ imp.module }}</td>
+                    <td>{{ imp.name }}</td>
+                    {% if not is_elf %}<td>{{ imp.address }}</td>{% else %}<td></td>{% endif %}
+                    <td>{{ imp.module }}</td>
                 </tr>
                 {% endfor %}
             </table>
             {% else %}<p>Нет импортируемых функций.</p>{% endif %}
         </div>
     </div>
-{% else %}
-    <!-- PE-режим: группировка по модулям -->
-    <h2>Импортированные модули (опознанные) <span class="badge">{{ known_modules|length }}</span></h2>
-    <div class="card">
-        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-            <span>Список модулей</span><span>▾</span>
-        </div>
-        <div class="card-body">
-            {% if known_modules %}
-            <ul class="module-list searchable">
-                {% for mod in known_modules %}
-                <li>{{ mod }}</li>
-                {% endfor %}
-            </ul>
-            {% else %}<p>Нет опознанных модулей.</p>{% endif %}
-        </div>
-    </div>
-
-    {% if unknown_modules %}
-    <div class="unknown-section">
-        <h2>Импортированные модули (неопознанные) <span class="badge">{{ unknown_modules|length }}</span></h2>
-        <div class="card">
-            <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-                <span>Требуют ручного анализа</span><span>▾</span>
-            </div>
-            <div class="card-body">
-                <ul class="module-list searchable">
-                    {% for mod in unknown_modules %}
-                    <li>{{ mod }}</li>
-                    {% endfor %}
-                </ul>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
-    <div class="card">
-        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-            <span>Таблица импортов</span><span>▾</span>
-        </div>
-        <div class="card-body">
-            {% if imports %}
-            <table>
-                <tr><th>Имя</th><th>Модуль</th></tr>
-                {% for imp in imports %}
-                <tr class="searchable">
-                    <td>{{ imp.name }}</td><td>{{ imp.module }}</td>
-                </tr>
-                {% endfor %}
-            </table>
-            {% else %}<p>Нет импортируемых функций.</p>{% endif %}
-        </div>
-    </div>
-{% endif %}
 
     <h2>Экспортируемые функции <span class="badge">{{ exports|length }}</span></h2>
     <div class="card">

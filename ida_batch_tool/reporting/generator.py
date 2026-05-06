@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-# Расширения, характерные для исполняемых файлов и библиотек
+# Расширения для внутренних модулей
 _INTERNAL_EXTS = {'.dll', '.so', '.dylib', '.exe', '.sys', '.bin', '.elf', '.o', '.ko', '.dex'}
 
 
@@ -24,11 +24,9 @@ def _is_internal_module(module_name: str, input_dir: Optional[Path]) -> bool:
     if input_dir is None:
         return False
     name_lower = module_name.lower()
-    # Точное совпадение имени файла
     for f in input_dir.rglob('*'):
         if f.is_file() and f.name.lower() == name_lower:
             return True
-    # Совпадение по stem (имя без расширения) для известных расширений
     stem = Path(module_name).stem.lower()
     for ext in _INTERNAL_EXTS:
         for f in input_dir.rglob(f'*{ext}'):
@@ -40,6 +38,17 @@ def _is_internal_module(module_name: str, input_dir: Optional[Path]) -> bool:
 class ReportGenerator:
     """Создаёт HTML-отчёты из JSON-файлов экспорта."""
 
+    CATEGORY_COLORS = {
+        "Системные библиотеки ОС": "#4CAF50",
+        "Криптография и безопасность": "#FF9800",
+        "Сеть и коммуникации": "#2196F3",
+        "Графика и мультимедиа": "#9C27B0",
+        "Среды выполнения, научные и ML-библиотеки": "#00BCD4",
+        "Работа с данными, архивация и XML": "#795548",
+        "Внутренние модули проекта": "#607D8B",
+        "Неопознанные модули": "#F44336",
+    }
+
     def __init__(self) -> None:
         self.env = Environment(
             loader=FileSystemLoader(str(TEMPLATES_DIR)),
@@ -49,7 +58,6 @@ class ReportGenerator:
         self.index_template = self.env.get_template("index.html")
 
     def _classify_with_context(self, module_name: str, input_dir: Optional[Path]) -> str:
-        """Классифицирует модуль, но если он найден в input_dir – возвращает метку внутренней библиотеки."""
         if _is_internal_module(module_name, input_dir):
             return "Собственный модуль проекта (внутренняя библиотека)"
         return classify_module(module_name)
@@ -65,7 +73,7 @@ class ReportGenerator:
 
         is_elf: bool = data.get("is_elf", False)
 
-        # Списки модулей с учётом внутренних
+        # --- Старый блок: known/unknown модули (оставлен для совместимости, в новом шаблоне не используется) ---
         if is_elf:
             needed_libs = data.get("needed_libs", [])
             known = []
@@ -73,7 +81,7 @@ class ReportGenerator:
             for lib in needed_libs:
                 desc = self._classify_with_context(lib, input_dir)
                 if "Собственный модуль" in desc:
-                    known.append(lib)      # внутренние считаем опознанными
+                    known.append(lib)
                 elif "Неопознанный" in desc:
                     unknown.append(lib)
                 else:
@@ -108,6 +116,59 @@ class ReportGenerator:
             data["unknown_modules"] = sorted(unknown)
             if "elf_sections" not in data:
                 data["elf_sections"] = sorted(elf)
+        # ------------------------------------------------------------------------------------------------
+
+        # --- Новый блок: module_deps для сетки ---
+        module_deps: List[Dict[str, Any]] = []
+        if is_elf:
+            module_counts: Dict[str, int] = {}
+            for imp in data.get("imports", []):
+                mod = imp.get("module")
+                if not mod or mod == "unknown" or mod.startswith("."):
+                    continue
+                module_counts[mod] = module_counts.get(mod, 0) + 1
+            for lib in data.get("needed_libs", []):
+                if lib not in module_counts:
+                    module_counts[lib] = 0
+            for mod, count in module_counts.items():
+                desc = self._classify_with_context(mod, input_dir)
+                cat, _ = get_module_category_and_description(mod)
+                if "Собственный модуль" in desc:
+                    cat = "Внутренние модули проекта"
+                elif "Неопознанный" in desc:
+                    cat = "Неопознанные модули"
+                color = self.CATEGORY_COLORS.get(cat, "#9E9E9E")
+                module_deps.append({
+                    "name": mod,
+                    "category": cat,
+                    "count": count,
+                    "description": desc,
+                    "color": color,
+                })
+        else:
+            module_counts: Dict[str, int] = {}
+            for imp in data.get("imports", []):
+                mod = imp.get("module")
+                if not mod or mod.lower() == "unknown":
+                    continue
+                module_counts[mod] = module_counts.get(mod, 0) + 1
+            for mod, count in module_counts.items():
+                desc = self._classify_with_context(mod, input_dir)
+                cat, _ = get_module_category_and_description(mod)
+                if "Собственный модуль" in desc:
+                    cat = "Внутренние модули проекта"
+                elif "Неопознанный" in desc:
+                    cat = "Неопознанные модули"
+                color = self.CATEGORY_COLORS.get(cat, "#9E9E9E")
+                module_deps.append({
+                    "name": mod,
+                    "category": cat,
+                    "count": count,
+                    "description": desc,
+                    "color": color,
+                })
+        data["module_deps"] = sorted(module_deps, key=lambda x: (x["category"], x["name"]))
+        # --------------------------------------------------------------
 
         if "elf_sections" not in data:
             data["elf_sections"] = []
@@ -150,12 +211,9 @@ class ReportGenerator:
         for report in reports:
             report["filename"] = quote(report["filename"])
 
-        # Группировка модулей с учётом внутренних
         categories: Dict[str, dict] = {}
         for mod in unique_modules:
             desc = self._classify_with_context(mod, input_dir)
-            cat, _ = get_module_category_and_description(mod)  # категория всё равно определяется по словарю
-            # Но если это внутренний модуль, мы можем выделить его в отдельную категорию
             if "Собственный модуль" in desc:
                 cat = "Внутренние модули проекта"
                 cat_desc = "Библиотеки и исполняемые файлы, находящиеся внутри исследуемой директории."
@@ -168,7 +226,6 @@ class ReportGenerator:
             })
 
         grouped_list: List[dict] = []
-        # Категорию "Внутренние модули проекта" показываем первой, если есть
         if "Внутренние модули проекта" in categories:
             info = categories.pop("Внутренние модули проекта")
             info["modules"] = sorted(info["modules"], key=lambda x: x["name"].lower())
