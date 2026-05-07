@@ -84,19 +84,26 @@ def _decompile_function(ea: int, hexrays_available: bool) -> str:
 
 
 def _strip_symbol_version(name: str) -> str:
-    """Удаляет суффикс версии символа (@@GLIBC_2.4, @OPENSSL_1_1_0 и т.п.)."""
     return re.sub(r'@+[\w.]+$', '', name)
 
 
 def _normalize_func_name(name: str) -> str:
-    """Demangle и чистка префиксов."""
+    """Улучшенная нормализация имени функции."""
+    # Demangle
     demangled = idc.demangle_name(name, idc.get_inf_attr(idc.INF_SHORT_DN))
     if demangled:
         name = demangled
+    # Удаление стандартных префиксов
     for prefix in ('sub_', 'j_', 'def_', 'nullsub_'):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
+    # Удаление суффикса _0, _1 и т.п. (артефакты), если длина имени > 5
+    name = re.sub(r'(_\d+)$', '', name) if len(name) > 5 else name
+    # Замена множественных подчёркиваний на одно
+    name = re.sub(r'_{2,}', '_', name)
+    # Удаление начальных/конечных пробелов (нехарактерно, но безопасно)
+    name = name.strip()
     return name
 
 
@@ -127,20 +134,13 @@ def _parse_elf_dependencies(filepath: str) -> List[str]:
 
 
 # ------------------------------------------------------------
-# Разрешение импортов через DT_VERNEED
+# Разрешение импортов через VERNEED
 # ------------------------------------------------------------
 def _resolve_import_libraries(filepath: str) -> Dict[str, str]:
-    """
-    Читает DT_VERNEED и строит словарь:
-        {имя_символа: имя_библиотеки}
-    Использует pyelftools.
-    """
     try:
         from elftools.elf.elffile import ELFFile
-        from elftools.elf.dynamic import DynamicSection
         from elftools.elf.sections import SymbolTableSection
     except ImportError:
-        print("[IDAPython] pyelftools не установлен – пропуск разрешения импортов.")
         return {}
 
     resolver = {}
@@ -148,7 +148,6 @@ def _resolve_import_libraries(filepath: str) -> Dict[str, str]:
         with open(filepath, 'rb') as f:
             elffile = ELFFile(f)
 
-            # Ищем динамические секции
             dynsym = elffile.get_section_by_name('.dynsym')
             if not dynsym:
                 for sec in elffile.iter_sections():
@@ -158,24 +157,20 @@ def _resolve_import_libraries(filepath: str) -> Dict[str, str]:
             if not dynsym:
                 return {}
 
-            # Ищем verneed (может быть несколько)
-            verneed_sections = []
-            for sec in elffile.iter_sections():
-                if sec.header.get('sh_type') == 'SHT_GNU_verneed':
-                    verneed_sections.append(sec)
-
+            # Ищем все секции типа SHT_GNU_verneed
+            verneed_sections = [sec for sec in elffile.iter_sections()
+                               if sec.header.get('sh_type') == 'SHT_GNU_verneed']
             if not verneed_sections:
-                # Нет версионных данных – используем только Internal
                 return {}
 
-            # Извлекаем символы и индексы версий
+            # Читаем versym
             sym_version_indices = {}
-            for ver_section in elffile.iter_sections():
-                if ver_section.header.get('sh_type') == 'SHT_GNU_versym':
-                    for i, entry in enumerate(ver_section.iter_symbols()):
+            for ver_sec in elffile.iter_sections():
+                if ver_sec.header.get('sh_type') == 'SHT_GNU_versym':
+                    for i, entry in enumerate(ver_sec.iter_symbols()):
                         sym_version_indices[i] = entry['vs_val']
 
-            # Строим отображение индекс версии -> имя библиотеки
+            # Строим отображение индекс версии -> библиотека
             version_index_to_lib = {}
             for verneed in verneed_sections:
                 for file_entry in verneed.iter_versions():
@@ -183,19 +178,17 @@ def _resolve_import_libraries(filepath: str) -> Dict[str, str]:
                     for ver in file_entry.get_versions():
                         version_index_to_lib[ver['ndx']] = lib_name
 
-            # Сопоставляем символы с библиотеками
+            # Сопоставляем символы
             for i, sym in enumerate(dynsym.iter_symbols()):
                 if sym.entry['st_shndx'] == 'SHN_UNDEF' and sym.name:
                     vs_val = sym_version_indices.get(i)
-                    if vs_val is not None and vs_val > 1:  # 0=local, 1=global undefined
+                    if vs_val and vs_val > 1:
                         lib = version_index_to_lib.get(vs_val)
                         if lib:
                             resolver[sym.name] = lib
-
-            return resolver
     except Exception as e:
         print(f"[IDAPython] Ошибка при разборе VERNEED: {e}")
-        return {}
+    return resolver
 
 
 # ------------------------------------------------------------
@@ -273,7 +266,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         hexrays_available = False
 
     # ----------------------------------------------------------------
-    # Экспорты (собираем адреса)
+    # Экспорты
     # ----------------------------------------------------------------
     exports: List[Dict[str, Any]] = []
     for i in range(idc.get_entry_qty()):
@@ -374,13 +367,10 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             pass
 
     # ----------------------------------------------------------------
-    # Разрешение импортов ELF через VERNEED + Internal
+    # Разрешение импортов ELF
     # ----------------------------------------------------------------
     if is_elf:
-        # VERNEED – прямое указание библиотеки для каждого символа
         verneed_map = _resolve_import_libraries(idc.get_input_file_path())
-
-        # Internal – через export_map
         input_dir = _get_argv_param("inputdir")
         if not input_dir:
             input_dir = os.path.dirname(idc.get_input_file_path())
@@ -390,20 +380,16 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             sym = imp["name"]
             resolved = set()
 
-            # Проверяем Internal
             if sym in export_map:
-                resolved.add(f"Internal/{export_map[sym]}")
-
-            # Проверяем VERNEED (точная привязка через версии)
+                resolved.add(export_map[sym])          # только имя файла
             if sym in verneed_map:
-                resolved.add(verneed_map[sym])
+                resolved.add(verneed_map[sym])         # точное имя библиотеки из DT_NEEDED
 
             if resolved:
                 imp["resolved_libs"] = list(resolved)
-                imp["module_display"] = "/".join(sorted(resolved))
+                # module_display будет собран в генераторе, здесь не трогаем
             else:
                 imp["resolved_libs"] = []
-                imp["module_display"] = imp["module"] if imp["module"] != "unknown" else "ELF"
     else:
         data["needed_libs"] = []
         data["elf_sections"] = []

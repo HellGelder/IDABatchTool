@@ -72,13 +72,11 @@ class ReportGenerator:
         return classify_module(module_name)
 
     def _category_label_for_module(self, module_name: str, input_dir: Optional[Path]) -> str:
-        """Возвращает краткий английский маркер категории для библиотеки."""
         desc = self._classify_with_context(module_name, input_dir)
         if "Собственный модуль" in desc:
-            cat_ru = "Внутренние модули проекта"
-        else:
-            cat_ru, _ = get_module_category_and_description(module_name)
-        return self.CATEGORY_LABELS.get(cat_ru, cat_ru)
+            return "Internal"
+        cat_ru, _ = get_module_category_and_description(module_name)
+        return self.CATEGORY_LABELS.get(cat_ru, "Unknown")
 
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None,
                            reports_dir: Optional[Path] = None,
@@ -91,7 +89,7 @@ class ReportGenerator:
 
         is_elf: bool = data.get("is_elf", False)
 
-        # --- Старый блок known/unknown (оставлен для совместимости) ---
+        # --- Блок known/unknown (не используется в новом шаблоне, оставлен для совместимости) ---
         if is_elf:
             needed_libs = data.get("needed_libs", [])
             known = []
@@ -134,27 +132,23 @@ class ReportGenerator:
             data["unknown_modules"] = sorted(unknown)
             if "elf_sections" not in data:
                 data["elf_sections"] = sorted(elf)
-        # --------------------------------------------------------------
 
-        # --- Новый блок module_deps ---
+        # --- Построение module_deps ---
         module_deps: List[Dict[str, Any]] = []
         if is_elf:
             module_counts: Dict[str, int] = {}
             for imp in data.get("imports", []):
-                mod = imp.get("module")
-                if not mod or mod == "unknown" or mod.startswith("."):
-                    continue
-                module_counts[mod] = module_counts.get(mod, 0) + 1
-            for lib in data.get("needed_libs", []):
-                if lib not in module_counts:
-                    module_counts[lib] = 0
+                resolved = imp.get("resolved_libs", [])
+                if resolved:
+                    for lib in resolved:
+                        module_counts[lib] = module_counts.get(lib, 0) + 1
+                else:
+                    mod = imp.get("module", "")
+                    if mod and not mod.startswith(".") and mod != "unknown":
+                        module_counts[mod] = module_counts.get(mod, 0) + 1
             for mod, count in module_counts.items():
                 desc = self._classify_with_context(mod, input_dir)
-                if "Собственный модуль" in desc:
-                    cat_ru = "Внутренние модули проекта"
-                else:
-                    cat_ru, _ = get_module_category_and_description(mod)
-                cat_label = self.CATEGORY_LABELS.get(cat_ru, cat_ru)
+                cat_label = self._category_label_for_module(mod, input_dir)
                 color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
                     "name": mod,
@@ -169,14 +163,12 @@ class ReportGenerator:
                 mod = imp.get("module")
                 if not mod or mod.lower() == "unknown":
                     continue
+                if mod.startswith("."):
+                    continue
                 module_counts[mod] = module_counts.get(mod, 0) + 1
             for mod, count in module_counts.items():
                 desc = self._classify_with_context(mod, input_dir)
-                if "Собственный модуль" in desc:
-                    cat_ru = "Внутренние модули проекта"
-                else:
-                    cat_ru, _ = get_module_category_and_description(mod)
-                cat_label = self.CATEGORY_LABELS.get(cat_ru, cat_ru)
+                cat_label = self._category_label_for_module(mod, input_dir)
                 color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
                     "name": mod,
@@ -185,27 +177,32 @@ class ReportGenerator:
                     "description": desc,
                     "color": color,
                 })
-        data["module_deps"] = sorted(module_deps, key=lambda x: (x["category"], x["name"]))
-        # ----------------------------------------------------------
 
-        # --- Обработка импортов: для ELF формируем module_display с Internal/libname ---
+        data["module_deps"] = sorted(module_deps, key=lambda x: (x["category"], x["name"]))
+
+        # --- Обработка module_display для импортов ---
         if is_elf:
             for imp in data.get("imports", []):
                 resolved = imp.get("resolved_libs", [])
                 if resolved:
                     parts = []
                     for lib in resolved:
-                        parts.append(f"Internal/{lib}")
+                        if _is_internal_module(lib, input_dir):
+                            parts.append(f"Internal/{lib}")
+                        else:
+                            parts.append(lib)
                     imp["module_display"] = "/".join(parts)
                 else:
-                    # Если ничего не разрешено, оставляем исходную метку (ELF Section или просто имя)
-                    imp["module_display"] = imp.get("module_display", "ELF")
+                    mod = imp.get("module", "")
+                    if mod.startswith("."):
+                        imp["module_display"] = "ELF Section"
+                    elif mod == "unknown":
+                        imp["module_display"] = "ELF"
+                    else:
+                        imp["module_display"] = mod
         else:
-            # Для PE просто сохраняем оригинальное имя модуля
             for imp in data.get("imports", []):
                 imp["module_display"] = imp.get("module", imp.get("module_display", ""))
-
-        # ---------------------------------------------------------------
 
         if "elf_sections" not in data:
             data["elf_sections"] = []
