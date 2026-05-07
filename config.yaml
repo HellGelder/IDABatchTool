@@ -4,4 +4,4 @@ ida:
   idat64: C:/Program Files/IDA Professional 9.0/idat.exe
 log_level: INFO
 max_ida: 6
-theme: light
+theme: dark
