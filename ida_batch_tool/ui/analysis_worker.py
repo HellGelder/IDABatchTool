@@ -34,6 +34,7 @@ class AnalysisWorker(QThread):
     def run(self):
         analyzer = IDAAnalyzer(idat_path=self.idat_path, max_workers=self.max_workers)
         analyzer.set_progress_callback(self._on_progress)
+        analyzer.set_file_done_callback(self._on_file_done)   # новое
 
         root_logger = logging.getLogger()
         old_handlers = root_logger.handlers[:]
@@ -70,10 +71,6 @@ class AnalysisWorker(QThread):
 
         succeeded = sum(1 for v in results.values() if v)
         total = len(results)
-
-        for f, success in results.items():
-            self.file_completed.emit(f.name, success)
-
         self.analysis_finished.emit(succeeded, total)
 
     def _on_progress(self, filename: str, current: int, total: int):
@@ -82,6 +79,11 @@ class AnalysisWorker(QThread):
             if filename not in self._started_files:
                 self._started_files.add(filename)
                 self.file_started.emit(filename)
+
+    def _on_file_done(self, filename: str, success: bool):
+        """Вызывается сразу после завершения одного файла."""
+        if not self._cancel:
+            self.file_completed.emit(filename, success)
 
     def cancel(self):
         self._cancel = True

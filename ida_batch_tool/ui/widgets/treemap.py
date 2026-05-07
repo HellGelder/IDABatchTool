@@ -1,4 +1,4 @@
-"""Виджет circle‑packing для отображения статуса файлов (аналог treemap)."""
+"""Виджет Treemap для отображения статуса файлов (circle packing)."""
 from __future__ import annotations
 
 import math
@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 import circlify
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QRectF, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPen, QFont
 
 from ida_batch_tool.ui.constants import AnalysisStatus
 
@@ -18,7 +18,6 @@ class TreemapWidget(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.file_items: List[Dict[str, Any]] = []
-        # Список кругов: каждый словарь с ключами 'x', 'y', 'r' (в пикселях)
         self._circles: List[Dict[str, float]] = []
         self.hovered_index: int = -1
         self._data_pending: bool = False
@@ -53,23 +52,15 @@ class TreemapWidget(QWidget):
             self.update()
 
     def _compute_layout(self) -> None:
-        """Вычисляет позиции кругов с помощью circlify."""
         if not self.file_items:
             self._circles = []
             return
-
-        # Размеры файлов (не меньше 1, чтобы избежать нулевых радиусов)
         sizes = [max(item['size'], 1) for item in self.file_items]
         w, h = self.width(), self.height()
         if w <= 0 or h <= 0:
             self._circles = []
             return
-
-        # Вписываем круги в прямоугольник с центром в (0.5, 0.5) и радиусом 0.5
-        # circlify ожидает список положительных чисел
         circles = circlify.circlify(sizes, target_enclosure=circlify.Circle(x=0.5, y=0.5, r=0.5))
-
-        # Масштабируем координаты в пиксели
         scale_x = w
         scale_y = h
         self._circles = []
@@ -77,7 +68,7 @@ class TreemapWidget(QWidget):
             self._circles.append({
                 'x': c.x * scale_x,
                 'y': c.y * scale_y,
-                'r': c.r * min(scale_x, scale_y),  # сохраняем круглое соотношение
+                'r': c.r * min(scale_x, scale_y),
             })
 
     def paintEvent(self, event) -> None:
@@ -87,7 +78,6 @@ class TreemapWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, "Нет данных для отображения")
             return
 
-        # Определяем максимальный радиус для масштабирования шрифта
         max_r = max(c['r'] for c in self._circles) if self._circles else 1
         font = QFont("Segoe UI", 7)
 
@@ -96,23 +86,18 @@ class TreemapWidget(QWidget):
                 break
             item = self.file_items[i]
             color = self._color_for_status(AnalysisStatus(item.get('status', 'not_analyzed')))
-
             center = QPointF(circle['x'], circle['y'])
             radius = circle['r']
-
-            # Рисуем круг
             painter.setBrush(color)
             painter.setPen(QPen(Qt.black, 1))
             painter.drawEllipse(center, radius, radius)
 
-            # Подпись: номер файла (можно заменить на имя, если радиус достаточен)
             painter.setFont(font)
             painter.setPen(Qt.black)
-            text = str(i + 1)  # порядковый номер
+            text = str(i + 1)
             text_rect = QRectF(center.x() - radius, center.y() - radius, 2 * radius, 2 * radius)
             painter.drawText(text_rect, Qt.AlignCenter, text)
 
-        # Подсветка при наведении
         if 0 <= self.hovered_index < len(self._circles) and self.hovered_index < len(self.file_items):
             circle = self._circles[self.hovered_index]
             painter.setPen(QPen(Qt.white, 2))
@@ -122,10 +107,10 @@ class TreemapWidget(QWidget):
     @staticmethod
     def _color_for_status(status: AnalysisStatus) -> QColor:
         colors = {
-            AnalysisStatus.NOT_ANALYZED: QColor(192, 192, 192),
-            AnalysisStatus.IN_PROGRESS: QColor(255, 255, 0),
-            AnalysisStatus.SUCCESS: QColor(0, 200, 0),
-            AnalysisStatus.ERROR: QColor(255, 0, 0)
+            AnalysisStatus.NOT_ANALYZED: QColor(192, 192, 192),   # серый
+            AnalysisStatus.IN_PROGRESS: QColor(255, 255, 0),     # жёлтый
+            AnalysisStatus.SUCCESS: QColor(0, 122, 255),         # синий (#007aff)
+            AnalysisStatus.ERROR: QColor(255, 0, 0),             # красный
         }
         return colors.get(status, QColor(128, 128, 128))
 

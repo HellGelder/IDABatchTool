@@ -35,9 +35,13 @@ class IDAAnalyzer:
         self.idat: str = idat_path or get_ida_executable()
         self.max_workers: int = max_workers or get_max_ida()
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
+        self._file_done_callback: Optional[Callable[[str, bool], None]] = None
 
     def set_progress_callback(self, callback: Callable[[str, int, int], None]) -> None:
         self._progress_callback = callback
+
+    def set_file_done_callback(self, callback: Callable[[str, bool], None]) -> None:
+        self._file_done_callback = callback
 
     # ------------------------------------------------------------------
     # Анализ файлов (создание .i64)
@@ -90,8 +94,12 @@ class IDAAnalyzer:
                     logger.error(f"Error during analysis of {f}: {e}")
                     results[f] = False
                 completed += 1
+                # Уведомляем о прогрессе
                 if self._progress_callback:
                     self._progress_callback(f.name, completed, total)
+                # Уведомляем о завершении конкретного файла
+                if self._file_done_callback:
+                    self._file_done_callback(f.name, results[f])
 
         if cleanup_temp or temp_cleanup:
             logger.info("Starting delayed cleanup of temporary files...")
@@ -128,7 +136,6 @@ class IDAAnalyzer:
         out_dir = output_dir or idb_path.parent
         log_path = out_dir / (idb_path.stem + "_script.log")
 
-        # Формируем команду скрипта с аргументами
         if script_args:
             args_str = " ".join(f"{k}={v}" for k, v in script_args.items())
             script_cmd = f'"{script_path}" {args_str}'
@@ -163,6 +170,8 @@ class IDAAnalyzer:
                 completed += 1
                 if self._progress_callback:
                     self._progress_callback(f.name, completed, total)
+                if self._file_done_callback:
+                    self._file_done_callback(f.name, results[f])
 
         return results
 
