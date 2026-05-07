@@ -65,12 +65,29 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _create_help_button(tooltip_text: str) -> QPushButton:
-        btn = QPushButton()
-        btn.setIcon(btn.style().standardIcon(QStyle.SP_MessageBoxQuestion))
-        btn.setFixedSize(20, 20)
+        btn = QPushButton("i")
+        btn.setFixedSize(22, 22)
         btn.setFlat(True)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setToolTip("Нажмите для пояснения")
+        btn.setStyleSheet("""
+            QPushButton {
+                border-radius: 11px;
+                background-color: #007aff;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                font-family: "Segoe UI", "Arial", sans-serif;
+                text-align: center;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #005bb5;
+            }
+            QPushButton:pressed {
+                background-color: #00408b;
+            }
+        """)
         btn.clicked.connect(
             lambda checked, b=btn, t=tooltip_text: QWhatsThis.showText(
                 b.mapToGlobal(QPoint(0, b.height())), t
@@ -190,7 +207,6 @@ class MainWindow(QMainWindow):
         self.inputdir_edit.setText(get_default_inputdir())
         self.browse_dir_btn: QPushButton = QPushButton("Обзор...")
         dir_row.addWidget(self.inputdir_edit, 1)
-        dir_row.addWidget(self._create_help_button("Папка, в которой находятся исполняемые файлы для анализа."))
         dir_row.addWidget(self.browse_dir_btn)
         source_layout.addLayout(dir_row)
         layout.addWidget(source_group)
@@ -609,11 +625,14 @@ class MainWindow(QMainWindow):
 
     def _on_html_finished(self, generated_count: int, report_links: list,
                           global_modules_set: set, global_elf_set: set,
-                          ida_info: dict, ida_reports: Path, input_dir: Path):
-        # Статистика для итогового отчёта
-        total_files = len(self._cached_files) if hasattr(self, '_cached_files') else len(report_links)
-        total_size_bytes = sum(f.stat().st_size for f in self._cached_files if f.exists())
-        error_count = 0
+                          ida_info: dict, ida_reports: Path, input_dir: Path,
+                          total_files: int, total_size_bytes: int):
+        """После генерации индивидуальных отчётов создаём сводный индекс."""
+        self.process_label.setText("Создание сводного отчёта...")
+        QApplication.processEvents()
+
+        error_count = 0  # можно было бы передавать, но пока 0
+        from datetime import datetime
         generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         generator = ReportGenerator()
@@ -645,7 +664,7 @@ class MainWindow(QMainWindow):
             self.cancel_btn.setEnabled(False)
             self.html_generate_btn.setEnabled(True)
             self.process_label.setText("Ошибка при создании индекса")
-
+    
     # ------------------------------------------------------------------
     # Прочие методы
     # ------------------------------------------------------------------

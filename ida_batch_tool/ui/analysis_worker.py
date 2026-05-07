@@ -94,6 +94,7 @@ class AnalysisWorker(QThread):
                     else:
                         self.error_occurred.emit(f"База данных не найдена для {f.name} (режим export_only).")
             if not idb_files:
+                # Даже если нет баз, считаем успех = 0
                 self.finished.emit(0, len(self.files))
                 return
             succeeded_files = idb_files   # теперь это список путей к базам
@@ -104,7 +105,7 @@ class AnalysisWorker(QThread):
             script_path = SCRIPTS_DIR / "export_data.py"
             if not script_path.exists():
                 self.error_occurred.emit(f"Скрипт экспорта не найден: {script_path}")
-                self.finished.emit(0, len(self.files) if not self.export_only else len(succeeded_files))
+                self.finished.emit(0, len(self.files) if not self.export_only else len(self.files))
                 return
 
             script_args = {}
@@ -121,7 +122,6 @@ class AnalysisWorker(QThread):
             export_results = analyzer.run_script_on_batch(
                 succeeded_files, script_path, script_args=script_args
             )
-            # Результаты экспорта можно проигнорировать, но ошибки вывести
             for idb, ok in export_results.items():
                 if not ok:
                     self.error_occurred.emit(f"Ошибка экспорта для {idb.name}")
@@ -131,9 +131,24 @@ class AnalysisWorker(QThread):
             else:
                 self.error_occurred.emit("Нет доступных баз данных для экспорта.")
 
-        total_processed = len(succeeded_files) if isinstance(succeeded_files, list) else 0
-        self.finished.emit(total_processed, len(self.files))
+        # Вычисляем количество успешно обработанных исходных файлов
+        if not self.export_only:
+            # succeeded_files – исходные файлы; проверяем наличие .i64 после экспорта
+            success_original_count = 0
+            for f in self.files:
+                out_dir = self.output_dir or f.parent
+                if (out_dir / (f.name + ".i64")).exists():
+                    success_original_count += 1
+        else:
+            # export_only: считаем исходные файлы, для которых был успешный экспорт (есть .i64)
+            success_original_count = 0
+            for f in self.files:
+                out_dir = self.output_dir or f.parent
+                if (out_dir / (f.name + ".i64")).exists():
+                    success_original_count += 1
 
+        self.finished.emit(success_original_count, len(self.files))
+    
     # --- Обработчики для фазы анализа ---
     def _on_analysis_progress(self, filename: str, current: int, total: int):
         if not self._cancel:
