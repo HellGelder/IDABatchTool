@@ -29,12 +29,13 @@ class AnalysisWorker(QThread):
         self.temp_cleanup = temp_cleanup
         self.verbose = verbose
         self._cancel = False
-        self._started_files: set = set()
+        # Больше не используем _started_files, так как старт явный
 
     def run(self):
         analyzer = IDAAnalyzer(idat_path=self.idat_path, max_workers=self.max_workers)
         analyzer.set_progress_callback(self._on_progress)
-        analyzer.set_file_done_callback(self._on_file_done)   # новое
+        analyzer.set_file_start_callback(self._on_file_start)
+        analyzer.set_file_done_callback(self._on_file_done)
 
         root_logger = logging.getLogger()
         old_handlers = root_logger.handlers[:]
@@ -76,12 +77,12 @@ class AnalysisWorker(QThread):
     def _on_progress(self, filename: str, current: int, total: int):
         if not self._cancel:
             self.progress_updated.emit(filename, current, total)
-            if filename not in self._started_files:
-                self._started_files.add(filename)
-                self.file_started.emit(filename)
+
+    def _on_file_start(self, filename: str):
+        if not self._cancel:
+            self.file_started.emit(filename)
 
     def _on_file_done(self, filename: str, success: bool):
-        """Вызывается сразу после завершения одного файла."""
         if not self._cancel:
             self.file_completed.emit(filename, success)
 

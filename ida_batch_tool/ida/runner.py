@@ -35,10 +35,14 @@ class IDAAnalyzer:
         self.idat: str = idat_path or get_ida_executable()
         self.max_workers: int = max_workers or get_max_ida()
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
+        self._file_start_callback: Optional[Callable[[str], None]] = None
         self._file_done_callback: Optional[Callable[[str, bool], None]] = None
 
     def set_progress_callback(self, callback: Callable[[str, int, int], None]) -> None:
         self._progress_callback = callback
+
+    def set_file_start_callback(self, callback: Callable[[str], None]) -> None:
+        self._file_start_callback = callback
 
     def set_file_done_callback(self, callback: Callable[[str, bool], None]) -> None:
         self._file_done_callback = callback
@@ -81,10 +85,14 @@ class IDAAnalyzer:
         completed = 0
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_file = {
-                executor.submit(self.analyze_file, f, output_dir, script_path): f
-                for f in files
-            }
+            future_to_file = {}
+            for f in files:
+                # Оповещаем о старте до отправки задачи
+                if self._file_start_callback:
+                    self._file_start_callback(f.name)
+                future = executor.submit(self.analyze_file, f, output_dir, script_path)
+                future_to_file[future] = f
+
             for future in as_completed(future_to_file):
                 f = future_to_file[future]
                 try:
@@ -94,7 +102,7 @@ class IDAAnalyzer:
                     logger.error(f"Error during analysis of {f}: {e}")
                     results[f] = False
                 completed += 1
-                # Уведомляем о прогрессе
+                # Уведомляем о прогрессе (может использоваться для прогресс-бара)
                 if self._progress_callback:
                     self._progress_callback(f.name, completed, total)
                 # Уведомляем о завершении конкретного файла
@@ -155,10 +163,13 @@ class IDAAnalyzer:
         completed = 0
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_file = {
-                executor.submit(self.run_script_on_idb, f, script_path, output_dir, script_args): f
-                for f in idb_files
-            }
+            future_to_file = {}
+            for f in idb_files:
+                if self._file_start_callback:
+                    self._file_start_callback(f.name)
+                future = executor.submit(self.run_script_on_idb, f, script_path, output_dir, script_args)
+                future_to_file[future] = f
+
             for future in as_completed(future_to_file):
                 f = future_to_file[future]
                 try:
