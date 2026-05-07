@@ -52,9 +52,8 @@ class IDAAnalyzer:
     # ------------------------------------------------------------------
     @staticmethod
     def _unique_idb_path(file_path: Path, output_dir: Path) -> Path:
-        arch = IDAAnalyzer._detect_arch(file_path)
-        ext = ".idb" if arch == 32 else ".i64"
-        return output_dir / (file_path.name + ext)
+        # IDA 7.0+ всегда создаёт .i64
+        return output_dir / (file_path.name + ".i64")
 
     def analyze_file(self, file_path: Path, output_dir: Optional[Path] = None,
                      script_path: Optional[Path] = None,
@@ -200,8 +199,9 @@ class IDAAnalyzer:
             ret = proc.returncode
 
             if idb_path is not None:
-                temp_id0 = str(target_path) + ID0_EXT
-                if os.path.isfile(temp_id0):
+                # IDA 7+ оставляет .id0 только при краше
+                temp_id0 = idb_path.with_suffix(".id0")
+                if temp_id0.exists():
                     logger.error(f"IDA crashed on {target_path.name}: .id0 still present")
                     if keep_log_on_error and log_path.exists():
                         self._log_tail(log_path)
@@ -245,29 +245,34 @@ class IDAAnalyzer:
 
     @staticmethod
     def _detect_arch(file_path: Path) -> int:
+        # Этот метод оставлен для информационных целей, расширение базы всегда .i64
         try:
             with open(file_path, 'rb') as f:
                 magic = f.read(4)
-            if magic[:4] == b'\x7fELF':
-                f.seek(0)
-                elf_class = f.read(5)[4]
-                return 32 if elf_class == 1 else 64
-            if magic[:2] == b'MZ':
-                f.seek(60)
-                s = f.read(4)
-                header_offset = struct.unpack("<L", s)[0]
-                f.seek(header_offset + 4)
-                s = f.read(2)
-                machine = struct.unpack("<H", s)[0]
-                if machine == 0x014c:
-                    return 32
-                elif machine == 0x8664:
-                    return 64
-                elif machine == 0xaa64:
-                    return 64
-                else:
-                    logging.warning(f"Unknown PE machine type 0x{machine:04x} for {file_path.name}, assuming 32-bit")
-                    return 32
+                if magic[:4] == b'\x7fELF':
+                    f.seek(0)
+                    elf_class = f.read(5)[4]
+                    return 32 if elf_class == 1 else 64
+                if magic[:2] == b'MZ':
+                    f.seek(60)
+                    s = f.read(4)
+                    if len(s) < 4:
+                        return 64
+                    header_offset = struct.unpack("<L", s)[0]
+                    f.seek(header_offset + 4)
+                    s = f.read(2)
+                    if len(s) < 2:
+                        return 64
+                    machine = struct.unpack("<H", s)[0]
+                    if machine == 0x014c:
+                        return 32
+                    elif machine == 0x8664:
+                        return 64
+                    elif machine == 0xaa64:
+                        return 64
+                    else:
+                        logging.warning(f"Unknown PE machine type 0x{machine:04x} for {file_path.name}, assuming 32-bit")
+                        return 32
         except Exception as e:
             logging.warning(f"Failed to detect architecture for {file_path.name}: {e}")
         return 64
