@@ -19,7 +19,7 @@ from PySide6.QtCore import Qt, QPoint
 from ida_batch_tool.config.loader import load_config, get_ida_executable, get_default_inputdir, get_max_ida
 from ida_batch_tool.discovery.finder import find_executables
 from ida_batch_tool.ida.runner import IDAAnalyzer
-from ida_batch_tool.reporting.generator import ReportGenerator
+from ida_batch_tool.reporting.generator import ReportGenerator, _build_internal_set
 from ida_batch_tool.ui.constants import AnalysisStatus, PLATFORM_EXTENSIONS, SCRIPTS_DIR
 from ida_batch_tool.ui.theme import apply_theme
 from ida_batch_tool.ui.settings_dialog import SettingsPage
@@ -579,7 +579,6 @@ class MainWindow(QMainWindow):
         script_args = {}
         if self.pseudocode_check.isChecked():
             script_args["pseudocode"] = "1"
-        script_args["inputdir"] = input_dir
 
         self.export_in_progress = True
         self.json_export_btn.setEnabled(False)
@@ -615,9 +614,13 @@ class MainWindow(QMainWindow):
         self.html_progress_label.setText("Готов к созданию HTML")
 
     # ------------------------------------------------------------------
-    # Генерация HTML-отчётов
+    # Генерация HTML-отчётов (изменённый метод)
     # ------------------------------------------------------------------
     def _start_html_generation(self):
+        # Защита от повторного запуска
+        if self.html_in_progress:
+            return
+
         results = self._export_results
         if not results:
             QMessageBox.warning(self, "Ошибка", "Нет данных экспорта. Сначала запустите IDAtoJSON.")
@@ -630,6 +633,10 @@ class MainWindow(QMainWindow):
         ida_reports = input_dir.parent / "IDAReports"
         ida_reports.mkdir(parents=True, exist_ok=True)
 
+        # Вычисляем internal_set один раз
+        from ida_batch_tool.reporting.generator import _build_internal_set
+        internal_set = _build_internal_set(input_dir)
+
         self.html_in_progress = True
         self.html_generate_btn.setEnabled(False)
         self.json_export_btn.setEnabled(False)
@@ -638,12 +645,52 @@ class MainWindow(QMainWindow):
         self.error_text.clear()
 
         self.html_worker = HtmlGeneratorWorker(
-            results, generator, ida_reports, input_dir, delete_json
+            results, generator, ida_reports, input_dir, delete_json, internal_set
         )
         self.html_worker.progress_updated.connect(self._on_html_generation_progress)
         self.html_worker.error_occurred.connect(self._on_error)
         self.html_worker.finished.connect(self._on_html_generation_finished)
         self.html_worker.start()
+
+    def _start_json_export(self):
+        input_dir = self.inputdir_edit.text().strip()
+        if not os.path.isdir(input_dir):
+            QMessageBox.warning(self, "Ошибка", "Папка не найдена.")
+            return
+
+        idb_files = list(Path(input_dir).rglob("*.i64")) + list(Path(input_dir).rglob("*.idb"))
+        if not idb_files:
+            QMessageBox.information(self, "Информация", "В папке нет файлов .i64 или .idb.")
+            return
+
+        script_path = SCRIPTS_DIR / "export_data.py"
+        if not script_path.exists():
+            QMessageBox.critical(self, "Ошибка", f"Скрипт не найден: {script_path}")
+            return
+
+        script_args = {}
+        if self.pseudocode_check.isChecked():
+            script_args["pseudocode"] = "1"
+        # Параметр inputdir больше не передаётся, так как скрипт его не использует
+
+        self.export_in_progress = True
+        self.json_export_btn.setEnabled(False)
+        self.html_generate_btn.setEnabled(False)
+        self.json_export_label.setText("Запуск экспорта JSON...")
+        self.json_progress_bar.setValue(0)
+        self.error_text.clear()
+
+        max_workers = self.max_ida_slider.value()
+        idat_path = get_ida_executable()
+
+        self.export_worker = ExportWorker(
+            idb_files, script_path, idat_path, max_workers,
+            script_args=script_args
+        )
+        self.export_worker.progress_updated.connect(self._on_json_export_progress)
+        self.export_worker.error_occurred.connect(self._on_error)
+        self.export_worker.finished.connect(self._on_json_export_finished)
+        self.export_worker.start()
 
     def _on_html_generation_progress(self, current: int, total: int, message: str = ""):
         self.html_progress_label.setText(f"Создание HTML: {current}/{total} {message}")

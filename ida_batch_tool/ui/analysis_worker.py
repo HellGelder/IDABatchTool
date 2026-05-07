@@ -11,11 +11,11 @@ from ida_batch_tool.ida.runner import IDAAnalyzer
 
 
 class AnalysisWorker(QThread):
-    progress_updated = Signal(str, int, int)      # текущий файл, номер, всего
-    file_started = Signal(str)                     # имя файла, анализ начат
-    file_completed = Signal(str, bool)            # имя файла, успех/ошибка
-    analysis_finished = Signal(int, int)           # успешно, всего
-    error_occurred = Signal(str)                   # сообщение только об ошибках
+    progress_updated = Signal(str, int, int)
+    file_started = Signal(str)
+    file_completed = Signal(str, bool)
+    analysis_finished = Signal(int, int)
+    error_occurred = Signal(str)
 
     def __init__(self, files: List[Path], idat_path: str, max_workers: int,
                  output_dir: Optional[Path] = None, cleanup: bool = True,
@@ -29,7 +29,6 @@ class AnalysisWorker(QThread):
         self.temp_cleanup = temp_cleanup
         self.verbose = verbose
         self._cancel = False
-        # Больше не используем _started_files, так как старт явный
 
     def run(self):
         analyzer = IDAAnalyzer(idat_path=self.idat_path, max_workers=self.max_workers)
@@ -38,25 +37,16 @@ class AnalysisWorker(QThread):
         analyzer.set_file_done_callback(self._on_file_done)
 
         root_logger = logging.getLogger()
-        old_handlers = root_logger.handlers[:]
-
-        class SignalHandler(logging.Handler):
-            def __init__(self, signal):
-                super().__init__()
-                self.signal = signal
-
-            def emit(self, record):
-                msg = self.format(record)
-                self.signal.emit(msg)
-
-        handler = SignalHandler(self.error_occurred)
-        handler.setLevel(logging.ERROR)
-        handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-        if self.verbose:
-            root_logger.setLevel(logging.DEBUG)
-        root_logger.addHandler(handler)
-
+        handler = None
         try:
+            handler = logging.Handler()
+            handler.emit = lambda record: self.error_occurred.emit(handler.format(record))
+            handler.setLevel(logging.ERROR)
+            handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+            if self.verbose:
+                root_logger.setLevel(logging.DEBUG)
+            root_logger.addHandler(handler)
+
             results = analyzer.analyze_batch(
                 self.files,
                 output_dir=self.output_dir,
@@ -67,8 +57,8 @@ class AnalysisWorker(QThread):
             self.error_occurred.emit(f"Критическая ошибка: {e}")
             results = {f: False for f in self.files}
         finally:
-            root_logger.removeHandler(handler)
-            root_logger.handlers = old_handlers
+            if handler:
+                root_logger.removeHandler(handler)
 
         succeeded = sum(1 for v in results.values() if v)
         total = len(results)

@@ -63,6 +63,10 @@ class IDAAnalyzer:
             logger.error(f"File not found: {file_path}")
             return False
 
+        # Уведомляем о начале анализа именно в этом потоке
+        if self._file_start_callback:
+            self._file_start_callback(file_path.name)
+
         out_dir = output_dir or file_path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -87,9 +91,6 @@ class IDAAnalyzer:
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_file = {}
             for f in files:
-                # Оповещаем о старте до отправки задачи
-                if self._file_start_callback:
-                    self._file_start_callback(f.name)
                 future = executor.submit(self.analyze_file, f, output_dir, script_path)
                 future_to_file[future] = f
 
@@ -102,10 +103,8 @@ class IDAAnalyzer:
                     logger.error(f"Error during analysis of {f}: {e}")
                     results[f] = False
                 completed += 1
-                # Уведомляем о прогрессе (может использоваться для прогресс-бара)
                 if self._progress_callback:
                     self._progress_callback(f.name, completed, total)
-                # Уведомляем о завершении конкретного файла
                 if self._file_done_callback:
                     self._file_done_callback(f.name, results[f])
 
@@ -141,6 +140,10 @@ class IDAAnalyzer:
             logger.error(f"Script not found: {script_path}")
             return False
 
+        # Уведомляем о начале выполнения скрипта на этой базе
+        if self._file_start_callback:
+            self._file_start_callback(idb_path.name)
+
         out_dir = output_dir or idb_path.parent
         log_path = out_dir / (idb_path.stem + "_script.log")
 
@@ -165,8 +168,6 @@ class IDAAnalyzer:
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_file = {}
             for f in idb_files:
-                if self._file_start_callback:
-                    self._file_start_callback(f.name)
                 future = executor.submit(self.run_script_on_idb, f, script_path, output_dir, script_args)
                 future_to_file[future] = f
 
@@ -262,8 +263,13 @@ class IDAAnalyzer:
                     return 32
                 elif machine == 0x8664:
                     return 64
-        except Exception:
-            pass
+                elif machine == 0xaa64:
+                    return 64
+                else:
+                    logging.warning(f"Unknown PE machine type 0x{machine:04x} for {file_path.name}, assuming 32-bit")
+                    return 32
+        except Exception as e:
+            logging.warning(f"Failed to detect architecture for {file_path.name}: {e}")
         return 64
 
     @staticmethod

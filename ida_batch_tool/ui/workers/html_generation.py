@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set
 
 from PySide6.QtCore import QThread, Signal
 
@@ -16,13 +16,15 @@ class HtmlGeneratorWorker(QThread):
     error_occurred = Signal(str)
 
     def __init__(self, results: dict, generator: ReportGenerator,
-                 reports_dir: Path, input_dir: Path, delete_json: bool, parent=None):
+                 reports_dir: Path, input_dir: Path, delete_json: bool,
+                 internal_set: Optional[Set[str]] = None, parent=None):
         super().__init__(parent)
         self.results = results
         self.generator = generator
         self.reports_dir = reports_dir
         self.input_dir = input_dir
         self.delete_json = delete_json
+        self.internal_set = internal_set
 
     def run(self):
         report_links = []
@@ -47,9 +49,7 @@ class HtmlGeneratorWorker(QThread):
 
                 is_elf = data.get("is_elf", False)
 
-                # Сбор модулей и секций в зависимости от типа файла
                 if is_elf:
-                    # Для ELF: модули = needed_libs, секции = из импортов (начинаются с точки)
                     for needed in data.get("needed_libs", []):
                         global_modules_set.add(needed)
                     for imp in data.get("imports", []):
@@ -57,7 +57,6 @@ class HtmlGeneratorWorker(QThread):
                         if mod.startswith("."):
                             global_elf_set.add(mod)
                 else:
-                    # Для PE: модули из импортов, кроме секций
                     for imp in data.get("imports", []):
                         mod = imp.get("module")
                         if not mod or mod.lower() == "unknown":
@@ -78,9 +77,13 @@ class HtmlGeneratorWorker(QThread):
                 out_rel = rel.with_suffix(rel.suffix + ".html")
                 output_html = self.reports_dir / out_rel
                 output_html.parent.mkdir(parents=True, exist_ok=True)
-                self.generator.generate_from_json(json_path, output_html,
-                                                  reports_dir=self.reports_dir,
-                                                  input_dir=self.input_dir)
+
+                self.generator.generate_from_json(
+                    json_path, output_html,
+                    reports_dir=self.reports_dir,
+                    input_dir=self.input_dir,
+                    internal_set=self.internal_set
+                )
                 link = out_rel.as_posix()
                 display = rel.as_posix()
                 report_links.append({"filename": link, "display_name": display})
@@ -91,6 +94,5 @@ class HtmlGeneratorWorker(QThread):
                 self.error_occurred.emit(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
             self.progress_updated.emit(i + 1, total, "")
 
-        # Защита от None: передаём пустой словарь, если информация не собрана
         self.finished.emit(generated_count, report_links, global_modules_set,
                            global_elf_set, ida_info or {}, self.reports_dir, self.input_dir)

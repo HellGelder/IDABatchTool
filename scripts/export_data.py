@@ -1,15 +1,14 @@
 """
 IDAPython-скрипт для экспорта данных из IDA Pro в JSON.
 Запускается через idat.exe -A -Sexport_data.py <файл.i64>
-Совместим с IDA Pro 9.3.
 
-Параметры скрипта (передаются после имени скрипта в кавычках):
-    pseudocode=1          – генерировать псевдокод для экспортируемых функций
-    inputdir=<путь>       – корневая директория проекта для поиска internal-библиотек
+Параметры (передаются после имени скрипта в кавычках):
+    pseudocode=1 – генерировать псевдокод только для экспортных функций
 """
 import json
 import os
 import re
+import struct
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 
@@ -18,6 +17,13 @@ import idautils
 import idc
 import ida_nalt
 import ida_bytes
+
+# Для парсинга DT_NEEDED (только необходимые библиотеки, без привязки символов)
+try:
+    from elftools.elf.elffile import ELFFile
+except ImportError:
+    print("[IDAPython] pyelftools не установлен. Установите: pip install pyelftools")
+    idc.qexit(1)
 
 
 # ------------------------------------------------------------
@@ -53,20 +59,20 @@ def _pseudocode_enabled() -> bool:
     val = _get_argv_param("pseudocode")
     if val is not None:
         return val.lower() in ("1", "true", "yes")
-    return os.environ.get('IDA_PSEUDOCODE', '0') == '1'
+    return False
 
 
 def _try_init_hexrays() -> bool:
     try:
         import ida_hexrays
         if ida_hexrays.init_hexrays_plugin():
-            print("[IDAPython] Плагин Hex‑Rays успешно инициализирован.")
+            print("[IDAPython] Hex‑Rays инициализирован.")
             return True
         else:
-            print("[IDAPython] Не удалось инициализировать Hex‑Rays.")
+            print("[IDAPython] Hex‑Rays не инициализирован.")
             return False
     except ImportError:
-        print("[IDAPython] Модуль ida_hexrays не найден.")
+        print("[IDAPython] Hex‑Rays не найден.")
         return False
 
 
@@ -77,10 +83,8 @@ def _decompile_function(ea: int, hexrays_available: bool) -> str:
         import ida_hexrays
         cfunc = ida_hexrays.decompile(ea)
         return str(cfunc) if cfunc else "Декомпиляция не удалась."
-    except ida_hexrays.DecompilationFailure as e:
-        return f"Ошибка декомпиляции: {e}"
     except Exception as e:
-        return f"Неизвестная ошибка: {e}"
+        return f"Ошибка: {e}"
 
 
 def _strip_symbol_version(name: str) -> str:
@@ -88,146 +92,44 @@ def _strip_symbol_version(name: str) -> str:
 
 
 def _normalize_func_name(name: str) -> str:
-    """Улучшенная нормализация имени функции."""
-    # Demangle
     demangled = idc.demangle_name(name, idc.get_inf_attr(idc.INF_SHORT_DN))
     if demangled:
         name = demangled
-    # Удаление стандартных префиксов
     for prefix in ('sub_', 'j_', 'def_', 'nullsub_'):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
-    # Удаление суффикса _0, _1 и т.п. (артефакты), если длина имени > 5
     name = re.sub(r'(_\d+)$', '', name) if len(name) > 5 else name
-    # Замена множественных подчёркиваний на одно
     name = re.sub(r'_{2,}', '_', name)
-    # Удаление начальных/конечных пробелов (нехарактерно, но безопасно)
     name = name.strip()
     return name
 
 
 # ------------------------------------------------------------
-# Парсинг ELF‑зависимостей (DT_NEEDED)
+# Получение DT_NEEDED (список необходимых библиотек)
 # ------------------------------------------------------------
-def _parse_elf_dependencies(filepath: str) -> List[str]:
+def _get_needed_libraries(elf_path: str) -> List[str]:
+    """Возвращает список библиотек из DT_NEEDED ELF-файла."""
     try:
-        from elftools.elf.elffile import ELFFile
-        with open(filepath, 'rb') as f:
+        with open(elf_path, 'rb') as f:
             elffile = ELFFile(f)
-            dynamic = elffile.get_section_by_name('.dynamic')
+            dynamic = None
+            for segment in elffile.iter_segments():
+                if segment['p_type'] == 'PT_DYNAMIC':
+                    dynamic = segment
+                    break
             if not dynamic:
-                for sec in elffile.iter_sections():
-                    if sec.header['sh_type'] == 'SHT_DYNAMIC':
-                        dynamic = sec
-                        break
+                dynamic = elffile.get_section_by_name('.dynamic')
             if not dynamic:
-                print("[IDAPython] Секция .dynamic не найдена.")
                 return []
-            return [tag.needed for tag in dynamic.iter_tags() if tag.entry.d_tag == 'DT_NEEDED']
-    except ImportError:
-        print("[IDAPython] pyelftools не установлен.")
-        return []
+            needed = []
+            for tag in dynamic.iter_tags():
+                if tag.entry.d_tag == 'DT_NEEDED':
+                    needed.append(tag.needed)
+            return needed
     except Exception as e:
-        print(f"[IDAPython] Ошибка парсинга ELF: {e}")
+        print(f"[IDAPython] Ошибка получения DT_NEEDED: {e}")
         return []
-
-
-# ------------------------------------------------------------
-# Разрешение импортов через VERNEED
-# ------------------------------------------------------------
-def _resolve_import_libraries(filepath: str) -> Dict[str, str]:
-    try:
-        from elftools.elf.elffile import ELFFile
-        from elftools.elf.sections import SymbolTableSection
-    except ImportError:
-        return {}
-
-    resolver = {}
-    try:
-        with open(filepath, 'rb') as f:
-            elffile = ELFFile(f)
-
-            dynsym = elffile.get_section_by_name('.dynsym')
-            if not dynsym:
-                for sec in elffile.iter_sections():
-                    if isinstance(sec, SymbolTableSection):
-                        dynsym = sec
-                        break
-            if not dynsym:
-                return {}
-
-            # Ищем все секции типа SHT_GNU_verneed
-            verneed_sections = [sec for sec in elffile.iter_sections()
-                               if sec.header.get('sh_type') == 'SHT_GNU_verneed']
-            if not verneed_sections:
-                return {}
-
-            # Читаем versym
-            sym_version_indices = {}
-            for ver_sec in elffile.iter_sections():
-                if ver_sec.header.get('sh_type') == 'SHT_GNU_versym':
-                    for i, entry in enumerate(ver_sec.iter_symbols()):
-                        sym_version_indices[i] = entry['vs_val']
-
-            # Строим отображение индекс версии -> библиотека
-            version_index_to_lib = {}
-            for verneed in verneed_sections:
-                for file_entry in verneed.iter_versions():
-                    lib_name = file_entry.name
-                    for ver in file_entry.get_versions():
-                        version_index_to_lib[ver['ndx']] = lib_name
-
-            # Сопоставляем символы
-            for i, sym in enumerate(dynsym.iter_symbols()):
-                if sym.entry['st_shndx'] == 'SHN_UNDEF' and sym.name:
-                    vs_val = sym_version_indices.get(i)
-                    if vs_val and vs_val > 1:
-                        lib = version_index_to_lib.get(vs_val)
-                        if lib:
-                            resolver[sym.name] = lib
-    except Exception as e:
-        print(f"[IDAPython] Ошибка при разборе VERNEED: {e}")
-    return resolver
-
-
-# ------------------------------------------------------------
-# Построение карты экспортов (внутренние библиотеки)
-# ------------------------------------------------------------
-def _build_export_map(search_dir: Optional[str]) -> Dict[str, str]:
-    if not search_dir:
-        return {}
-    root = Path(search_dir)
-    if not root.is_dir():
-        return {}
-    try:
-        from elftools.elf.elffile import ELFFile
-    except ImportError:
-        return {}
-
-    export_map: Dict[str, str] = {}
-    for elf_file in root.rglob('*'):
-        if not elf_file.is_file():
-            continue
-        try:
-            with open(elf_file, 'rb') as f:
-                if f.read(4) != b'\x7fELF':
-                    continue
-        except Exception:
-            continue
-        try:
-            with open(elf_file, 'rb') as f:
-                elffile = ELFFile(f)
-                dynsym = elffile.get_section_by_name('.dynsym')
-                if not dynsym:
-                    continue
-                lib_name = elf_file.name
-                for sym in dynsym.iter_symbols():
-                    if sym.entry['st_info']['bind'] == 'STB_GLOBAL' and sym.name:
-                        export_map[sym.name] = lib_name
-        except Exception:
-            pass
-    return export_map
 
 
 # ------------------------------------------------------------
@@ -238,32 +140,39 @@ def export_to_json(output_path: Optional[str] = None) -> None:
 
     if output_path is None:
         idb_path = idc.get_idb_path()
+        if not idb_path:
+            print("Не удалось получить путь к базе данных.")
+            idc.qexit(1)
         output_path = idb_path + ".export.json"
 
     is_elf = _is_elf_file()
     kernel_version = idaapi.get_kernel_version()
-    ida_info = {"kernel_version": kernel_version}
+    current_file_path = idc.get_input_file_path()
 
     data: Dict[str, Any] = {
-        "file_name": idc.get_input_file_path(),
+        "file_name": current_file_path,
         "is_elf": is_elf,
         "functions": [],
         "imports": [],
         "exports": [],
         "elf_sections": [],
         "needed_libs": [],
-        "ida_info": ida_info
+        "ida_info": {"kernel_version": kernel_version}
     }
 
-    if is_elf:
-        data["needed_libs"] = _parse_elf_dependencies(idc.get_input_file_path())
-
-    pseudocode_enabled = _pseudocode_enabled()
-    if pseudocode_enabled:
-        print("[IDAPython] Генерация псевдокода включена (только для экспортных функций).")
-        hexrays_available = _try_init_hexrays()
+    # --- Для ELF: получаем только список зависимых библиотек (без привязки символов) ---
+    if is_elf and current_file_path and os.path.exists(current_file_path):
+        data["needed_libs"] = _get_needed_libraries(current_file_path)
+        print(f"[IDAPython] Найдены библиотеки: {data['needed_libs']}")
     else:
-        hexrays_available = False
+        data["needed_libs"] = []
+
+    # --- Псевдокод ---
+    pseudocode_enabled = _pseudocode_enabled()
+    hexrays_available = False
+    if pseudocode_enabled:
+        print("[IDAPython] Генерация псевдокода для экспортных функций.")
+        hexrays_available = _try_init_hexrays()
 
     # ----------------------------------------------------------------
     # Экспорты
@@ -275,7 +184,8 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             addr = idc.get_entry(entry)
             name = idc.get_entry_name(addr)
             if name:
-                name = _strip_symbol_version(name) if is_elf else name
+                if is_elf:
+                    name = _strip_symbol_version(name)
                 name = _normalize_func_name(name)
                 exports.append({
                     "name": name,
@@ -287,7 +197,8 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         for ea in idautils.Functions():
             name = idc.get_func_name(ea)
             if name and not name.startswith(("sub_", "j_", "def_", "nullsub_")):
-                name = _strip_symbol_version(name) if is_elf else name
+                if is_elf:
+                    name = _strip_symbol_version(name)
                 name = _normalize_func_name(name)
                 exports.append({
                     "name": name,
@@ -299,7 +210,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
     export_eas: Set[int] = {int(exp["address"], 16) for exp in exports}
 
     # ----------------------------------------------------------------
-    # Функции
+    # Функции (дизассемблер + псевдокод для экспортов)
     # ----------------------------------------------------------------
     for ea in idautils.Functions():
         name = idc.get_func_name(ea)
@@ -336,63 +247,42 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         })
 
     # ----------------------------------------------------------------
-    # Импорты
+    # Импорты (только имена, без библиотек)
     # ----------------------------------------------------------------
     try:
         import_module_count = ida_nalt.get_import_module_qty()
     except AttributeError:
         import_module_count = 0
 
-    raw_imports: List[Dict[str, str]] = []
+    raw_imports: List[Dict[str, Any]] = []
     for mod_index in range(import_module_count):
-        try:
-            module_name = ida_nalt.get_import_module_name(mod_index)
-        except AttributeError:
-            module_name = "unknown"
-
         def callback(ea, name, ordinal):
             if name:
                 clean = _strip_symbol_version(name) if is_elf else name
                 demangled = _normalize_func_name(clean)
-                raw_imports.append({
-                    "name": demangled,
-                    "module": module_name,
-                    "address": f"0x{ea:X}"
-                })
+                if is_elf:
+                    # Для ELF сохраняем только имя и адрес, поле module не заполняем
+                    raw_imports.append({
+                        "name": demangled,
+                        "address": f"0x{ea:X}"
+                    })
+                else:
+                    # Для PE используем модуль из IDA
+                    try:
+                        mod_name = ida_nalt.get_import_module_name(mod_index)
+                    except AttributeError:
+                        mod_name = "unknown"
+                    raw_imports.append({
+                        "name": demangled,
+                        "module": mod_name,
+                        "address": f"0x{ea:X}"
+                    })
             return True
 
         try:
             ida_nalt.enum_import_names(mod_index, callback)
         except AttributeError:
             pass
-
-    # ----------------------------------------------------------------
-    # Разрешение импортов ELF
-    # ----------------------------------------------------------------
-    if is_elf:
-        verneed_map = _resolve_import_libraries(idc.get_input_file_path())
-        input_dir = _get_argv_param("inputdir")
-        if not input_dir:
-            input_dir = os.path.dirname(idc.get_input_file_path())
-        export_map = _build_export_map(input_dir)
-
-        for imp in raw_imports:
-            sym = imp["name"]
-            resolved = set()
-
-            if sym in export_map:
-                resolved.add(export_map[sym])          # только имя файла
-            if sym in verneed_map:
-                resolved.add(verneed_map[sym])         # точное имя библиотеки из DT_NEEDED
-
-            if resolved:
-                imp["resolved_libs"] = list(resolved)
-                # module_display будет собран в генераторе, здесь не трогаем
-            else:
-                imp["resolved_libs"] = []
-    else:
-        data["needed_libs"] = []
-        data["elf_sections"] = []
 
     data["imports"] = raw_imports
 
@@ -407,7 +297,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    print(f"[IDAPython] Данные экспортированы в {output_path}")
+    print(f"[IDAPython] Экспорт завершён: {output_path}")
     idc.qexit(0)
 
 
