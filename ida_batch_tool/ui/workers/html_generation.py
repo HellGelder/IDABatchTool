@@ -12,7 +12,8 @@ from ida_batch_tool.reporting.generator import ReportGenerator
 
 class HtmlGeneratorWorker(QThread):
     progress_updated = Signal(int, int, str)
-    finished = Signal(int, list, set, set, dict, Path, Path)
+    finished = Signal(int, list, set, set, dict, Path, Path, int, int)
+    # дополнительные параметры: total_files, total_size_bytes
     error_occurred = Signal(str)
 
     def __init__(self, json_files: Dict[Path, bool], generator: ReportGenerator,
@@ -33,6 +34,10 @@ class HtmlGeneratorWorker(QThread):
         ida_info: Optional[Dict[str, Any]] = None
         generated_count = 0
         total = len(self.json_files)
+
+        # Для статистики
+        total_files = 0
+        total_size_bytes = 0
 
         for i, (json_path, success) in enumerate(self.json_files.items()):
             if not success:
@@ -87,6 +92,12 @@ class HtmlGeneratorWorker(QThread):
                 display = rel.as_posix()
                 report_links.append({"filename": link, "display_name": display})
                 generated_count += 1
+
+                # Собираем статистику по исходным файлам
+                if source_full.exists():
+                    total_files += 1
+                    total_size_bytes += source_full.stat().st_size
+
                 if self.delete_json:
                     json_path.unlink(missing_ok=True)
             except Exception as e:
@@ -94,4 +105,5 @@ class HtmlGeneratorWorker(QThread):
             self.progress_updated.emit(i + 1, total, "")
 
         self.finished.emit(generated_count, report_links, global_modules_set,
-                           global_elf_set, ida_info or {}, self.reports_dir, self.input_dir)
+                           global_elf_set, ida_info or {}, self.reports_dir, self.input_dir,
+                           total_files, total_size_bytes)
