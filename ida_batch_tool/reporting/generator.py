@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -18,19 +19,16 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 _INTERNAL_EXTS = {'.dll', '.so', '.dylib', '.exe', '.sys', '.bin', '.elf', '.o', '.ko', '.dex'}
 
 
-def _is_internal_module(module_name: str, input_dir: Optional[Path]) -> bool:
-    if input_dir is None:
-        return False
-    name_lower = module_name.lower()
+def _build_internal_set(input_dir: Optional[Path]) -> Set[str]:
+    """Построить множество имён файлов, которые считаются внутренними модулями."""
+    if input_dir is None or not input_dir.is_dir():
+        return set()
+    internal = set()
     for f in input_dir.rglob('*'):
-        if f.is_file() and f.name.lower() == name_lower:
-            return True
-    stem = Path(module_name).stem.lower()
-    for ext in _INTERNAL_EXTS:
-        for f in input_dir.rglob(f'*{ext}'):
-            if f.stem.lower() == stem:
-                return True
-    return False
+        if f.is_file():
+            internal.add(f.name.lower())
+            internal.add(f.stem.lower())
+    return internal
 
 
 class ReportGenerator:
@@ -66,13 +64,20 @@ class ReportGenerator:
         self.report_template = self.env.get_template("report.html")
         self.index_template = self.env.get_template("index.html")
 
-    def _classify_with_context(self, module_name: str, input_dir: Optional[Path]) -> str:
-        if _is_internal_module(module_name, input_dir):
+    def _is_internal_module(self, module_name: str, internal_set: Optional[Set[str]]) -> bool:
+        if internal_set is None:
+            return False
+        name_lower = module_name.lower()
+        stem = Path(module_name).stem.lower()
+        return name_lower in internal_set or stem in internal_set
+
+    def _classify_with_context(self, module_name: str, internal_set: Optional[Set[str]]) -> str:
+        if self._is_internal_module(module_name, internal_set):
             return "Собственный модуль проекта (внутренняя библиотека)"
         return classify_module(module_name)
 
-    def _category_label_for_module(self, module_name: str, input_dir: Optional[Path]) -> str:
-        desc = self._classify_with_context(module_name, input_dir)
+    def _category_label_for_module(self, module_name: str, internal_set: Optional[Set[str]]) -> str:
+        desc = self._classify_with_context(module_name, internal_set)
         if "Собственный модуль" in desc:
             return "Internal"
         cat_ru, _ = get_module_category_and_description(module_name)
@@ -80,22 +85,26 @@ class ReportGenerator:
 
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None,
                            reports_dir: Optional[Path] = None,
-                           input_dir: Optional[Path] = None) -> Path:
+                           input_dir: Optional[Path] = None,
+                           internal_set: Optional[Set[str]] = None) -> Path:
         if not json_path.exists():
             raise FileNotFoundError(f"JSON-файл не найден: {json_path}")
 
         with open(json_path, "r", encoding="utf-8") as f:
             data: Dict[str, Any] = json.load(f)
 
+        if internal_set is None and input_dir is not None:
+            internal_set = _build_internal_set(input_dir)
+
         is_elf: bool = data.get("is_elf", False)
 
-        # --- Блок known/unknown (не используется в новом шаблоне, оставлен для совместимости) ---
+        # --- Блок known/unknown (для совместимости) ---
         if is_elf:
             needed_libs = data.get("needed_libs", [])
             known = []
             unknown = []
             for lib in needed_libs:
-                desc = self._classify_with_context(lib, input_dir)
+                desc = self._classify_with_context(lib, internal_set)
                 if "Собственный модуль" in desc:
                     known.append(lib)
                 elif "Неопознанный" in desc:
@@ -121,7 +130,7 @@ class ReportGenerator:
                 if mod.startswith("."):
                     elf.append(mod)
                     continue
-                desc = self._classify_with_context(mod, input_dir)
+                desc = self._classify_with_context(mod, internal_set)
                 if "Собственный модуль" in desc:
                     known.append(mod)
                 elif "Неопознанный" in desc:
@@ -133,22 +142,16 @@ class ReportGenerator:
             if "elf_sections" not in data:
                 data["elf_sections"] = sorted(elf)
 
-        # --- Построение module_deps ---
+        # --- Построение module_deps (детерминированно) ---
         module_deps: List[Dict[str, Any]] = []
         if is_elf:
+            # Используем ТОЛЬКО DT_NEEDED, никаких импортов и эвристик
             module_counts: Dict[str, int] = {}
-            for imp in data.get("imports", []):
-                resolved = imp.get("resolved_libs", [])
-                if resolved:
-                    for lib in resolved:
-                        module_counts[lib] = module_counts.get(lib, 0) + 1
-                else:
-                    mod = imp.get("module", "")
-                    if mod and not mod.startswith(".") and mod != "unknown":
-                        module_counts[mod] = module_counts.get(mod, 0) + 1
+            for lib in data.get("needed_libs", []):
+                module_counts[lib] = module_counts.get(lib, 0) + 1
             for mod, count in module_counts.items():
-                desc = self._classify_with_context(mod, input_dir)
-                cat_label = self._category_label_for_module(mod, input_dir)
+                desc = self._classify_with_context(mod, internal_set)
+                cat_label = self._category_label_for_module(mod, internal_set)
                 color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
                     "name": mod,
@@ -167,8 +170,8 @@ class ReportGenerator:
                     continue
                 module_counts[mod] = module_counts.get(mod, 0) + 1
             for mod, count in module_counts.items():
-                desc = self._classify_with_context(mod, input_dir)
-                cat_label = self._category_label_for_module(mod, input_dir)
+                desc = self._classify_with_context(mod, internal_set)
+                cat_label = self._category_label_for_module(mod, internal_set)
                 color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
                     "name": mod,
@@ -187,7 +190,7 @@ class ReportGenerator:
                 if resolved:
                     parts = []
                     for lib in resolved:
-                        if _is_internal_module(lib, input_dir):
+                        if self._is_internal_module(lib, internal_set):
                             parts.append(f"Internal/{lib}")
                         else:
                             parts.append(lib)
@@ -209,7 +212,6 @@ class ReportGenerator:
         if "exports" not in data:
             data["exports"] = []
 
-        # Сортировка функций: экспортные вперёд
         if "functions" in data and "exports" in data:
             export_names = {exp["name"] for exp in data["exports"]}
             data["functions"].sort(
@@ -241,13 +243,21 @@ class ReportGenerator:
     def generate_index(self, reports_dir: Path, input_dir: Path,
                        reports: List[dict], unique_modules: List[str],
                        ida_info: Optional[Dict[str, Any]] = None,
-                       elf_sections: Optional[List[str]] = None) -> Path:
+                       elf_sections: Optional[List[str]] = None,
+                       internal_set: Optional[Set[str]] = None,
+                       total_files: Optional[int] = None,
+                       total_size_bytes: Optional[int] = None,
+                       error_count: Optional[int] = None,
+                       generation_time: Optional[str] = None) -> Path:
         for report in reports:
             report["filename"] = quote(report["filename"])
 
+        if internal_set is None:
+            internal_set = _build_internal_set(input_dir)
+
         categories: Dict[str, dict] = {}
         for mod in unique_modules:
-            desc = self._classify_with_context(mod, input_dir)
+            desc = self._classify_with_context(mod, internal_set)
             if "Собственный модуль" in desc:
                 cat = "Внутренние модули проекта"
                 cat_desc = "Библиотеки и исполняемые файлы, находящиеся внутри исследуемой директории."
@@ -284,6 +294,20 @@ class ReportGenerator:
                 "count": len(info["modules"]),
             })
 
+        # Статистика
+        if total_files is None:
+            total_files = len(reports)
+        if total_size_bytes is None:
+            total_size_bytes = 0
+            for r in reports:
+                p = Path(r.get('display_name', ''))
+                if p.exists():
+                    total_size_bytes += p.stat().st_size
+        if error_count is None:
+            error_count = 0
+        if generation_time is None:
+            generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         data = {
             "input_dir": str(input_dir),
             "total_modules": len(reports),
@@ -291,6 +315,10 @@ class ReportGenerator:
             "reports": reports,
             "ida_info": ida_info,
             "elf_sections": sorted(elf_sections or []),
+            "total_files": total_files,
+            "total_size_bytes": total_size_bytes,
+            "error_count": error_count,
+            "generation_time": generation_time,
         }
 
         index_path = reports_dir / "index.html"

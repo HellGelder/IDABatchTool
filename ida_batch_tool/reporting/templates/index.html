@@ -78,6 +78,25 @@
     </div>
 
     <div class="card">
+        <h2>Статистика анализа</h2>
+        <ul>
+            <li><strong>Обнаружено файлов:</strong> {{ total_files }}</li>
+            <li><strong>Общий размер файлов:</strong> 
+                {% if total_size_bytes < 1024 %}
+                    {{ total_size_bytes }} байт
+                {% elif total_size_bytes < 1024*1024 %}
+                    {{ (total_size_bytes / 1024) | round(1) }} КБ
+                {% else %}
+                    {{ (total_size_bytes / (1024*1024)) | round(1) }} МБ
+                {% endif %}
+            </li>
+            <li><strong>Успешно обработано отчётов:</strong> {{ total_modules }}</li>
+            <li><strong>Ошибок:</strong> {{ error_count }}</li>
+            <li><strong>Дата и время генерации:</strong> {{ generation_time }}</li>
+        </ul>
+    </div>
+
+    <div class="card">
         <h2>Классификация импортированных модулей</h2>
         {% if grouped_categories %}
             {% for category in grouped_categories %}
