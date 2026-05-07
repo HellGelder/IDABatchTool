@@ -1,29 +1,27 @@
-"""Виджет circle‑packing для отображения статуса файлов (аналог treemap)."""
+"""Виджет Treemap для отображения статуса файлов (горизонтальная полоса)."""
 from __future__ import annotations
 
-import math
 from typing import List, Dict, Any, Optional
 
-import circlify
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QRectF, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QPainter, QColor, QPen, QFont
 
 from ida_batch_tool.ui.constants import AnalysisStatus
 
 
 class TreemapWidget(QWidget):
-    """Виджет, показывающий файлы в виде упакованных кругов."""
+    """Виджет, показывающий файлы в виде горизонтальной полосы, разделённой на прямоугольники пропорционально размеру."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.file_items: List[Dict[str, Any]] = []
-        # Список кругов: каждый словарь с ключами 'x', 'y', 'r' (в пикселях)
-        self._circles: List[Dict[str, float]] = []
+        self._rects: List[Dict[str, float]] = []
         self.hovered_index: int = -1
         self._data_pending: bool = False
         self.setMouseTracking(True)
-        self.setMinimumHeight(120)
+        self.setMinimumHeight(40)
+        self.setMaximumHeight(60)
 
     def set_data(self, items: List[Dict[str, Any]]) -> None:
         self.file_items = items
@@ -53,90 +51,93 @@ class TreemapWidget(QWidget):
             self.update()
 
     def _compute_layout(self) -> None:
-        """Вычисляет позиции кругов с помощью circlify."""
         if not self.file_items:
-            self._circles = []
+            self._rects = []
             return
 
-        # Размеры файлов (не меньше 1, чтобы избежать нулевых радиусов)
-        sizes = [max(item['size'], 1) for item in self.file_items]
-        w, h = self.width(), self.height()
+        w = self.width()
+        h = self.height()
         if w <= 0 or h <= 0:
-            self._circles = []
+            self._rects = []
             return
 
-        # Вписываем круги в прямоугольник с центром в (0.5, 0.5) и радиусом 0.5
-        # circlify ожидает список положительных чисел
-        circles = circlify.circlify(sizes, target_enclosure=circlify.Circle(x=0.5, y=0.5, r=0.5))
+        total_size = sum(max(item['size'], 1) for item in self.file_items)
+        if total_size == 0:
+            return
 
-        # Масштабируем координаты в пиксели
-        scale_x = w
-        scale_y = h
-        self._circles = []
-        for c in circles:
-            self._circles.append({
-                'x': c.x * scale_x,
-                'y': c.y * scale_y,
-                'r': c.r * min(scale_x, scale_y),  # сохраняем круглое соотношение
+        min_width = 25
+        x = 0.0
+        self._rects = []
+        for i, item in enumerate(self.file_items):
+            width = (max(item['size'], 1) / total_size) * w
+            if width < min_width and i < len(self.file_items) - 1:
+                width = min_width
+            if x + width > w:
+                width = w - x
+            if width <= 0:
+                continue
+            self._rects.append({
+                'x': x,
+                'y': 0,
+                'width': width,
+                'height': h,
+                'index': i,
             })
+            x += width
+            if x >= w - 1:
+                break
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        if not self.file_items or not self._circles:
+        if not self.file_items or not self._rects:
             painter.drawText(self.rect(), Qt.AlignCenter, "Нет данных для отображения")
             return
 
-        # Определяем максимальный радиус для масштабирования шрифта
-        max_r = max(c['r'] for c in self._circles) if self._circles else 1
-        font = QFont("Segoe UI", 7)
+        font = QFont("Segoe UI", 8)
+        painter.setFont(font)
 
-        for i, circle in enumerate(self._circles):
+        for rect_info in self._rects:
+            i = rect_info['index']
             if i >= len(self.file_items):
-                break
+                continue
             item = self.file_items[i]
             color = self._color_for_status(AnalysisStatus(item.get('status', 'not_analyzed')))
-
-            center = QPointF(circle['x'], circle['y'])
-            radius = circle['r']
-
-            # Рисуем круг
-            painter.setBrush(color)
+            rect = QRectF(rect_info['x'], rect_info['y'], rect_info['width'], rect_info['height'])
+            painter.fillRect(rect, color)
             painter.setPen(QPen(Qt.black, 1))
-            painter.drawEllipse(center, radius, radius)
+            painter.drawRect(rect)
 
-            # Подпись: номер файла (можно заменить на имя, если радиус достаточен)
-            painter.setFont(font)
-            painter.setPen(Qt.black)
-            text = str(i + 1)  # порядковый номер
-            text_rect = QRectF(center.x() - radius, center.y() - radius, 2 * radius, 2 * radius)
-            painter.drawText(text_rect, Qt.AlignCenter, text)
+            if rect.width() >= 20 and rect.height() >= 20:
+                text = str(i + 1)
+                painter.setPen(QPen(Qt.black, 1))
+                painter.drawText(rect, Qt.AlignCenter, text)
 
-        # Подсветка при наведении
-        if 0 <= self.hovered_index < len(self._circles) and self.hovered_index < len(self.file_items):
-            circle = self._circles[self.hovered_index]
-            painter.setPen(QPen(Qt.white, 2))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(QPointF(circle['x'], circle['y']), circle['r'], circle['r'])
+        if 0 <= self.hovered_index < len(self.file_items):
+            for rect_info in self._rects:
+                if rect_info['index'] == self.hovered_index:
+                    rect = QRectF(rect_info['x'], rect_info['y'], rect_info['width'], rect_info['height'])
+                    painter.setPen(QPen(Qt.white, 2))
+                    painter.drawRect(rect)
+                    break
 
     @staticmethod
     def _color_for_status(status: AnalysisStatus) -> QColor:
         colors = {
             AnalysisStatus.NOT_ANALYZED: QColor(192, 192, 192),
             AnalysisStatus.IN_PROGRESS: QColor(255, 255, 0),
-            AnalysisStatus.SUCCESS: QColor(0, 200, 0),
-            AnalysisStatus.ERROR: QColor(255, 0, 0)
+            AnalysisStatus.SUCCESS: QColor(0, 122, 255),
+            AnalysisStatus.ERROR: QColor(255, 0, 0),
         }
         return colors.get(status, QColor(128, 128, 128))
 
     def mouseMoveEvent(self, event) -> None:
         pos = event.position()
         new_index = -1
-        for i, circle in enumerate(self._circles):
-            dx = pos.x() - circle['x']
-            dy = pos.y() - circle['y']
-            if (dx * dx + dy * dy) <= circle['r'] * circle['r']:
-                new_index = i
+        for rect_info in self._rects:
+            rect = QRectF(rect_info['x'], rect_info['y'], rect_info['width'], rect_info['height'])
+            if rect.contains(pos):
+                new_index = rect_info['index']
                 break
         if new_index != self.hovered_index:
             self.hovered_index = new_index

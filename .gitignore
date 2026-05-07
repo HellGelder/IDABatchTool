@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 config.yaml
 ida_batch_tool/__pycache__/__init__.cpython-314.pyc
 ida_batch_tool/classifier/__pycache__/__init__.cpython-314.pyc
@@ -29,3 +30,10 @@ ida_batch_tool/ui/workers/__pycache__/export.cpython-314.pyc
 ida_batch_tool/ui/workers/__pycache__/html_generation.cpython-314.pyc
 ida_batch_tool/ui/workers/__pycache__/index.cpython-314.pyc
 config.yaml
+=======
+ida_batch_tool/ui/__pycache__/analysis_worker.cpython-314.pyc
+ida_batch_tool/ui/__pycache__/constants.cpython-314.pyc
+ida_batch_tool/ui/__pycache__/main_window.cpython-314.pyc
+ida_batch_tool/ui/widgets/__pycache__/treemap.cpython-314.pyc
+ida_batch_tool/ui/workers/__pycache__/export.cpython-314.pyc
+>>>>>>> 6a6da57173e3ab300b47ae25284305805544554c
