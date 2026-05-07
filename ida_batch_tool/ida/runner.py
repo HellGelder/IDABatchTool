@@ -245,7 +245,6 @@ class IDAAnalyzer:
 
     @staticmethod
     def _detect_arch(file_path: Path) -> int:
-        # Этот метод оставлен для информационных целей, расширение базы всегда .i64
         try:
             with open(file_path, 'rb') as f:
                 magic = f.read(4)

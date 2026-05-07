@@ -1,11 +1,10 @@
 """Виджет Treemap для отображения статуса файлов (горизонтальная полоса)."""
 from __future__ import annotations
 
-import math
 from typing import List, Dict, Any, Optional
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QRectF, QPointF
+from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
 
 from ida_batch_tool.ui.constants import AnalysisStatus
@@ -62,21 +61,17 @@ class TreemapWidget(QWidget):
             self._rects = []
             return
 
-        # Суммируем все размеры, чтобы вычислить долю каждого файла
         total_size = sum(max(item['size'], 1) for item in self.file_items)
         if total_size == 0:
             return
 
-        # Минимальная ширина в пикселях для отображения номера (например, "99" – ~15px)
         min_width = 25
         x = 0.0
         self._rects = []
         for i, item in enumerate(self.file_items):
-            # Пропорциональная ширина
             width = (max(item['size'], 1) / total_size) * w
             if width < min_width and i < len(self.file_items) - 1:
                 width = min_width
-            # Ограничиваем, чтобы не вылезти за правый край
             if x + width > w:
                 width = w - x
             if width <= 0:
@@ -113,15 +108,12 @@ class TreemapWidget(QWidget):
             painter.setPen(QPen(Qt.black, 1))
             painter.drawRect(rect)
 
-            # Рисуем номер файла, если достаточно места
             if rect.width() >= 20 and rect.height() >= 20:
                 text = str(i + 1)
                 painter.setPen(QPen(Qt.black, 1))
                 painter.drawText(rect, Qt.AlignCenter, text)
 
-        # Подсветка при наведении
         if 0 <= self.hovered_index < len(self.file_items):
-            # Находим rect для этого индекса
             for rect_info in self._rects:
                 if rect_info['index'] == self.hovered_index:
                     rect = QRectF(rect_info['x'], rect_info['y'], rect_info['width'], rect_info['height'])
@@ -132,10 +124,10 @@ class TreemapWidget(QWidget):
     @staticmethod
     def _color_for_status(status: AnalysisStatus) -> QColor:
         colors = {
-            AnalysisStatus.NOT_ANALYZED: QColor(192, 192, 192),   # серый
-            AnalysisStatus.IN_PROGRESS: QColor(255, 255, 0),     # жёлтый
-            AnalysisStatus.SUCCESS: QColor(0, 122, 255),         # синий (#007aff)
-            AnalysisStatus.ERROR: QColor(255, 0, 0),             # красный
+            AnalysisStatus.NOT_ANALYZED: QColor(192, 192, 192),
+            AnalysisStatus.IN_PROGRESS: QColor(255, 255, 0),
+            AnalysisStatus.SUCCESS: QColor(0, 122, 255),
+            AnalysisStatus.ERROR: QColor(255, 0, 0),
         }
         return colors.get(status, QColor(128, 128, 128))
 

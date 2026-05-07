@@ -1,4 +1,4 @@
-"""Главное окно приложения с новым дизайном и объединённым процессом анализа/экспорта."""
+"""Главное окно приложения с новым дизайном и объединённым процессом анализа/экспорта/генерации HTML."""
 from __future__ import annotations
 
 import os
@@ -6,13 +6,14 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from collections import Counter
+from datetime import datetime
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy,
     QPushButton, QLabel, QProgressBar, QTextEdit, QGroupBox,
     QFileDialog, QStackedWidget, QMessageBox, QApplication, QLineEdit,
     QSlider, QRadioButton, QButtonGroup, QGridLayout,
-    QCheckBox, QFrame, QWhatsThis, QStyle, QSplitter
+    QCheckBox, QFrame, QWhatsThis, QStyle
 )
 from PySide6.QtCore import Qt, QPoint
 
@@ -131,7 +132,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Боковая панель (без изменений)
+        # Боковая панель
         sidebar = QWidget(objectName="sidebar")
         sidebar.setFixedWidth(self.SIDEBAR_WIDTH)
         sidebar_layout = QVBoxLayout(sidebar)
@@ -202,7 +203,7 @@ class MainWindow(QMainWindow):
         treemap_layout.addWidget(self.treemap)
         layout.addWidget(treemap_group)
 
-        # 3. Параметры сканирования (разделены на две колонки)
+        # 3. Параметры сканирования
         scan_group = QGroupBox("Параметры сканирования")
         scan_layout = QHBoxLayout(scan_group)
         # Левая колонка
@@ -233,6 +234,7 @@ class MainWindow(QMainWindow):
                 row += 1
         platform_layout.addLayout(grid)
         left_column.addWidget(platform_group)
+
         # Потоки IDA
         self.max_ida_slider_container, self.max_ida_slider, self.max_ida_label = \
             self._create_slider_with_label(min(get_max_ida(), self.MAX_IDA_THREADS))
@@ -250,9 +252,17 @@ class MainWindow(QMainWindow):
         right_column = QVBoxLayout()
         flags_group = QGroupBox("Флаги анализа")
         flags_layout = QVBoxLayout(flags_group)
+
         self.cleanup_check = QCheckBox("Удалять .asm и .log после успешного анализа")
+        self.cleanup_check.setChecked(True)
+        flags_layout.addWidget(self.cleanup_check)
+
         self.temp_cleanup_check = QCheckBox("Удалять временные файлы IDA (.id0, .id1, .nam, .til)")
+        self.temp_cleanup_check.setChecked(True)
+        flags_layout.addWidget(self.temp_cleanup_check)
+
         self.pseudocode_check = QCheckBox("Включить псевдокод в JSON-экспорт")
+        self.pseudocode_check.setChecked(True)
         self.pseudocode_check.setToolTip(
             "Если включено, псевдокод будет сгенерирован только для экспортируемых функций."
         )
@@ -265,14 +275,15 @@ class MainWindow(QMainWindow):
         pseudocode_row.addWidget(self.pseudocode_check)
         pseudocode_row.addWidget(pseudocode_help)
         pseudocode_row.addStretch()
-        flags_layout.addWidget(self.cleanup_check)
-        flags_layout.addWidget(self.temp_cleanup_check)
         flags_layout.addLayout(pseudocode_row)
+
         self.delete_json_check = QCheckBox("Удалить JSON-файлы после создания отчётов")
+        self.delete_json_check.setChecked(True)
         self.delete_json_check.setToolTip(
             "После успешной генерации HTML-отчётов и сводного индекса, JSON-файлы экспорта будут удалены."
         )
         flags_layout.addWidget(self.delete_json_check)
+
         right_column.addWidget(flags_group)
         right_column.addStretch()
 
@@ -280,39 +291,37 @@ class MainWindow(QMainWindow):
         scan_layout.addLayout(right_column, 1)
         layout.addWidget(scan_group)
 
-        # 4. Процесс анализа (объединённый)
+        # 4. Процесс анализа (объединённый блок с кнопкой генерации HTML)
         process_group = QGroupBox("Процесс анализа")
         process_layout = QVBoxLayout(process_group)
         self.process_label = QLabel("Готов к запуску")
         self.process_progress = QProgressBar()
         self.process_progress.setRange(0, 100)
+
+        # Горизонтальный слой для кнопок (запуск, отмена, генерация HTML)
         buttons_row = QHBoxLayout()
         self.start_btn = QPushButton("Запустить анализ")
         self.start_btn.setFixedHeight(40)
+        self.start_btn.setMinimumWidth(150)
         self.cancel_btn = QPushButton("Отмена")
+        self.cancel_btn.setFixedHeight(40)
+        self.cancel_btn.setMinimumWidth(150)
         self.cancel_btn.setEnabled(False)
+        self.html_generate_btn = QPushButton("Сгенерировать HTML-отчёты")
+        self.html_generate_btn.setFixedHeight(40)
+        self.html_generate_btn.setMinimumWidth(200)
+        self.html_generate_btn.setEnabled(False)
         buttons_row.addWidget(self.start_btn)
         buttons_row.addWidget(self.cancel_btn)
         buttons_row.addStretch()
+        buttons_row.addWidget(self.html_generate_btn)
+
         process_layout.addWidget(self.process_label)
         process_layout.addWidget(self.process_progress)
         process_layout.addLayout(buttons_row)
         layout.addWidget(process_group)
 
-        # 5. HTML-отчёт
-        html_group = QGroupBox("HTML-отчёт")
-        html_layout = QVBoxLayout(html_group)
-        html_progress_row = QHBoxLayout()
-        self.html_progress_bar = QProgressBar()
-        self.html_progress_bar.setRange(0, 100)
-        self.html_generate_btn = QPushButton("Сгенерировать HTML-отчёты")
-        self.html_generate_btn.setEnabled(False)
-        html_progress_row.addWidget(self.html_progress_bar, 1)
-        html_progress_row.addWidget(self.html_generate_btn)
-        html_layout.addLayout(html_progress_row)
-        layout.addWidget(html_group)
-
-        # 6. Окно ошибок
+        # 5. Окно ошибок (растянуто на всю ширину)
         self.error_text = QTextEdit()
         self.error_text.setReadOnly(True)
         self.error_text.setMaximumHeight(150)
@@ -359,11 +368,9 @@ class MainWindow(QMainWindow):
         return PLATFORM_EXTENSIONS["All platforms"]["exts"]
 
     def _detect_platform_by_files(self, files: List[Path]) -> str:
-        """Определяет платформу по расширениям файлов."""
         if not files:
             return "All platforms"
         ext_counts = Counter(f.suffix.lower() for f in files)
-        # Веса для платформ
         platform_scores = {
             "Windows": sum(ext_counts.get(ext, 0) for ext in ['.exe', '.dll', '.sys', '.ocx', '.cpl', '.scr', '.drv', '.efi']),
             "Linux / Android": sum(ext_counts.get(ext, 0) for ext in ['.elf', '.so', '.o', '.ko', '.dex']),
@@ -379,7 +386,6 @@ class MainWindow(QMainWindow):
             if key == platform_key:
                 radio.setChecked(True)
                 return
-        # Если не нашли, ставим All platforms
         for radio, key in self.radio_to_platform.items():
             if key == "All platforms":
                 radio.setChecked(True)
@@ -389,8 +395,6 @@ class MainWindow(QMainWindow):
         input_dir = self.inputdir_edit.text().strip()
         if not input_dir or not os.path.isdir(input_dir):
             self._cached_files = []
-            self.files_found_label = QLabel("")  # но мы убрали этот лейбл, надо создать или убрать
-            # У нас нет такого лейбла в новом интерфейсе, поэтому просто очистим treemap
             self.treemap.set_data([])
             self.html_generate_btn.setEnabled(False)
             return
@@ -403,11 +407,9 @@ class MainWindow(QMainWindow):
             self.html_generate_btn.setEnabled(False)
             return
 
-        # Автоопределение платформы и установка радиокнопки
         detected_platform = self._detect_platform_by_files(files)
         self._set_platform_radio(detected_platform)
-        # Если после смены платформы расширения изменились, нужно пересканировать?
-        # Но мы уже использовали текущие расширения. Лучше перечитать с новыми расширениями, если они изменились.
+
         new_extensions = self._selected_extensions()
         if set(new_extensions) != set(extensions):
             files = find_executables(input_dir, extensions=new_extensions)
@@ -417,23 +419,25 @@ class MainWindow(QMainWindow):
         for f in files:
             size = f.stat().st_size if f.exists() else 0
             status = AnalysisStatus.NOT_ANALYZED
-            idb_path = self._get_expected_idb_path(f)
-            if idb_path.exists():
+            i64_path = self._get_expected_i64_path(f)
+            if i64_path.exists():
                 status = AnalysisStatus.SUCCESS
             items.append({'name': f.name, 'size': size, 'status': status.value, 'path': str(f)})
         self.treemap.set_data(items)
 
-        any_idb = any(self._get_expected_idb_path(f).exists() for f in files)
-        self.html_generate_btn.setEnabled(any_idb)
+        any_i64 = any(self._get_expected_i64_path(f).exists() for f in files)
+        self.html_generate_btn.setEnabled(any_i64)
 
-    def _get_expected_idb_path(self, file_path: Path) -> Path:
-        # IDA 9.x всегда использует .i64
+    def _get_expected_i64_path(self, file_path: Path) -> Path:
         return file_path.parent / (file_path.name + ".i64")
 
     # ------------------------------------------------------------------
-    # Запуск объединённого анализа
+    # Запуск объединённого анализа/экспорта
     # ------------------------------------------------------------------
     def _start_analysis(self):
+        if self.analysis_in_progress:
+            return
+
         idat_path = get_ida_executable()
         if not shutil.which(idat_path):
             QMessageBox.warning(
@@ -454,23 +458,29 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Информация", "Не найдено подходящих файлов.")
             return
 
-        # Спросить, если все базы уже есть, но теперь анализ и экспорт всё равно запустятся
-        # Можно пропустить, но оставим как есть
-        all_idbs = all(self._get_expected_idb_path(f).exists() for f in files)
-        if all_idbs:
-            reply = QMessageBox.question(
-                self, "Базы данных уже существуют",
-                "Для всех файлов уже есть .i64 базы. Запустить экспорт в JSON?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-            )
-            if reply == QMessageBox.No:
+        all_i64 = all(self._get_expected_i64_path(f).exists() for f in files)
+        export_only = False
+        if all_i64:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Базы данных уже существуют")
+            msg.setText("Для всех файлов уже есть .i64 базы.\nВыберите действие:")
+            btn_export_only = msg.addButton("Сформировать только JSON", QMessageBox.AcceptRole)
+            btn_overwrite = msg.addButton("Перезаписать результаты", QMessageBox.DestructiveRole)
+            btn_cancel = msg.addButton("Отмена", QMessageBox.RejectRole)
+            msg.setDefaultButton(btn_export_only)
+            msg.exec()
+
+            clicked = msg.clickedButton()
+            if clicked == btn_cancel:
                 return
+            elif clicked == btn_export_only:
+                export_only = True
 
         self.analysis_in_progress = True
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.html_generate_btn.setEnabled(False)
-        self.process_label.setText("Фаза: анализ файлов...")
+        self.process_label.setText("Фаза: анализ файлов..." if not export_only else "Фаза: экспорт в JSON...")
         self.process_progress.setValue(0)
         self.error_text.clear()
 
@@ -480,13 +490,12 @@ class MainWindow(QMainWindow):
             cleanup=self.cleanup_check.isChecked(),
             temp_cleanup=self.temp_cleanup_check.isChecked(),
             pseudocode=self.pseudocode_check.isChecked(),
-            delete_json=self.delete_json_check.isChecked()
+            delete_json=self.delete_json_check.isChecked(),
+            export_only=export_only
         )
-        # Сигналы для фазы анализа
         self.worker.analysis_progress.connect(self._on_analysis_progress)
         self.worker.analysis_file_started.connect(self._on_analysis_file_started)
         self.worker.analysis_file_completed.connect(self._on_analysis_file_completed)
-        # Сигналы для фазы экспорта
         self.worker.export_progress.connect(self._on_export_progress)
         self.worker.export_file_started.connect(self._on_export_file_started)
         self.worker.export_file_completed.connect(self._on_export_file_completed)
@@ -522,7 +531,6 @@ class MainWindow(QMainWindow):
         self.process_progress.setValue(int(100 * current / total))
 
     def _on_export_file_started(self, filename: str):
-        # В treemap обновляем статус? Экспорт не меняет статус файла.
         pass
 
     def _on_export_file_completed(self, filename: str, success: bool):
@@ -536,10 +544,8 @@ class MainWindow(QMainWindow):
         self.analysis_in_progress = False
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        self.process_label.setText(f"Завершено. Проанализировано: {succeeded}/{total}")
+        self.process_label.setText(f"Завершено. Обработано: {succeeded}/{total}")
         self.process_progress.setValue(100)
-        # Активируем кнопку HTML-отчёта, если есть хотя бы один успешный экспорт
-        # Для этого нужно знать, были ли успешные экспорты. Пока просто активируем, если есть .json файлы
         input_dir = self.inputdir_edit.text().strip()
         if input_dir:
             any_json = any(Path(input_dir).rglob("*.export.json"))
@@ -556,7 +562,7 @@ class MainWindow(QMainWindow):
             self.cancel_btn.setEnabled(False)
 
     # ------------------------------------------------------------------
-    # Генерация HTML-отчётов
+    # Генерация HTML-отчётов (обновляет основной прогрессбар)
     # ------------------------------------------------------------------
     def _start_html_generation(self):
         if self.html_in_progress:
@@ -567,7 +573,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Папка не найдена.")
             return
 
-        # Собираем все JSON-файлы экспорта
         json_files = list(input_dir.rglob("*.export.json"))
         if not json_files:
             QMessageBox.warning(self, "Ошибка", "Нет JSON-файлов экспорта. Сначала выполните анализ.")
@@ -579,31 +584,67 @@ class MainWindow(QMainWindow):
         internal_set = _build_internal_set(input_dir)
 
         self.html_in_progress = True
+        self.start_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(False)
         self.html_generate_btn.setEnabled(False)
-        self.html_progress_bar.setValue(0)
+        self.process_progress.setValue(0)
+        self.process_label.setText("Генерация HTML-отчётов...")
         self.error_text.clear()
 
         self.html_worker = HtmlGeneratorWorker(
-            {json_path: True for json_path in json_files},  # фиктивный results
+            {json_path: True for json_path in json_files},
             generator, ida_reports, input_dir,
             delete_json=self.delete_json_check.isChecked(),
             internal_set=internal_set
         )
+        # Используем прогресс из воркера для обновления основного прогрессбара
         self.html_worker.progress_updated.connect(self._on_html_progress)
         self.html_worker.error_occurred.connect(self._on_error)
         self.html_worker.finished.connect(self._on_html_finished)
         self.html_worker.start()
 
     def _on_html_progress(self, current: int, total: int, message: str):
-        self.html_progress_bar.setValue(int(100 * current / total))
+        self.process_label.setText(f"Генерация HTML: {current}/{total} {message}")
+        self.process_progress.setValue(int(100 * current / total))
 
     def _on_html_finished(self, generated_count: int, report_links: list,
                           global_modules_set: set, global_elf_set: set,
                           ida_info: dict, ida_reports: Path, input_dir: Path):
-        self.html_in_progress = False
-        self.html_generate_btn.setEnabled(True)
-        self.html_progress_bar.setValue(100)
-        QMessageBox.information(self, "Готово", f"Отчёты сохранены в {ida_reports}")
+        # Статистика для итогового отчёта
+        total_files = len(self._cached_files) if hasattr(self, '_cached_files') else len(report_links)
+        total_size_bytes = sum(f.stat().st_size for f in self._cached_files if f.exists())
+        error_count = 0
+        generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        generator = ReportGenerator()
+        try:
+            sorted_modules = sorted(global_modules_set)
+            sorted_elf = sorted(global_elf_set)
+            internal_set = getattr(self.html_worker, 'internal_set', None)
+            index_path = generator.generate_index(
+                ida_reports, input_dir,
+                report_links, sorted_modules,
+                ida_info, sorted_elf,
+                internal_set=internal_set,
+                total_files=total_files,
+                total_size_bytes=total_size_bytes,
+                error_count=error_count,
+                generation_time=generation_time
+            )
+            self.html_in_progress = False
+            self.start_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(False)
+            self.html_generate_btn.setEnabled(True)
+            self.process_progress.setValue(100)
+            self.process_label.setText("Готово")
+            QMessageBox.information(self, "Готово", f"Отчёты сохранены в {ida_reports}\nИндекс: {index_path}")
+        except Exception as e:
+            self.error_text.append(f"Ошибка создания индексного отчёта: {e}")
+            self.html_in_progress = False
+            self.start_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(False)
+            self.html_generate_btn.setEnabled(True)
+            self.process_label.setText("Ошибка при создании индекса")
 
     # ------------------------------------------------------------------
     # Прочие методы

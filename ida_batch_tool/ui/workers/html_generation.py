@@ -15,11 +15,11 @@ class HtmlGeneratorWorker(QThread):
     finished = Signal(int, list, set, set, dict, Path, Path)
     error_occurred = Signal(str)
 
-    def __init__(self, results: dict, generator: ReportGenerator,
+    def __init__(self, json_files: Dict[Path, bool], generator: ReportGenerator,
                  reports_dir: Path, input_dir: Path, delete_json: bool,
                  internal_set: Optional[Set[str]] = None, parent=None):
         super().__init__(parent)
-        self.results = results
+        self.json_files = json_files
         self.generator = generator
         self.reports_dir = reports_dir
         self.input_dir = input_dir
@@ -32,12 +32,11 @@ class HtmlGeneratorWorker(QThread):
         global_elf_set = set()
         ida_info: Optional[Dict[str, Any]] = None
         generated_count = 0
-        total = len(self.results)
+        total = len(self.json_files)
 
-        for i, (idb_path, success) in enumerate(self.results.items()):
+        for i, (json_path, success) in enumerate(self.json_files.items()):
             if not success:
                 continue
-            json_path = Path(str(idb_path) + ".export.json")
             if not json_path.exists():
                 self.error_occurred.emit(f"JSON не найден: {json_path}")
                 continue
@@ -91,7 +90,7 @@ class HtmlGeneratorWorker(QThread):
                 if self.delete_json:
                     json_path.unlink(missing_ok=True)
             except Exception as e:
-                self.error_occurred.emit(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
+                self.error_occurred.emit(f"Ошибка генерации отчёта для {json_path.name}: {e}")
             self.progress_updated.emit(i + 1, total, "")
 
         self.finished.emit(generated_count, report_links, global_modules_set,

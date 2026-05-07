@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -243,7 +244,11 @@ class ReportGenerator:
                        reports: List[dict], unique_modules: List[str],
                        ida_info: Optional[Dict[str, Any]] = None,
                        elf_sections: Optional[List[str]] = None,
-                       internal_set: Optional[Set[str]] = None) -> Path:
+                       internal_set: Optional[Set[str]] = None,
+                       total_files: Optional[int] = None,
+                       total_size_bytes: Optional[int] = None,
+                       error_count: Optional[int] = None,
+                       generation_time: Optional[str] = None) -> Path:
         for report in reports:
             report["filename"] = quote(report["filename"])
 
@@ -289,6 +294,20 @@ class ReportGenerator:
                 "count": len(info["modules"]),
             })
 
+        # Статистика
+        if total_files is None:
+            total_files = len(reports)
+        if total_size_bytes is None:
+            total_size_bytes = 0
+            for r in reports:
+                p = Path(r.get('display_name', ''))
+                if p.exists():
+                    total_size_bytes += p.stat().st_size
+        if error_count is None:
+            error_count = 0
+        if generation_time is None:
+            generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         data = {
             "input_dir": str(input_dir),
             "total_modules": len(reports),
@@ -296,6 +315,10 @@ class ReportGenerator:
             "reports": reports,
             "ida_info": ida_info,
             "elf_sections": sorted(elf_sections or []),
+            "total_files": total_files,
+            "total_size_bytes": total_size_bytes,
+            "error_count": error_count,
+            "generation_time": generation_time,
         }
 
         index_path = reports_dir / "index.html"
