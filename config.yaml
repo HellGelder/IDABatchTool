@@ -2,12 +2,5 @@ default_inputdir: .
 ida:
   idat32: C:/Program Files/IDA Professional 9.0/idat.exe
   idat64: C:/Program Files/IDA Professional 9.0/idat.exe
-<<<<<<< HEAD
-<<<<<<< HEAD
-log_level: INFO
-=======
->>>>>>> 0543c92 (Доработка для анализа MacOS/iOS)
-=======
->>>>>>> 0543c921df87a78f4f8d8338093325ac3942c5ed
 max_ida: 6
 theme: light
