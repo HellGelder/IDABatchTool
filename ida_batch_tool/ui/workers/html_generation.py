@@ -13,7 +13,6 @@ from ida_batch_tool.reporting.generator import ReportGenerator
 class HtmlGeneratorWorker(QThread):
     progress_updated = Signal(int, int, str)
     finished = Signal(int, list, set, set, dict, Path, Path, int, int)
-    # дополнительные параметры: total_files, total_size_bytes
     error_occurred = Signal(str)
 
     def __init__(self, json_files: Dict[Path, bool], generator: ReportGenerator,
@@ -35,7 +34,6 @@ class HtmlGeneratorWorker(QThread):
         generated_count = 0
         total = len(self.json_files)
 
-        # Для статистики
         total_files = 0
         total_size_bytes = 0
 
@@ -51,16 +49,18 @@ class HtmlGeneratorWorker(QThread):
                 if ida_info is None and "ida_info" in data:
                     ida_info = data["ida_info"]
 
-                is_elf = data.get("is_elf", False)
-
-                if is_elf:
+                # Сбор модулей для сводного отчёта
+                if data.get("is_elf") or data.get("is_macho"):
+                    # ELF и Mach-O – используем needed_libs
                     for needed in data.get("needed_libs", []):
                         global_modules_set.add(needed)
-                    for imp in data.get("imports", []):
-                        mod = imp.get("module", "")
-                        if mod.startswith("."):
-                            global_elf_set.add(mod)
+                    if data.get("is_elf"):
+                        for imp in data.get("imports", []):
+                            mod = imp.get("module", "")
+                            if mod.startswith("."):
+                                global_elf_set.add(mod)
                 else:
+                    # Windows – собираем из imports
                     for imp in data.get("imports", []):
                         mod = imp.get("module")
                         if not mod or mod.lower() == "unknown":
@@ -93,7 +93,6 @@ class HtmlGeneratorWorker(QThread):
                 report_links.append({"filename": link, "display_name": display})
                 generated_count += 1
 
-                # Собираем статистику по исходным файлам
                 if source_full.exists():
                     total_files += 1
                     total_size_bytes += source_full.stat().st_size

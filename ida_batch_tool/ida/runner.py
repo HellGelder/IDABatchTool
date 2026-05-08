@@ -8,7 +8,7 @@ import subprocess
 import time
 import logging
 import os
-import struct
+import struct                     # CHANGED: оставлен, т.к. используется в другом месте
 from pathlib import Path
 from typing import List, Optional, Callable, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -52,7 +52,6 @@ class IDAAnalyzer:
     # ------------------------------------------------------------------
     @staticmethod
     def _unique_idb_path(file_path: Path, output_dir: Path) -> Path:
-        # IDA 7.0+ всегда создаёт .i64
         return output_dir / (file_path.name + ".i64")
 
     def analyze_file(self, file_path: Path, output_dir: Optional[Path] = None,
@@ -62,7 +61,6 @@ class IDAAnalyzer:
             logger.error(f"File not found: {file_path}")
             return False
 
-        # Уведомляем о начале анализа именно в этом потоке
         if self._file_start_callback:
             self._file_start_callback(file_path.name)
 
@@ -139,7 +137,6 @@ class IDAAnalyzer:
             logger.error(f"Script not found: {script_path}")
             return False
 
-        # Уведомляем о начале выполнения скрипта на этой базе
         if self._file_start_callback:
             self._file_start_callback(idb_path.name)
 
@@ -199,7 +196,6 @@ class IDAAnalyzer:
             ret = proc.returncode
 
             if idb_path is not None:
-                # IDA 7+ оставляет .id0 только при краше
                 temp_id0 = idb_path.with_suffix(".id0")
                 if temp_id0.exists():
                     logger.error(f"IDA crashed on {target_path.name}: .id0 still present")
@@ -243,38 +239,7 @@ class IDAAnalyzer:
                 logger.warning(f"Could not remove {file_path.name}: {e}")
                 break
 
-    @staticmethod
-    def _detect_arch(file_path: Path) -> int:
-        try:
-            with open(file_path, 'rb') as f:
-                magic = f.read(4)
-                if magic[:4] == b'\x7fELF':
-                    f.seek(0)
-                    elf_class = f.read(5)[4]
-                    return 32 if elf_class == 1 else 64
-                if magic[:2] == b'MZ':
-                    f.seek(60)
-                    s = f.read(4)
-                    if len(s) < 4:
-                        return 64
-                    header_offset = struct.unpack("<L", s)[0]
-                    f.seek(header_offset + 4)
-                    s = f.read(2)
-                    if len(s) < 2:
-                        return 64
-                    machine = struct.unpack("<H", s)[0]
-                    if machine == 0x014c:
-                        return 32
-                    elif machine == 0x8664:
-                        return 64
-                    elif machine == 0xaa64:
-                        return 64
-                    else:
-                        logging.warning(f"Unknown PE machine type 0x{machine:04x} for {file_path.name}, assuming 32-bit")
-                        return 32
-        except Exception as e:
-            logging.warning(f"Failed to detect architecture for {file_path.name}: {e}")
-        return 64
+    # CHANGED: удалён неиспользуемый метод _detect_arch
 
     @staticmethod
     def _log_tail(log_path: Path, lines: int = 10) -> None:

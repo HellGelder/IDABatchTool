@@ -31,7 +31,7 @@ try:
     MACHO_AVAILABLE = True
 except ImportError:
     MACHO_AVAILABLE = False
-    print("[IDAPython] macholib не установлен. Mach-O-зависимости не будут получены.")
+    print("[IDAPython] macholib не установлен. Mach-O-зависимости будут получены встроенным парсером.")
 
 
 # ------------------------------------------------------------
@@ -45,21 +45,12 @@ def _get_file_format() -> str:
             return 'elf'
         if raw[:2] == b'MZ':
             return 'pe'
-        # Mach-O magic: 0xfeedface (32-bit), 0xfeedfacf (64-bit), 0xcafebabe (fat binary)
         magic = struct.unpack('<I', raw[:4])[0] if len(raw) >= 4 else 0
         if magic in (0xfeedface, 0xfeedfacf, 0xcafebabe, 0xcefaedfe, 0xcffaedfe):
             return 'macho'
     except Exception:
         pass
     return 'unknown'
-
-
-def _is_macho_file() -> bool:
-    return _get_file_format() == 'macho'
-
-
-def _is_elf_file() -> bool:
-    return _get_file_format() == 'elf'
 
 
 def _format_hexdump_with_ascii(data: bytes, start_addr: int = 0) -> str:
@@ -157,32 +148,96 @@ def _get_elf_needed_libraries(elf_path: str) -> List[str]:
 
 
 # ------------------------------------------------------------
-# Парсинг LC_LOAD_DYLIB (Mach-O)
+# Парсинг LC_LOAD_DYLIB (Mach-O) – улучшенная версия
 # ------------------------------------------------------------
 def _get_macho_dependencies(macho_path: str) -> List[str]:
-    """Возвращает список зависимостей Mach-O из LC_LOAD_DYLIB и аналогичных команд."""
+    """Возвращает список зависимостей Mach-O в виде коротких имён (без путей)."""
     if not MACHO_AVAILABLE:
-        print("[IDAPython] macholib не установлен. Зависимости Mach-O не будут получены.")
-        return []
+        return _get_macho_deps_fallback(macho_path)
     try:
         macho = MachO(macho_path)
         dependencies = []
         for header in macho.headers:
             for cmd, cmd_data, _ in header.commands:
                 if cmd.cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB, LC_LOAD_UPWARD_DYLIB):
-                    # Извлекаем имя библиотеки
                     data = cmd_data
                     if isinstance(data, bytes):
                         # Пропускаем заголовок команды (16 байт для 64-бит)
                         name_data = data[16:]
                         null_pos = name_data.find(b'\x00')
                         if null_pos != -1:
-                            lib_name = name_data[:null_pos].decode('utf-8')
-                            if lib_name not in dependencies:
-                                dependencies.append(lib_name)
+                            full_lib_path = name_data[:null_pos].decode('utf-8')
+                            # Извлекаем короткое имя: последний компонент пути
+                            short_name = Path(full_lib_path).name
+                            # Для фреймворков отбрасываем всё после .framework/
+                            if '.framework/' in short_name:
+                                short_name = short_name.split('.framework/')[0] + '.framework'
+                            elif '.dylib' in short_name:
+                                # оставляем как есть
+                                pass
+                            if short_name not in dependencies:
+                                dependencies.append(short_name)
         return dependencies
     except Exception as e:
-        print(f"[IDAPython] Ошибка парсинга Mach-O зависимостей: {e}")
+        print(f"[IDAPython] Ошибка парсинга Mach-O зависимостей через macholib: {e}")
+        return _get_macho_deps_fallback(macho_path)
+
+
+def _get_macho_deps_fallback(macho_path: str) -> List[str]:
+    """Ручной разбор load commands mach-o без macholib."""
+    try:
+        with open(macho_path, 'rb') as f:
+            header = f.read(4)
+            if len(header) < 4:
+                return []
+            magic = struct.unpack('<I', header)[0]
+            if magic == 0xcafebabe:  # Fat binary – пропускаем, не обрабатываем
+                return []
+            is_64 = magic in (0xfeedfacf, 0xcffaedfe)
+            # Считываем заголовок
+            f.seek(0)
+            if is_64:
+                header_size = 32
+            else:
+                header_size = 28
+            header_data = f.read(header_size)
+            ncmds = struct.unpack_from('<I', header_data, 16)[0]
+            # Перемещаемся к началу load commands
+            f.seek(header_size)
+            deps = []
+            for _ in range(ncmds):
+                cmd_header = f.read(8)
+                if len(cmd_header) < 8:
+                    break
+                cmd, cmdsize = struct.unpack('<II', cmd_header)
+                if cmd in (0xC, 0x18, 0x1F, 0x22):  # LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB, LC_LOAD_UPWARD_DYLIB
+                    # Читаем оставшуюся часть команды
+                    remaining = cmdsize - 8
+                    data = f.read(remaining)
+                    # Первые 8 байт – offset к имени (обычно 24 или 16)
+                    if is_64:
+                        name_offset = struct.unpack_from('<I', data, 8)[0]
+                    else:
+                        name_offset = struct.unpack_from('<I', data[8:12])[0]  # смещение от начала команды
+                    # Имя начинается с байта name_offset от начала команды
+                    name_start = name_offset - 8  # потому что мы уже прочитали cmd_header
+                    if name_start >= 0 and name_start < len(data):
+                        name_data = data[name_start:]
+                        null_pos = name_data.find(b'\x00')
+                        if null_pos != -1:
+                            full_name = name_data[:null_pos].decode('utf-8')
+                            short_name = Path(full_name).name
+                            if '.framework/' in short_name:
+                                short_name = short_name.split('.framework/')[0] + '.framework'
+                            elif '.dylib' in short_name:
+                                pass
+                            if short_name not in deps:
+                                deps.append(short_name)
+                else:
+                    f.seek(cmdsize - 8, os.SEEK_CUR)
+            return deps
+    except Exception as e:
+        print(f"[IDAPython] Fallback Mach-O парсер ошибка: {e}")
         return []
 
 

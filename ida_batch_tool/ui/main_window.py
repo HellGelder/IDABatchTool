@@ -232,12 +232,15 @@ class MainWindow(QMainWindow):
         self.radio_to_platform: Dict[QRadioButton, str] = {}
         grid = QGridLayout()
         row, col = 0, 0
+        # Итерация только по трём платформам (без "All platforms")
         for key, info in PLATFORM_EXTENSIONS.items():
             radio = QRadioButton(info["label"])
             self.platform_buttons.addButton(radio)
             self.radio_to_platform[radio] = key
             ext_list = ", ".join(info["exts"])
-            help_btn = self._create_help_button(f"Платформа: {info['label']}\nАнализируемые расширения: {ext_list}")
+            help_btn = self._create_help_button(
+                f"Платформа: {info['label']}\nАнализируемые расширения: {ext_list}"
+            )
             item_layout = QHBoxLayout()
             item_layout.setContentsMargins(0, 0, 0, 0)
             item_layout.addWidget(radio)
@@ -346,7 +349,6 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
         return page
-
     # ------------------------------------------------------------------
     # Сигналы и слоты
     # ------------------------------------------------------------------
@@ -380,22 +382,29 @@ class MainWindow(QMainWindow):
     def _selected_extensions(self) -> List[str]:
         checked = self.platform_buttons.checkedButton()
         if checked and checked in self.radio_to_platform:
-            return PLATFORM_EXTENSIONS[self.radio_to_platform[checked]]["exts"]
-        return PLATFORM_EXTENSIONS["All platforms"]["exts"]
+            platform_key = self.radio_to_platform[checked]
+            return PLATFORM_EXTENSIONS[platform_key]["exts"]
+        # Если ни одна радио‑кнопка не выбрана (например, при первом запуске),
+        # возвращаем объединённые расширения всех трёх платформ,
+        # чтобы поиск файлов всё равно работал.
+        all_exts = []
+        for info in PLATFORM_EXTENSIONS.values():
+            for ext in info["exts"]:
+                if ext not in all_exts:
+                    all_exts.append(ext)
+        return all_exts
 
     def _detect_platform_by_files(self, files: List[Path]) -> str:
         if not files:
-            return "All platforms"
+            return "Windows"
         ext_counts = Counter(f.suffix.lower() for f in files)
-        platform_scores = {
-            "Windows": sum(ext_counts.get(ext, 0) for ext in ['.exe', '.dll', '.sys', '.ocx', '.cpl', '.scr', '.drv', '.efi']),
-            "Linux / Android": sum(ext_counts.get(ext, 0) for ext in ['.elf', '.so', '.o', '.ko', '.dex']),
-            "macOS / iOS": sum(ext_counts.get(ext, 0) for ext in ['.mach-o', '.dylib', '.bundle', '.app']),
+        scores = {
+            "Windows": sum(ext_counts.get(e, 0) for e in PLATFORM_EXTENSIONS["Windows"]["exts"]),
+            "Linux / Android": sum(ext_counts.get(e, 0) for e in PLATFORM_EXTENSIONS["Linux / Android"]["exts"]),
+            "macOS / iOS": sum(ext_counts.get(e, 0) for e in PLATFORM_EXTENSIONS["macOS / iOS"]["exts"]),
         }
-        best = max(platform_scores, key=lambda k: platform_scores[k])
-        if platform_scores[best] == 0:
-            return "All platforms"
-        return best
+        best = max(scores, key=scores.get)
+        return best if scores[best] > 0 else "Windows"
 
     def _set_platform_radio(self, platform_key: str):
         for radio, key in self.radio_to_platform.items():

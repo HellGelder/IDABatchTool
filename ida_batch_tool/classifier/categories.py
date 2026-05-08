@@ -1,16 +1,7 @@
 """Логика классификации и группировка модулей по категориям."""
-from difflib import get_close_matches
 from typing import Dict, Optional, Tuple
-import re
 
-# Импортируем словари из платформенных модулей
-from .windows import WINDOWS_MODULES
-from .linux import LINUX_MODULES
-from .android import ANDROID_MODULES
-from .macos import MACOS_MODULES
-from .third_party import THIRD_PARTY_MODULES
-
-# Импортируем отдельные словари для категорий (необходимы для группировки)
+# Импортируем словари для категорий
 from .windows import (
     _WINDOWS_HAL, _WINDOWS_NATIVE_API, _WINDOWS_KERNEL_SUBSYSTEM,
     _WINDOWS_USER_SUBSYSTEM, _WINDOWS_SYSTEM_SERVICES,
@@ -37,7 +28,7 @@ from .macos import (
     _MACOS_CORE, _MACOS_DISPATCH, _MACOS_FOUNDATION,
     _MACOS_NETWORK, _MACOS_DATABASE, _MACOS_SWIFT,
     _MACOS_CRYPTO, _MACOS_EXPAT, _MACOS_FONTCONFIG,
-    _MACOS_FRAMEWORKS,  # обязательно импортировать
+    _MACOS_FRAMEWORKS,
 )
 from .third_party import (
     _THIRD_PARTY_CRYPTO, _THIRD_PARTY_NETWORK, _THIRD_PARTY_BROWSER,
@@ -53,169 +44,6 @@ from .third_party import (
     _THIRD_PARTY_VIRTUALIZATION, _THIRD_PARTY_QT,
 )
 
-
-# Объединяем все словари в один
-_ALL_MODULES: Dict[str, str] = {}
-_ALL_MODULES.update(WINDOWS_MODULES)
-_ALL_MODULES.update(LINUX_MODULES)
-_ALL_MODULES.update(ANDROID_MODULES)
-_ALL_MODULES.update(MACOS_MODULES)  # включает _MACOS_FRAMEWORKS
-_ALL_MODULES.update(THIRD_PARTY_MODULES)
-
-
-def _normalize_name(name: str) -> str:
-    """
-    Нормализует имя модуля:
-    - убирает путь (оставляет последний компонент)
-    - убирает расширение (.dll, .so, .dylib, .framework и т.п.)
-    - приводит к нижнему регистру
-    """
-    if not name:
-        return ""
-    # Убираем путь
-    if '\\' in name or '/' in name:
-        name = name.replace('\\', '/').split('/')[-1]
-    # Убираем расширения
-    for ext in ('.dll', '.so', '.dylib', '.drv', '.sys', '.exe', '.framework', ''):
-        if name.endswith(ext):
-            name = name[:-len(ext)]
-            break
-    # Убираем версионные суффиксы .1.dylib, .2.dylib
-    if '.dylib' in name:
-        name = name.split('.dylib')[0]
-    # Убираем @rpath/
-    if name.startswith('@rpath/'):
-        name = name[7:]
-    return name.lower()
-
-
-_NORMALIZED_MODULES: Dict[str, str] = {
-    _normalize_name(k): v for k, v in _ALL_MODULES.items()
-}
-
-
-# ------------------------------------------------------------
-# Расширенные эвристики (подсказки по префиксам)
-# ------------------------------------------------------------
-_PREFIX_HINTS = [
-    (re.compile(r'msvc', re.IGNORECASE), "Вероятно, библиотека времени выполнения Microsoft Visual C++"),
-    (re.compile(r'vcruntime', re.IGNORECASE), "Вероятно, среда выполнения Visual C++"),
-    (re.compile(r'msvcp', re.IGNORECASE), "Вероятно, стандартная библиотека C++ (MSVCP)"),
-    (re.compile(r'concrt', re.IGNORECASE), "Вероятно, Concurrency Runtime"),
-    (re.compile(r'vcomp', re.IGNORECASE), "Вероятно, OpenMP Runtime"),
-    (re.compile(r'mfc', re.IGNORECASE), "Вероятно, Microsoft Foundation Classes"),
-    (re.compile(r'atl', re.IGNORECASE), "Вероятно, Active Template Library"),
-    (re.compile(r'libc\+\+', re.IGNORECASE), "Вероятно, стандартная библиотека C++ (libc++)"),
-    (re.compile(r'libc\.|libc-', re.IGNORECASE), "Вероятно, стандартная библиотека C"),
-    (re.compile(r'libm\.|libm-', re.IGNORECASE), "Вероятно, математическая библиотека"),
-    (re.compile(r'libpthread', re.IGNORECASE), "Вероятно, библиотека потоков POSIX"),
-    (re.compile(r'libdl\.|libdl-', re.IGNORECASE), "Вероятно, библиотека динамической загрузки"),
-    (re.compile(r'libGL(ES)?', re.IGNORECASE), "Вероятно, OpenGL / OpenGL ES"),
-    (re.compile(r'libEGL', re.IGNORECASE), "Вероятно, EGL"),
-    (re.compile(r'libvulkan', re.IGNORECASE), "Вероятно, Vulkan"),
-    (re.compile(r'liblog', re.IGNORECASE), "Вероятно, библиотека логирования Android"),
-    (re.compile(r'libutils', re.IGNORECASE), "Вероятно, утилиты Android"),
-    (re.compile(r'libbinder', re.IGNORECASE), "Вероятно, Android Binder IPC"),
-    (re.compile(r'libhardware', re.IGNORECASE), "Вероятно, Android HAL"),
-    (re.compile(r'libgui', re.IGNORECASE), "Вероятно, Android GUI"),
-    (re.compile(r'libui', re.IGNORECASE), "Вероятно, Android UI"),
-    (re.compile(r'libmedia', re.IGNORECASE), "Вероятно, Android Media"),
-    (re.compile(r'libstagefright', re.IGNORECASE), "Вероятно, Android Stagefright"),
-    (re.compile(r'libcrypto', re.IGNORECASE), "Вероятно, криптографическая библиотека"),
-    (re.compile(r'libssl', re.IGNORECASE), "Вероятно, библиотека SSL/TLS"),
-    (re.compile(r'libsqlite', re.IGNORECASE), "Вероятно, SQLite"),
-    (re.compile(r'libcurl', re.IGNORECASE), "Вероятно, cURL"),
-    (re.compile(r'libxml2', re.IGNORECASE), "Вероятно, XML-парсер"),
-    (re.compile(r'libz\.|libz-', re.IGNORECASE), "Вероятно, библиотека сжатия zlib"),
-    (re.compile(r'libbz2', re.IGNORECASE), "Вероятно, сжатие bzip2"),
-    (re.compile(r'liblzma', re.IGNORECASE), "Вероятно, сжатие LZMA/XZ"),
-    (re.compile(r'libpng', re.IGNORECASE), "Вероятно, обработка PNG"),
-    (re.compile(r'libjpeg', re.IGNORECASE), "Вероятно, обработка JPEG"),
-    (re.compile(r'libtiff', re.IGNORECASE), "Вероятно, обработка TIFF"),
-    (re.compile(r'libwebp', re.IGNORECASE), "Вероятно, обработка WebP"),
-    (re.compile(r'libav(codec|format|util|device|filter)', re.IGNORECASE), "Вероятно, FFmpeg"),
-    (re.compile(r'libvlc', re.IGNORECASE), "Вероятно, VLC media framework"),
-    (re.compile(r'libgstreamer', re.IGNORECASE), "Вероятно, GStreamer"),
-    (re.compile(r'libpulse', re.IGNORECASE), "Вероятно, PulseAudio"),
-    (re.compile(r'libasound', re.IGNORECASE), "Вероятно, ALSA"),
-    (re.compile(r'libOpenSLES', re.IGNORECASE), "Вероятно, OpenSL ES"),
-    (re.compile(r'libnetwork', re.IGNORECASE), "Вероятно, сетевая библиотека"),
-    (re.compile(r'libdispatch', re.IGNORECASE), "Вероятно, Grand Central Dispatch"),
-    (re.compile(r'libSystem', re.IGNORECASE), "Вероятно, системная библиотека Darwin"),
-    (re.compile(r'libobjc', re.IGNORECASE), "Вероятно, Objective-C runtime"),
-    (re.compile(r'libswift', re.IGNORECASE), "Вероятно, Swift runtime"),
-    (re.compile(r'libicucore', re.IGNORECASE), "Вероятно, ICU (Unicode)"),
-    (re.compile(r'libiconv', re.IGNORECASE), "Вероятно, преобразование кодировок"),
-    (re.compile(r'libncurses', re.IGNORECASE), "Вероятно, библиотека терминального интерфейса"),
-]
-
-
-def _fuzzy_match_module(module_name: str) -> Optional[str]:
-    """Пытается найти близкое совпадение (расстояние <= ~2) среди известных модулей."""
-    norm = _normalize_name(module_name)
-    if norm in _NORMALIZED_MODULES:
-        return _NORMALIZED_MODULES[norm]
-    all_keys = list(_NORMALIZED_MODULES.keys())
-    close = get_close_matches(norm, all_keys, n=1, cutoff=0.8)
-    if close:
-        original_key = close[0]
-        return f"Возможно, {original_key}: {_NORMALIZED_MODULES[original_key]}"
-    return None
-
-
-def _extract_prefix_hints(module_name: str) -> str:
-    """Возвращает строку с подсказками на основе префиксов/подстрок."""
-    hints = []
-    for hint_re, hint_text in _PREFIX_HINTS:
-        if hint_re.search(module_name):
-            hints.append(hint_text)
-    return " – " + "; ".join(hints) if hints else ""
-
-
-def classify_module(module_name: str) -> str:
-    """
-    Возвращает наиболее точное описание модуля с использованием эвристик:
-    1. Точное совпадение в нормализованной базе.
-    2. Нечёткий поиск среди известных модулей.
-    3. Эвристика по префиксам API Set.
-    4. Подсказки по известным подстрокам/префиксам.
-    """
-    # Специальные случаи для Mach-O
-    if module_name == "<self>":
-        return "Собственный исполняемый модуль (само приложение)."
-    if module_name.startswith("@rpath/"):
-        base = module_name[6:]
-        norm_base = _normalize_name(base)
-        if norm_base in _NORMALIZED_MODULES:
-            return _NORMALIZED_MODULES[norm_base]
-        return f"Библиотека, загружаемая по относительному пути runtime path: {base}"
-
-    norm = _normalize_name(module_name)
-
-    # 1. Точное совпадение
-    if norm in _NORMALIZED_MODULES:
-        return _NORMALIZED_MODULES[norm]
-
-    # 2. Нечёткое совпадение
-    fuzzy = _fuzzy_match_module(module_name)
-    if fuzzy:
-        return fuzzy
-
-    # 3. API Set (Windows)
-    if norm.startswith("api-ms-win-"):
-        return "Windows API Set (контрактная DLL с гарантированным присутствием на всех версиях Windows)"
-    if norm.startswith("ext-ms-win-"):
-        return "Windows API Set (расширенная контрактная DLL, может отсутствовать на некоторых редакциях Windows)"
-
-    # 4. Общие подсказки по имени
-    base = "Неопознанный модуль"
-    hints = _extract_prefix_hints(module_name)
-    return base + hints
-
-
-# ------------------------------------------------------------
-# Группировка словарей по категориям для сводного отчёта
-# ------------------------------------------------------------
 _CATEGORIES = {
     "Системные библиотеки ОС": {
         "description": (
@@ -234,7 +62,7 @@ _CATEGORIES = {
             _MACOS_CORE, _MACOS_DISPATCH, _MACOS_FOUNDATION,
             _MACOS_NETWORK, _MACOS_DATABASE, _MACOS_SWIFT,
             _MACOS_CRYPTO, _MACOS_EXPAT, _MACOS_FONTCONFIG,
-            _MACOS_FRAMEWORKS,  # здесь все фреймворки Apple
+            _MACOS_FRAMEWORKS,
             _ANDROID_CORE, _ANDROID_BINDER, _ANDROID_RUNTIME,
             _ANDROID_NETWORK_MONITORING,
             _ANDROID_HARDWARE,
@@ -330,11 +158,9 @@ _CATEGORIES = {
 
 
 def get_module_category_and_description(module_name: str) -> Tuple[str, str]:
-    """
-    Возвращает (category_name, category_description),
-    если модуль найден в одном из словарей категорий,
-    иначе — ("Неопознанные модули", "").
-    """
+    """Возвращает категорию и описание категории (используется в отчётах)."""
+    from .platform_classifier import _normalize_name
+
     norm = _normalize_name(module_name)
     for category, info in _CATEGORIES.items():
         for d in info["dicts"]:
