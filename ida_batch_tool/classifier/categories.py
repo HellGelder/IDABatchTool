@@ -1,6 +1,7 @@
 """Логика классификации и группировка модулей по категориям."""
 from difflib import get_close_matches
 from typing import Dict, Optional, Tuple
+import re
 
 # Импортируем словари из платформенных модулей
 from .windows import WINDOWS_MODULES
@@ -9,7 +10,7 @@ from .android import ANDROID_MODULES
 from .macos import MACOS_MODULES
 from .third_party import THIRD_PARTY_MODULES
 
-# Импортируем отдельные словари для категорий
+# Импортируем отдельные словари для категорий (необходимы для группировки)
 from .windows import (
     _WINDOWS_HAL, _WINDOWS_NATIVE_API, _WINDOWS_KERNEL_SUBSYSTEM,
     _WINDOWS_USER_SUBSYSTEM, _WINDOWS_SYSTEM_SERVICES,
@@ -36,6 +37,7 @@ from .macos import (
     _MACOS_CORE, _MACOS_DISPATCH, _MACOS_FOUNDATION,
     _MACOS_NETWORK, _MACOS_DATABASE, _MACOS_SWIFT,
     _MACOS_CRYPTO, _MACOS_EXPAT, _MACOS_FONTCONFIG,
+    _MACOS_FRAMEWORKS,  # обязательно импортировать
 )
 from .third_party import (
     _THIRD_PARTY_CRYPTO, _THIRD_PARTY_NETWORK, _THIRD_PARTY_BROWSER,
@@ -57,16 +59,33 @@ _ALL_MODULES: Dict[str, str] = {}
 _ALL_MODULES.update(WINDOWS_MODULES)
 _ALL_MODULES.update(LINUX_MODULES)
 _ALL_MODULES.update(ANDROID_MODULES)
-_ALL_MODULES.update(MACOS_MODULES)
+_ALL_MODULES.update(MACOS_MODULES)  # включает _MACOS_FRAMEWORKS
 _ALL_MODULES.update(THIRD_PARTY_MODULES)
 
 
 def _normalize_name(name: str) -> str:
-    """Убирает расширение и приводит к нижнему регистру."""
-    for ext in ('.dll', '.so', '.dylib', '.drv', '.sys', '.exe'):
+    """
+    Нормализует имя модуля:
+    - убирает путь (оставляет последний компонент)
+    - убирает расширение (.dll, .so, .dylib, .framework и т.п.)
+    - приводит к нижнему регистру
+    """
+    if not name:
+        return ""
+    # Убираем путь
+    if '\\' in name or '/' in name:
+        name = name.replace('\\', '/').split('/')[-1]
+    # Убираем расширения
+    for ext in ('.dll', '.so', '.dylib', '.drv', '.sys', '.exe', '.framework', ''):
         if name.endswith(ext):
             name = name[:-len(ext)]
             break
+    # Убираем версионные суффиксы .1.dylib, .2.dylib
+    if '.dylib' in name:
+        name = name.split('.dylib')[0]
+    # Убираем @rpath/
+    if name.startswith('@rpath/'):
+        name = name[7:]
     return name.lower()
 
 
@@ -78,8 +97,6 @@ _NORMALIZED_MODULES: Dict[str, str] = {
 # ------------------------------------------------------------
 # Расширенные эвристики (подсказки по префиксам)
 # ------------------------------------------------------------
-import re
-
 _PREFIX_HINTS = [
     (re.compile(r'msvc', re.IGNORECASE), "Вероятно, библиотека времени выполнения Microsoft Visual C++"),
     (re.compile(r'vcruntime', re.IGNORECASE), "Вероятно, среда выполнения Visual C++"),
@@ -163,6 +180,16 @@ def classify_module(module_name: str) -> str:
     3. Эвристика по префиксам API Set.
     4. Подсказки по известным подстрокам/префиксам.
     """
+    # Специальные случаи для Mach-O
+    if module_name == "<self>":
+        return "Собственный исполняемый модуль (само приложение)."
+    if module_name.startswith("@rpath/"):
+        base = module_name[6:]
+        norm_base = _normalize_name(base)
+        if norm_base in _NORMALIZED_MODULES:
+            return _NORMALIZED_MODULES[norm_base]
+        return f"Библиотека, загружаемая по относительному пути runtime path: {base}"
+
     norm = _normalize_name(module_name)
 
     # 1. Точное совпадение
@@ -174,7 +201,7 @@ def classify_module(module_name: str) -> str:
     if fuzzy:
         return fuzzy
 
-    # 3. API Set
+    # 3. API Set (Windows)
     if norm.startswith("api-ms-win-"):
         return "Windows API Set (контрактная DLL с гарантированным присутствием на всех версиях Windows)"
     if norm.startswith("ext-ms-win-"):
@@ -195,7 +222,8 @@ _CATEGORIES = {
             "Базовые библиотеки операционной системы: "
             "управление памятью, процессами, файлами, системные вызовы, "
             "аппаратная абстракция, подсистемы совместимости (WOW64), "
-            "динамическая загрузка, POSIX-функции, runtime Android."
+            "динамическая загрузка, POSIX-функции, runtime Android, "
+            "фреймворки macOS/iOS."
         ),
         "dicts": [
             _WINDOWS_HAL, _WINDOWS_NATIVE_API, _WINDOWS_KERNEL_SUBSYSTEM,
@@ -204,6 +232,9 @@ _CATEGORIES = {
             _WINDOWS_API_SETS, _WINDOWS_DOTNET,
             _LINUX_CORE_LIBS, _LINUX_DYNAMIC_LINKER, _LINUX_SYSTEM_SERVICES,
             _MACOS_CORE, _MACOS_DISPATCH, _MACOS_FOUNDATION,
+            _MACOS_NETWORK, _MACOS_DATABASE, _MACOS_SWIFT,
+            _MACOS_CRYPTO, _MACOS_EXPAT, _MACOS_FONTCONFIG,
+            _MACOS_FRAMEWORKS,  # здесь все фреймворки Apple
             _ANDROID_CORE, _ANDROID_BINDER, _ANDROID_RUNTIME,
             _ANDROID_NETWORK_MONITORING,
             _ANDROID_HARDWARE,

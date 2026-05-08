@@ -18,23 +18,48 @@ import idc
 import ida_nalt
 import ida_bytes
 
-# Для парсинга DT_NEEDED (только необходимые библиотеки, без привязки символов)
+# Для парсинга DT_NEEDED (ELF)
 try:
     from elftools.elf.elffile import ELFFile
 except ImportError:
-    print("[IDAPython] pyelftools не установлен. Установите: pip install pyelftools")
-    idc.qexit(1)
+    print("[IDAPython] pyelftools не установлен. ELF-зависимости не будут получены.")
+
+# Для парсинга Mach-O
+try:
+    from macholib.MachO import MachO
+    from macholib.mach_o import LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB, LC_LOAD_UPWARD_DYLIB
+    MACHO_AVAILABLE = True
+except ImportError:
+    MACHO_AVAILABLE = False
+    print("[IDAPython] macholib не установлен. Mach-O-зависимости не будут получены.")
 
 
 # ------------------------------------------------------------
 # Вспомогательные функции
 # ------------------------------------------------------------
-def _is_elf_file() -> bool:
+def _get_file_format() -> str:
+    """Определяет формат файла, загруженного в IDA: 'pe', 'elf', 'macho' или 'unknown'."""
     try:
         raw = ida_bytes.get_bytes(0, 4)
-        return raw[:4] == b'\x7fELF'
+        if raw[:4] == b'\x7fELF':
+            return 'elf'
+        if raw[:2] == b'MZ':
+            return 'pe'
+        # Mach-O magic: 0xfeedface (32-bit), 0xfeedfacf (64-bit), 0xcafebabe (fat binary)
+        magic = struct.unpack('<I', raw[:4])[0] if len(raw) >= 4 else 0
+        if magic in (0xfeedface, 0xfeedfacf, 0xcafebabe, 0xcefaedfe, 0xcffaedfe):
+            return 'macho'
     except Exception:
-        return False
+        pass
+    return 'unknown'
+
+
+def _is_macho_file() -> bool:
+    return _get_file_format() == 'macho'
+
+
+def _is_elf_file() -> bool:
+    return _get_file_format() == 'elf'
 
 
 def _format_hexdump_with_ascii(data: bytes, start_addr: int = 0) -> str:
@@ -106,10 +131,9 @@ def _normalize_func_name(name: str) -> str:
 
 
 # ------------------------------------------------------------
-# Получение DT_NEEDED (список необходимых библиотек)
+# Парсинг DT_NEEDED (ELF)
 # ------------------------------------------------------------
-def _get_needed_libraries(elf_path: str) -> List[str]:
-    """Возвращает список библиотек из DT_NEEDED ELF-файла."""
+def _get_elf_needed_libraries(elf_path: str) -> List[str]:
     try:
         with open(elf_path, 'rb') as f:
             elffile = ELFFile(f)
@@ -133,6 +157,36 @@ def _get_needed_libraries(elf_path: str) -> List[str]:
 
 
 # ------------------------------------------------------------
+# Парсинг LC_LOAD_DYLIB (Mach-O)
+# ------------------------------------------------------------
+def _get_macho_dependencies(macho_path: str) -> List[str]:
+    """Возвращает список зависимостей Mach-O из LC_LOAD_DYLIB и аналогичных команд."""
+    if not MACHO_AVAILABLE:
+        print("[IDAPython] macholib не установлен. Зависимости Mach-O не будут получены.")
+        return []
+    try:
+        macho = MachO(macho_path)
+        dependencies = []
+        for header in macho.headers:
+            for cmd, cmd_data, _ in header.commands:
+                if cmd.cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB, LC_LOAD_UPWARD_DYLIB):
+                    # Извлекаем имя библиотеки
+                    data = cmd_data
+                    if isinstance(data, bytes):
+                        # Пропускаем заголовок команды (16 байт для 64-бит)
+                        name_data = data[16:]
+                        null_pos = name_data.find(b'\x00')
+                        if null_pos != -1:
+                            lib_name = name_data[:null_pos].decode('utf-8')
+                            if lib_name not in dependencies:
+                                dependencies.append(lib_name)
+        return dependencies
+    except Exception as e:
+        print(f"[IDAPython] Ошибка парсинга Mach-O зависимостей: {e}")
+        return []
+
+
+# ------------------------------------------------------------
 # Основная функция экспорта
 # ------------------------------------------------------------
 def export_to_json(output_path: Optional[str] = None) -> None:
@@ -145,13 +199,16 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             idc.qexit(1)
         output_path = idb_path + ".export.json"
 
-    is_elf = _is_elf_file()
+    file_format = _get_file_format()
+    is_elf = (file_format == 'elf')
+    is_macho = (file_format == 'macho')
     kernel_version = idaapi.get_kernel_version()
     current_file_path = idc.get_input_file_path()
 
     data: Dict[str, Any] = {
         "file_name": current_file_path,
         "is_elf": is_elf,
+        "is_macho": is_macho,
         "functions": [],
         "imports": [],
         "exports": [],
@@ -160,10 +217,14 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         "ida_info": {"kernel_version": kernel_version}
     }
 
-    # --- Для ELF: получаем только список зависимых библиотек (без привязки символов) ---
+    # --- Для ELF: получаем список библиотек DT_NEEDED ---
     if is_elf and current_file_path and os.path.exists(current_file_path):
-        data["needed_libs"] = _get_needed_libraries(current_file_path)
-        print(f"[IDAPython] Найдены библиотеки: {data['needed_libs']}")
+        data["needed_libs"] = _get_elf_needed_libraries(current_file_path)
+        print(f"[IDAPython] ELF: найдены библиотеки: {data['needed_libs']}")
+    # --- Для Mach-O: получаем список библиотек LC_LOAD_DYLIB ---
+    elif is_macho and current_file_path and os.path.exists(current_file_path):
+        data["needed_libs"] = _get_macho_dependencies(current_file_path)
+        print(f"[IDAPython] Mach-O: найдены зависимости: {data['needed_libs']}")
     else:
         data["needed_libs"] = []
 
@@ -247,7 +308,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         })
 
     # ----------------------------------------------------------------
-    # Импорты (только имена, без библиотек)
+    # Импорты (через IDA API)
     # ----------------------------------------------------------------
     try:
         import_module_count = ida_nalt.get_import_module_qty()
@@ -256,27 +317,20 @@ def export_to_json(output_path: Optional[str] = None) -> None:
 
     raw_imports: List[Dict[str, Any]] = []
     for mod_index in range(import_module_count):
+        try:
+            module_name = ida_nalt.get_import_module_name(mod_index)
+        except AttributeError:
+            module_name = "unknown"
+
         def callback(ea, name, ordinal):
             if name:
                 clean = _strip_symbol_version(name) if is_elf else name
                 demangled = _normalize_func_name(clean)
-                if is_elf:
-                    # Для ELF сохраняем только имя и адрес, поле module не заполняем
-                    raw_imports.append({
-                        "name": demangled,
-                        "address": f"0x{ea:X}"
-                    })
-                else:
-                    # Для PE используем модуль из IDA
-                    try:
-                        mod_name = ida_nalt.get_import_module_name(mod_index)
-                    except AttributeError:
-                        mod_name = "unknown"
-                    raw_imports.append({
-                        "name": demangled,
-                        "module": mod_name,
-                        "address": f"0x{ea:X}"
-                    })
+                raw_imports.append({
+                    "name": demangled,
+                    "module": module_name,
+                    "address": f"0x{ea:X}"
+                })
             return True
 
         try:

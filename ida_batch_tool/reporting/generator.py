@@ -64,6 +64,27 @@ class ReportGenerator:
         self.report_template = self.env.get_template("report.html")
         self.index_template = self.env.get_template("index.html")
 
+    def _normalize_display_name(self, module_name: str) -> str:
+        """Обрезает путь, оставляя только последний компонент (имя модуля)."""
+        if not module_name:
+            return ""
+        # Убираем путь
+        if '\\' in module_name or '/' in module_name:
+            module_name = module_name.replace('\\', '/').split('/')[-1]
+        # Убираем расширение .dylib
+        if module_name.endswith('.dylib'):
+            module_name = module_name[:-6]
+        # Убираем .framework
+        elif module_name.endswith('.framework'):
+            module_name = module_name[:-10]
+        # Убираем версионные суффиксы .1.dylib, .2.dylib
+        elif '.dylib' in module_name:
+            module_name = module_name.split('.dylib')[0]
+        # Убираем префикс @rpath/
+        if module_name.startswith('@rpath/'):
+            module_name = module_name[7:]
+        return module_name
+
     def _is_internal_module(self, module_name: str, internal_set: Optional[Set[str]]) -> bool:
         if internal_set is None:
             return False
@@ -96,21 +117,22 @@ class ReportGenerator:
         if internal_set is None and input_dir is not None:
             internal_set = _build_internal_set(input_dir)
 
-        is_elf: bool = data.get("is_elf", False)
+        is_elf = data.get("is_elf", False)
+        is_macho = data.get("is_macho", False)
 
-        # --- Блок known/unknown (для совместимости) ---
-        if is_elf:
+        # --- Блок known/unknown ---
+        if is_elf or is_macho:
             needed_libs = data.get("needed_libs", [])
             known = []
             unknown = []
             for lib in needed_libs:
                 desc = self._classify_with_context(lib, internal_set)
                 if "Собственный модуль" in desc:
-                    known.append(lib)
+                    known.append(self._normalize_display_name(lib))
                 elif "Неопознанный" in desc:
-                    unknown.append(lib)
+                    unknown.append(self._normalize_display_name(lib))
                 else:
-                    known.append(lib)
+                    known.append(self._normalize_display_name(lib))
             data["known_modules"] = sorted(known)
             data["unknown_modules"] = sorted(unknown)
             if "elf_sections" not in data:
@@ -132,26 +154,28 @@ class ReportGenerator:
                     continue
                 desc = self._classify_with_context(mod, internal_set)
                 if "Собственный модуль" in desc:
-                    known.append(mod)
+                    known.append(self._normalize_display_name(mod))
                 elif "Неопознанный" in desc:
-                    unknown.append(mod)
+                    unknown.append(self._normalize_display_name(mod))
                 else:
-                    known.append(mod)
+                    known.append(self._normalize_display_name(mod))
             data["known_modules"] = sorted(known)
             data["unknown_modules"] = sorted(unknown)
             if "elf_sections" not in data:
                 data["elf_sections"] = sorted(elf)
 
-        # --- Построение module_deps (детерминированно) ---
+        # --- Построение module_deps (для ELF и Mach-O используем needed_libs) ---
         module_deps: List[Dict[str, Any]] = []
-        if is_elf:
-            # Используем ТОЛЬКО DT_NEEDED, никаких импортов и эвристик
+        if is_elf or is_macho:
             module_counts: Dict[str, int] = {}
             for lib in data.get("needed_libs", []):
-                module_counts[lib] = module_counts.get(lib, 0) + 1
+                short_lib = self._normalize_display_name(lib)
+                module_counts[short_lib] = module_counts.get(short_lib, 0) + 1
             for mod, count in module_counts.items():
-                desc = self._classify_with_context(mod, internal_set)
-                cat_label = self._category_label_for_module(mod, internal_set)
+                # Для классификации используем оригинальное имя (с путём) для лучшего распознавания
+                original_lib = next((l for l in data.get("needed_libs", []) if self._normalize_display_name(l) == mod), mod)
+                desc = self._classify_with_context(original_lib, internal_set)
+                cat_label = self._category_label_for_module(original_lib, internal_set)
                 color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
                     "name": mod,
@@ -168,10 +192,13 @@ class ReportGenerator:
                     continue
                 if mod.startswith("."):
                     continue
-                module_counts[mod] = module_counts.get(mod, 0) + 1
+                short_mod = self._normalize_display_name(mod)
+                module_counts[short_mod] = module_counts.get(short_mod, 0) + 1
             for mod, count in module_counts.items():
-                desc = self._classify_with_context(mod, internal_set)
-                cat_label = self._category_label_for_module(mod, internal_set)
+                # Для классификации используем оригинальное имя
+                original_mod = next((m for m in [imp.get("module") for imp in data.get("imports", [])] if self._normalize_display_name(m) == mod), mod)
+                desc = self._classify_with_context(original_mod, internal_set)
+                cat_label = self._category_label_for_module(original_mod, internal_set)
                 color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
                 module_deps.append({
                     "name": mod,
@@ -183,7 +210,7 @@ class ReportGenerator:
 
         data["module_deps"] = sorted(module_deps, key=lambda x: (x["category"], x["name"]))
 
-        # --- Обработка module_display для импортов ---
+        # --- Обработка module_display для импортов (всегда короткое имя) ---
         if is_elf:
             for imp in data.get("imports", []):
                 resolved = imp.get("resolved_libs", [])
@@ -191,9 +218,9 @@ class ReportGenerator:
                     parts = []
                     for lib in resolved:
                         if self._is_internal_module(lib, internal_set):
-                            parts.append(f"Internal/{lib}")
+                            parts.append(f"Internal/{self._normalize_display_name(lib)}")
                         else:
-                            parts.append(lib)
+                            parts.append(self._normalize_display_name(lib))
                     imp["module_display"] = "/".join(parts)
                 else:
                     mod = imp.get("module", "")
@@ -202,16 +229,23 @@ class ReportGenerator:
                     elif mod == "unknown":
                         imp["module_display"] = "ELF"
                     else:
-                        imp["module_display"] = mod
+                        imp["module_display"] = self._normalize_display_name(mod)
+        elif is_macho:
+            for imp in data.get("imports", []):
+                if "module" in imp:
+                    imp["module_display"] = self._normalize_display_name(imp["module"])
+                else:
+                    imp["module_display"] = imp.get("module_display", "")
         else:
             for imp in data.get("imports", []):
-                imp["module_display"] = imp.get("module", imp.get("module_display", ""))
+                imp["module_display"] = self._normalize_display_name(imp.get("module", imp.get("module_display", "")))
 
         if "elf_sections" not in data:
             data["elf_sections"] = []
         if "exports" not in data:
             data["exports"] = []
 
+        # Сортировка функций: экспортные вперёд
         if "functions" in data and "exports" in data:
             export_names = {exp["name"] for exp in data["exports"]}
             data["functions"].sort(
@@ -257,6 +291,8 @@ class ReportGenerator:
 
         categories: Dict[str, dict] = {}
         for mod in unique_modules:
+            # Нормализуем имя для отображения (без пути)
+            display_mod = self._normalize_display_name(mod)
             desc = self._classify_with_context(mod, internal_set)
             if "Собственный модуль" in desc:
                 cat = "Внутренние модули проекта"
@@ -265,7 +301,7 @@ class ReportGenerator:
                 cat, cat_desc = get_module_category_and_description(mod)
             categories.setdefault(cat, {"description": cat_desc, "modules": []})
             categories[cat]["modules"].append({
-                "name": mod,
+                "name": display_mod,
                 "desc": desc
             })
 
@@ -294,7 +330,6 @@ class ReportGenerator:
                 "count": len(info["modules"]),
             })
 
-        # Статистика
         if total_files is None:
             total_files = len(reports)
         if total_size_bytes is None:
