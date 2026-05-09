@@ -604,7 +604,7 @@ class MainWindow(QMainWindow):
             return
 
         generator = ReportGenerator()
-        ida_reports = input_dir.parent / "IDAReports"
+        ida_reports = input_dir / "IDAReports"
         ida_reports.mkdir(parents=True, exist_ok=True)
         internal_set = _build_internal_set(input_dir)
 
@@ -633,14 +633,14 @@ class MainWindow(QMainWindow):
         self.process_progress.setValue(int(100 * current / total))
 
     def _on_html_finished(self, generated_count: int, report_links: list,
-                          global_modules_set: set, global_elf_set: set,
-                          ida_info: dict, ida_reports: Path, input_dir: Path,
-                          total_files: int, total_size_bytes: int):
+                      global_modules_set: set, global_elf_set: set,
+                      ida_info: dict, ida_reports: Path, input_dir: Path,
+                      total_files: int, total_size_bytes: int):
         """После генерации индивидуальных отчётов создаём сводный индекс."""
         self.process_label.setText("Создание сводного отчёта...")
         QApplication.processEvents()
 
-        error_count = 0  # можно было бы передавать, но пока 0
+        error_count = 0
         from datetime import datetime
         generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -665,6 +665,10 @@ class MainWindow(QMainWindow):
             self.html_generate_btn.setEnabled(True)
             self.process_progress.setValue(100)
             self.process_label.setText("Готово")
+
+            # --- Очистка временных файлов после успешной генерации HTML ---
+            self._cleanup_after_report()
+
             QMessageBox.information(self, "Готово", f"Отчёты сохранены в {ida_reports}\nИндекс: {index_path}")
         except Exception as e:
             self.error_text.append(f"Ошибка создания индексного отчёта: {e}")
@@ -684,3 +688,32 @@ class MainWindow(QMainWindow):
             self.current_theme = new_theme
             apply_theme(QApplication.instance(), new_theme)
             self._update_menu_styles()
+    
+
+    def _cleanup_after_report(self):
+        """Удаляет временные файлы (asm, log, id0, id1, nam, til) для всех кэшированных файлов,
+        если соответствующие чекбоксы активны."""
+        files = self._cached_files
+        if not files:
+            return
+
+        patterns = []
+        if self.cleanup_check.isChecked():
+            patterns.extend(["*.asm", "*.log"])
+        if self.temp_cleanup_check.isChecked():
+            patterns.extend(["*.id0", "*.id1", "*.nam", "*.til"])
+
+        if not patterns:
+            return
+
+        # Используем статический метод безопасного удаления из IDAAnalyzer
+        from ida_batch_tool.ida.runner import IDAAnalyzer
+
+        for f in files:
+            out_dir = f.parent  # по умолчанию временные файлы лежат рядом с исходным
+            for pattern in patterns:
+                # ищем файлы, чьё имя совпадает с именем исходного файла (без расширения)
+                for temp_file in out_dir.glob(pattern):
+                    # IDA создаёт файлы с базой: для file.ext -> file.asm, file.id0 и т.д.
+                    if temp_file.stem == f.stem:
+                        IDAAnalyzer._safe_clean_file(temp_file, description=temp_file.suffix)

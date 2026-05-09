@@ -26,6 +26,24 @@ class HtmlGeneratorWorker(QThread):
         self.delete_json = delete_json
         self.internal_set = internal_set
 
+    # Добавлен статический метод нормализации для устранения дубликатов
+    @staticmethod
+    def _normalize_display_name(module_name: str) -> str:
+        """Обрезает путь, расширения и @rpath/, возвращая короткое имя (как в BaseReportGenerator)."""
+        if not module_name:
+            return ""
+        if '\\' in module_name or '/' in module_name:
+            module_name = module_name.replace('\\', '/').split('/')[-1]
+        if module_name.endswith('.dylib'):
+            module_name = module_name[:-6]
+        elif module_name.endswith('.framework'):
+            module_name = module_name[:-10]
+        elif '.dylib' in module_name:
+            module_name = module_name.split('.dylib')[0]
+        if module_name.startswith('@rpath/'):
+            module_name = module_name[7:]
+        return module_name
+
     def run(self):
         report_links = []
         global_modules_set = set()
@@ -33,7 +51,6 @@ class HtmlGeneratorWorker(QThread):
         ida_info: Optional[Dict[str, Any]] = None
         generated_count = 0
         total = len(self.json_files)
-
         total_files = 0
         total_size_bytes = 0
 
@@ -49,18 +66,16 @@ class HtmlGeneratorWorker(QThread):
                 if ida_info is None and "ida_info" in data:
                     ida_info = data["ida_info"]
 
-                # Сбор модулей для сводного отчёта
+                # ---- Сбор модулей с нормализацией ----
                 if data.get("is_elf") or data.get("is_macho"):
-                    # ELF и Mach-O – используем needed_libs
                     for needed in data.get("needed_libs", []):
-                        global_modules_set.add(needed)
+                        global_modules_set.add(self._normalize_display_name(needed))
                     if data.get("is_elf"):
                         for imp in data.get("imports", []):
                             mod = imp.get("module", "")
                             if mod.startswith("."):
                                 global_elf_set.add(mod)
                 else:
-                    # Windows – собираем из imports
                     for imp in data.get("imports", []):
                         mod = imp.get("module")
                         if not mod or mod.lower() == "unknown":
@@ -68,7 +83,7 @@ class HtmlGeneratorWorker(QThread):
                         if mod.startswith("."):
                             global_elf_set.add(mod)
                         else:
-                            global_modules_set.add(mod)
+                            global_modules_set.add(self._normalize_display_name(mod))
 
                 original_file = Path(data["file_name"]).name
                 source_full = Path(data["file_name"])

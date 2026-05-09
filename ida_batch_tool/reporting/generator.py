@@ -347,40 +347,52 @@ class MachOReportGenerator(BaseReportGenerator):
         self._classifier = get_platform_classifier("macOS / iOS")
 
     def prepare_report_data(self, data, internal_set):
-        needed_libs = data.get("needed_libs", [])
+        imports = data.get("imports", [])
+        # Сбор всех модулей из таблицы импорта
+        module_counts = {}
+        for imp in imports:
+            mod = imp.get("module")
+            if not mod:
+                continue
+            short = self._normalize_display_name(mod)
+            module_counts[short] = module_counts.get(short, 0) + 1
+
+        # known / unknown – на основе уникальных модулей из таблицы импорта
         known = []
         unknown = []
-        for lib in needed_libs:
-            desc = self._classify_with_context(lib, internal_set)
+        for mod in module_counts.keys():
+            desc = self._classify_with_context(mod, internal_set)
             if "Собственный модуль" in desc:
-                known.append(self._normalize_display_name(lib))
+                known.append(mod)
             elif "Неопознанный" in desc:
-                unknown.append(self._normalize_display_name(lib))
+                unknown.append(mod)
             else:
-                known.append(self._normalize_display_name(lib))
+                known.append(mod)
         data["known_modules"] = sorted(known)
         data["unknown_modules"] = sorted(unknown)
         data["elf_sections"] = []
 
-        module_counts = {}
-        for lib in needed_libs:
-            short = self._normalize_display_name(lib)
-            module_counts[short] = module_counts.get(short, 0) + 1
+        # Построение module_deps с реальными счётчиками
         deps = []
         for mod, count in module_counts.items():
             cat_label, desc = self._classify_full(mod, internal_set)
             color = self.CATEGORY_COLORS.get(cat_label, "#9E9E9E")
-            deps.append({"name": mod, "category": cat_label, "count": count,
-                         "description": desc, "color": color})
+            deps.append({
+                "name": mod,
+                "category": cat_label,
+                "count": count,
+                "description": desc,
+                "color": color
+            })
         data["module_deps"] = sorted(deps, key=lambda x: (x["category"], x["name"]))
 
-        for imp in data.get("imports", []):
+        # Обработка module_display для каждого импорта
+        for imp in imports:
             if "module" in imp:
                 imp["module_display"] = self._normalize_display_name(imp["module"])
             else:
                 imp["module_display"] = imp.get("module_display", "")
         return data
-
 
 class ReportGenerator:
     def __init__(self):

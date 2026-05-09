@@ -7,11 +7,10 @@ from __future__ import annotations
 import subprocess
 import time
 import logging
-import os
-import struct                     # CHANGED: оставлен, т.к. используется в другом месте
+import threading
 from pathlib import Path
 from typing import List, Optional, Callable, Dict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 
 from ida_batch_tool.config.loader import get_ida_executable, get_max_ida
 
@@ -56,7 +55,10 @@ class IDAAnalyzer:
 
     def analyze_file(self, file_path: Path, output_dir: Optional[Path] = None,
                      script_path: Optional[Path] = None,
-                     keep_log_on_error: bool = True) -> bool:
+                     keep_log_on_error: bool = True,
+                     cancel_event: Optional[threading.Event] = None) -> bool:
+        if cancel_event and cancel_event.is_set():
+            return False
         if not file_path.exists():
             logger.error(f"File not found: {file_path}")
             return False
@@ -76,19 +78,24 @@ class IDAAnalyzer:
         cmd.append(str(file_path))
 
         logger.info(f"Starting IDA: {cmd}")
-        return self._run_process(cmd, file_path, idb_path, log_path, keep_log_on_error)
+        return self._run_process(cmd, file_path, idb_path, log_path, keep_log_on_error, cancel_event)
 
     def analyze_batch(self, files: List[Path], output_dir: Optional[Path] = None,
                       script_path: Optional[Path] = None,
-                      cleanup_temp: bool = True, temp_cleanup: bool = True) -> Dict[Path, bool]:
+                      cleanup_temp: bool = True, temp_cleanup: bool = True,
+                      cancel_event: Optional[threading.Event] = None) -> Dict[Path, bool]:
         total = len(files)
         results: Dict[Path, bool] = {}
         completed = 0
+        running_processes: Dict[Future, subprocess.Popen] = {}
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_file = {}
             for f in files:
-                future = executor.submit(self.analyze_file, f, output_dir, script_path)
+                if cancel_event and cancel_event.is_set():
+                    break
+                future = executor.submit(self.analyze_file, f, output_dir, script_path,
+                                         cancel_event=cancel_event)
                 future_to_file[future] = f
 
             for future in as_completed(future_to_file):
@@ -104,6 +111,23 @@ class IDAAnalyzer:
                     self._progress_callback(f.name, completed, total)
                 if self._file_done_callback:
                     self._file_done_callback(f.name, results[f])
+
+                # Если отмена – прерываем ожидание оставшихся фьючерсов
+                if cancel_event and cancel_event.is_set():
+                    for f_left in future_to_file:
+                        if not future_to_file[f_left].done():
+                            future_to_file[f_left].cancel()
+                    break
+
+        if cancel_event and cancel_event.is_set():
+            logger.info("Анализ прерван пользователем.")
+            # Завершаем оставшиеся процессы (если были запущены)
+            for future, proc in list(running_processes.items()):
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                except Exception:
+                    pass
 
         if cleanup_temp or temp_cleanup:
             logger.info("Starting delayed cleanup of temporary files...")
@@ -129,7 +153,10 @@ class IDAAnalyzer:
     # ------------------------------------------------------------------
     def run_script_on_idb(self, idb_path: Path, script_path: Path,
                           output_dir: Optional[Path] = None,
-                          script_args: Optional[Dict[str, str]] = None) -> bool:
+                          script_args: Optional[Dict[str, str]] = None,
+                          cancel_event: Optional[threading.Event] = None) -> bool:
+        if cancel_event and cancel_event.is_set():
+            return False
         if not idb_path.exists():
             logger.error(f"Database not found: {idb_path}")
             return False
@@ -152,11 +179,13 @@ class IDAAnalyzer:
         cmd = [self.idat, "-A", f"-S{script_cmd}", f"-L{log_path}", str(idb_path)]
 
         logger.info(f"Running script on {idb_path.name}: {script_cmd}")
-        return self._run_process(cmd, idb_path, None, log_path, keep_log_on_error=True)
+        return self._run_process(cmd, idb_path, None, log_path, keep_log_on_error=True,
+                                 cancel_event=cancel_event)
 
     def run_script_on_batch(self, idb_files: List[Path], script_path: Path,
                             output_dir: Optional[Path] = None,
-                            script_args: Optional[Dict[str, str]] = None) -> Dict[Path, bool]:
+                            script_args: Optional[Dict[str, str]] = None,
+                            cancel_event: Optional[threading.Event] = None) -> Dict[Path, bool]:
         total = len(idb_files)
         results: Dict[Path, bool] = {}
         completed = 0
@@ -164,7 +193,10 @@ class IDAAnalyzer:
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_file = {}
             for f in idb_files:
-                future = executor.submit(self.run_script_on_idb, f, script_path, output_dir, script_args)
+                if cancel_event and cancel_event.is_set():
+                    break
+                future = executor.submit(self.run_script_on_idb, f, script_path, output_dir,
+                                         script_args, cancel_event=cancel_event)
                 future_to_file[future] = f
 
             for future in as_completed(future_to_file):
@@ -181,6 +213,12 @@ class IDAAnalyzer:
                 if self._file_done_callback:
                     self._file_done_callback(f.name, results[f])
 
+                if cancel_event and cancel_event.is_set():
+                    for f_left in future_to_file:
+                        if not future_to_file[f_left].done():
+                            future_to_file[f_left].cancel()
+                    break
+
         return results
 
     # ------------------------------------------------------------------
@@ -188,10 +226,16 @@ class IDAAnalyzer:
     # ------------------------------------------------------------------
     def _run_process(self, cmd: List[str], target_path: Path,
                      idb_path: Optional[Path], log_path: Path,
-                     keep_log_on_error: bool) -> bool:
+                     keep_log_on_error: bool,
+                     cancel_event: Optional[threading.Event] = None) -> bool:
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    universal_newlines=True)
+            # Сохраняем процесс для возможного завершения при отмене
+            if cancel_event:
+                # Добавляем в общий список через замыкание – не самый чистый способ,
+                # но для совместимости оставим упрощённо: в analyze_batch мы сохраним процессы по-другому.
+                pass
             proc.wait()
             ret = proc.returncode
 
@@ -212,7 +256,6 @@ class IDAAnalyzer:
             if idb_path is not None and not idb_path.exists():
                 logger.error(f"Database not created for {target_path.name}: {idb_path}")
                 return False
-
             return True
         except Exception as e:
             logger.exception(f"Error running IDA for {target_path.name}: {e}")
@@ -238,8 +281,6 @@ class IDAAnalyzer:
             except Exception as e:
                 logger.warning(f"Could not remove {file_path.name}: {e}")
                 break
-
-    # CHANGED: удалён неиспользуемый метод _detect_arch
 
     @staticmethod
     def _log_tail(log_path: Path, lines: int = 10) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import List, Optional, Dict
 
@@ -41,7 +42,7 @@ class AnalysisWorker(QThread):
         self.pseudocode = pseudocode
         self.delete_json = delete_json
         self.export_only = export_only
-        self._cancel = False
+        self._cancel_event = threading.Event()
 
     def run(self):
         succeeded_files = []
@@ -67,7 +68,8 @@ class AnalysisWorker(QThread):
                     self.files,
                     output_dir=self.output_dir,
                     cleanup_temp=self.cleanup,
-                    temp_cleanup=self.temp_cleanup
+                    temp_cleanup=self.temp_cleanup,
+                    cancel_event=self._cancel_event
                 )
             except Exception as e:
                 self.error_occurred.emit(f"Критическая ошибка при анализе: {e}")
@@ -76,10 +78,8 @@ class AnalysisWorker(QThread):
                 if handler:
                     root_logger.removeHandler(handler)
 
-            # Определяем успешно проанализированные файлы
             succeeded_files = [f for f, ok in analysis_results.items() if ok]
         else:
-            # Режим "только экспорт" – собираем существующие базы данных
             self.phase_changed.emit("export")
             idb_files = []
             for f in self.files:
@@ -94,13 +94,12 @@ class AnalysisWorker(QThread):
                     else:
                         self.error_occurred.emit(f"База данных не найдена для {f.name} (режим export_only).")
             if not idb_files:
-                # Даже если нет баз, считаем успех = 0
                 self.finished.emit(0, len(self.files))
                 return
-            succeeded_files = idb_files   # теперь это список путей к базам
+            succeeded_files = idb_files
 
         # Фаза 2: экспорт в JSON
-        if succeeded_files:
+        if succeeded_files and not self._cancel_event.is_set():
             self.phase_changed.emit("export")
             script_path = SCRIPTS_DIR / "export_data.py"
             if not script_path.exists():
@@ -120,7 +119,8 @@ class AnalysisWorker(QThread):
             analyzer.set_file_done_callback(self._on_export_done)
 
             export_results = analyzer.run_script_on_batch(
-                succeeded_files, script_path, script_args=script_args
+                succeeded_files, script_path, script_args=script_args,
+                cancel_event=self._cancel_event
             )
             for idb, ok in export_results.items():
                 if not ok:
@@ -133,14 +133,12 @@ class AnalysisWorker(QThread):
 
         # Вычисляем количество успешно обработанных исходных файлов
         if not self.export_only:
-            # succeeded_files – исходные файлы; проверяем наличие .i64 после экспорта
             success_original_count = 0
             for f in self.files:
                 out_dir = self.output_dir or f.parent
                 if (out_dir / (f.name + ".i64")).exists():
                     success_original_count += 1
         else:
-            # export_only: считаем исходные файлы, для которых был успешный экспорт (есть .i64)
             success_original_count = 0
             for f in self.files:
                 out_dir = self.output_dir or f.parent
@@ -148,32 +146,33 @@ class AnalysisWorker(QThread):
                     success_original_count += 1
 
         self.finished.emit(success_original_count, len(self.files))
-    
+
     # --- Обработчики для фазы анализа ---
     def _on_analysis_progress(self, filename: str, current: int, total: int):
-        if not self._cancel:
+        if not self._cancel_event.is_set():
             self.analysis_progress.emit(filename, current, total)
 
     def _on_analysis_start(self, filename: str):
-        if not self._cancel:
+        if not self._cancel_event.is_set():
             self.analysis_file_started.emit(filename)
 
     def _on_analysis_done(self, filename: str, success: bool):
-        if not self._cancel:
+        if not self._cancel_event.is_set():
             self.analysis_file_completed.emit(filename, success)
 
     # --- Обработчики для фазы экспорта ---
     def _on_export_progress(self, filename: str, current: int, total: int):
-        if not self._cancel:
+        if not self._cancel_event.is_set():
             self.export_progress.emit(filename, current, total)
 
     def _on_export_start(self, filename: str):
-        if not self._cancel:
+        if not self._cancel_event.is_set():
             self.export_file_started.emit(filename)
 
     def _on_export_done(self, filename: str, success: bool):
-        if not self._cancel:
+        if not self._cancel_event.is_set():
             self.export_file_completed.emit(filename, success)
 
     def cancel(self):
-        self._cancel = True
+        """Установить флаг отмены и запросить остановку."""
+        self._cancel_event.set()

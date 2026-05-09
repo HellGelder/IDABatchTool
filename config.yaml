@@ -1,6 +1,6 @@
 default_inputdir: .
 ida:
-  idat32: C:/Program Files/IDA Professional 9.0/idat.exe
-  idat64: C:/Program Files/IDA Professional 9.0/idat.exe
+  idat32: C:/Program Files/IDA Professional 9.3/idat.exe
+  idat64: C:/Program Files/IDA Professional 9.3/idat.exe
 max_ida: 6
-theme: light
+theme: dark
