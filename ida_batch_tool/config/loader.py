@@ -1,6 +1,9 @@
 """Загрузка и сохранение конфигурации из config.yaml."""
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -10,12 +13,14 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
+# Единое имя исполняемого файла IDA 9.0+
+_IDA_EXECUTABLE_NAME = "idat"
+
 
 def _default_config() -> Dict[str, Any]:
     return {
         "ida": {
-            "idat64": "idat.exe",
-            "idat32": "idat.exe",
+            "executable": _IDA_EXECUTABLE_NAME,
         },
         "max_ida": 4,
         "default_inputdir": ".",
@@ -56,10 +61,85 @@ def save_config(config_dict: Dict[str, Any], config_path: Optional[Path] = None)
         yaml.safe_dump(config_dict, f, default_flow_style=False, allow_unicode=True)
 
 
-def get_ida_executable(arch: str = "64") -> str:
+def _find_in_path(executable: str) -> Optional[Path]:
+    """Ищет исполняемый файл в системном PATH (для Windows добавляет .exe при необходимости)."""
+    if sys.platform == "win32" and not executable.endswith(".exe"):
+        exe_path = shutil.which(executable + ".exe")
+        if exe_path:
+            return Path(exe_path)
+    exe_path = shutil.which(executable)
+    return Path(exe_path) if exe_path else None
+
+
+def _find_ida_manually() -> Optional[Path]:
+    """Поиск IDA 9.0+ в типичных директориях установки."""
+    name = _IDA_EXECUTABLE_NAME
+    possible_dirs = []
+
+    if sys.platform == "win32":
+        program_files = Path("C:/Program Files")
+        if program_files.exists():
+            for d in program_files.iterdir():
+                if d.is_dir() and d.name.startswith("IDA Professional 9."):
+                    possible_dirs.append(d)
+    elif sys.platform == "linux":
+        possible_dirs = [
+            Path.home() / "ida-pro-9.0",
+            Path.home() / "ida",
+            Path("/opt/ida-pro-9.0"),
+            Path("/opt/ida"),
+        ]
+    elif sys.platform == "darwin":
+        applications = Path("/Applications")
+        if applications.exists():
+            for d in applications.iterdir():
+                if d.is_dir() and d.name.startswith("IDA Professional 9."):
+                    possible_dirs.append(d / "Contents/MacOS")
+    else:
+        return None
+
+    for base in possible_dirs:
+        if not base.exists():
+            continue
+        exe = base / name
+        if exe.is_file():
+            return exe
+        if sys.platform == "win32":
+            exe_win = base / (name + ".exe")
+            if exe_win.is_file():
+                return exe_win
+    return None
+
+
+def get_ida_executable() -> str:
+    """
+    Возвращает полный путь к idat (IDA 9.0+).
+    Порядок поиска:
+    1. Значение из config.yaml.
+    2. Поиск в системном PATH (idat или idat.exe).
+    3. Поиск в типичных папках установки.
+    Если ничего не найдено, возвращает значение из конфига.
+    """
     cfg = load_config()
-    key = f"idat{arch}"
-    return cfg.get("ida", {}).get(key, f"idat{arch}.exe")
+    name = cfg.get("ida", {}).get("executable", _IDA_EXECUTABLE_NAME)
+
+    # 1. Полный путь из конфига?
+    if os.path.isabs(name):
+        p = Path(name)
+        if p.is_file():
+            return str(p)
+
+    # 2. Поиск в PATH
+    found = _find_in_path(name)
+    if found:
+        return str(found)
+
+    # 3. Типичные папки установки
+    found_man = _find_ida_manually()
+    if found_man:
+        return str(found_man)
+
+    return name
 
 
 def get_max_ida() -> int:

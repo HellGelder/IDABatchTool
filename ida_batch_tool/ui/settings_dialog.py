@@ -1,14 +1,16 @@
 """Виджет страницы конфигурации."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path          # <-- добавлен импорт
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLineEdit, QPushButton, QGroupBox, QMessageBox,
-    QFileDialog
+    QFileDialog, QLabel
 )
 from PySide6.QtCore import Signal, Qt
 
-from ida_batch_tool.config.loader import load_config, save_config
+from ida_batch_tool.config.loader import load_config, save_config, get_ida_executable
 
 
 class SettingsPage(QWidget):
@@ -26,25 +28,21 @@ class SettingsPage(QWidget):
         main_layout.setSpacing(20)
 
         # --- Группа IDA ---
-        ida_group = QGroupBox("Пути к утилитам IDA")
+        ida_group = QGroupBox("Путь к IDA (idat)")
         ida_layout = QFormLayout(ida_group)
         ida_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         ida_layout.setSpacing(12)
 
-        self.idat64_edit = QLineEdit()
-        self.browse_idat64_btn = QPushButton("Обзор...")
-        hbox64 = QHBoxLayout()
-        hbox64.addWidget(self.idat64_edit, 1)
-        hbox64.addWidget(self.browse_idat64_btn)
+        self.idat_edit = QLineEdit()
+        self.idat_edit.setPlaceholderText("idat (или idat.exe на Windows)")
+        self.browse_btn = QPushButton("Обзор...")
+        self.auto_btn = QPushButton("Автопоиск")
 
-        self.idat32_edit = QLineEdit()
-        self.browse_idat32_btn = QPushButton("Обзор...")
-        hbox32 = QHBoxLayout()
-        hbox32.addWidget(self.idat32_edit, 1)
-        hbox32.addWidget(self.browse_idat32_btn)
-
-        ida_layout.addRow("idat64.exe:", hbox64)
-        ida_layout.addRow("idat32.exe:", hbox32)
+        hbox = QHBoxLayout()
+        hbox.addWidget(self.idat_edit, 1)
+        hbox.addWidget(self.browse_btn)
+        hbox.addWidget(self.auto_btn)
+        ida_layout.addRow("Исполняемый файл:", hbox)
 
         # --- Тема ---
         theme_group = QGroupBox("Оформление")
@@ -73,20 +71,16 @@ class SettingsPage(QWidget):
         main_layout.addStretch()
 
         # Сигналы
-        self.browse_idat64_btn.clicked.connect(
-            lambda: self._browse_file(self.idat64_edit, "idat64.exe"))
-        self.browse_idat32_btn.clicked.connect(
-            lambda: self._browse_file(self.idat32_edit, "idat32.exe"))
+        self.browse_btn.clicked.connect(self._browse_executable)
+        self.auto_btn.clicked.connect(self._autodetect_ida)
         self.save_btn.clicked.connect(self._save_settings)
 
-        # Мгновенное переключение темы
         self.theme_light_btn.clicked.connect(lambda: self._switch_theme("light"))
         self.theme_dark_btn.clicked.connect(lambda: self._switch_theme("dark"))
 
     def _load_to_ui(self):
         ida = self.cfg.get("ida", {})
-        self.idat64_edit.setText(ida.get("idat64", "idat64.exe"))
-        self.idat32_edit.setText(ida.get("idat32", "idat32.exe"))
+        self.idat_edit.setText(ida.get("executable", "idat"))
         theme = self.cfg.get("theme", "light")
         self.theme_light_btn.setChecked(theme == "light")
         self.theme_dark_btn.setChecked(theme == "dark")
@@ -101,13 +95,10 @@ class SettingsPage(QWidget):
 
     def _save_settings(self):
         new_cfg = {
+            **self.cfg,
             "ida": {
-                "idat64": self.idat64_edit.text().strip(),
-                "idat32": self.idat32_edit.text().strip(),
+                "executable": self.idat_edit.text().strip() or "idat"
             },
-            "max_ida": self.cfg.get("max_ida", 4),
-            "default_inputdir": self.cfg.get("default_inputdir", "."),
-            "theme": self.cfg.get("theme", "light"),
         }
         try:
             save_config(new_cfg)
@@ -115,9 +106,26 @@ class SettingsPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
 
-    def _browse_file(self, lineedit: QLineEdit, filename_hint: str):
+    def _browse_executable(self):
+        current = self.idat_edit.text()
+        if sys.platform == "win32":
+            filter_str = "idat (idat.exe);;Все файлы (*)"
+        else:
+            filter_str = "Все файлы (*)"
         path, _ = QFileDialog.getOpenFileName(
-            self, f"Укажите {filename_hint}", lineedit.text(),
-            "Исполняемые файлы (*.exe);;Все файлы (*.*)")
+            self, "Укажите исполняемый файл IDA (idat)", current, filter_str
+        )
         if path:
-            lineedit.setText(path)
+            self.idat_edit.setText(path)
+
+    def _autodetect_ida(self):
+        found = get_ida_executable()
+        # Теперь Path доступен
+        if not found or not Path(found).exists():
+            QMessageBox.information(
+                self, "Не найдено",
+                "Не удалось автоматически найти idat.\nПроверьте PATH или укажите путь вручную."
+            )
+            return
+        self.idat_edit.setText(found)
+        QMessageBox.information(self, "Найдено", f"IDAT найден:\n{found}")
