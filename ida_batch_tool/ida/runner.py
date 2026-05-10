@@ -25,6 +25,8 @@ LOG_EXT = ".log"
 
 DEFAULT_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0
+# Период опроса состояния процесса (сек) для возможности отмены
+POLL_INTERVAL = 0.5
 
 
 class IDAAnalyzer:
@@ -87,7 +89,6 @@ class IDAAnalyzer:
         total = len(files)
         results: Dict[Path, bool] = {}
         completed = 0
-        running_processes: Dict[Future, subprocess.Popen] = {}
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_file = {}
@@ -112,22 +113,20 @@ class IDAAnalyzer:
                 if self._file_done_callback:
                     self._file_done_callback(f.name, results[f])
 
-                # Если отмена – прерываем ожидание оставшихся фьючерсов
                 if cancel_event and cancel_event.is_set():
-                    for f_left in future_to_file:
-                        if not future_to_file[f_left].done():
-                            future_to_file[f_left].cancel()
+                    # Пытаемся отменить ещё не запущенные задачи (Python 3.9+)
+                    for f_left_future, _ in list(future_to_file.items()):
+                        if not f_left_future.done():
+                            try:
+                                f_left_future.cancel()
+                            except Exception:
+                                pass
+                    # Принудительно завершаем работу executor'а без ожидания оставшихся задач
+                    executor.shutdown(wait=False, cancel_futures=True)
                     break
 
         if cancel_event and cancel_event.is_set():
             logger.info("Анализ прерван пользователем.")
-            # Завершаем оставшиеся процессы (если были запущены)
-            for future, proc in list(running_processes.items()):
-                try:
-                    if proc.poll() is None:
-                        proc.terminate()
-                except Exception:
-                    pass
 
         if cleanup_temp or temp_cleanup:
             logger.info("Starting delayed cleanup of temporary files...")
@@ -214,9 +213,13 @@ class IDAAnalyzer:
                     self._file_done_callback(f.name, results[f])
 
                 if cancel_event and cancel_event.is_set():
-                    for f_left in future_to_file:
-                        if not future_to_file[f_left].done():
-                            future_to_file[f_left].cancel()
+                    for f_left_future, _ in list(future_to_file.items()):
+                        if not f_left_future.done():
+                            try:
+                                f_left_future.cancel()
+                            except Exception:
+                                pass
+                    executor.shutdown(wait=False, cancel_futures=True)
                     break
 
         return results
@@ -231,13 +234,22 @@ class IDAAnalyzer:
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    universal_newlines=True)
-            # Сохраняем процесс для возможного завершения при отмене
-            if cancel_event:
-                # Добавляем в общий список через замыкание – не самый чистый способ,
-                # но для совместимости оставим упрощённо: в analyze_batch мы сохраним процессы по-другому.
-                pass
-            proc.wait()
-            ret = proc.returncode
+            # Цикл ожидания с проверкой события отмены
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    logger.info(f"Отмена процесса для {target_path.name}")
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    return False
+                try:
+                    ret = proc.wait(timeout=POLL_INTERVAL)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
 
             if idb_path is not None:
                 temp_id0 = idb_path.with_suffix(".id0")

@@ -348,7 +348,6 @@ class MachOReportGenerator(BaseReportGenerator):
 
     def prepare_report_data(self, data, internal_set):
         imports = data.get("imports", [])
-        # Сбор всех модулей из таблицы импорта
         module_counts = {}
         for imp in imports:
             mod = imp.get("module")
@@ -357,7 +356,6 @@ class MachOReportGenerator(BaseReportGenerator):
             short = self._normalize_display_name(mod)
             module_counts[short] = module_counts.get(short, 0) + 1
 
-        # known / unknown – на основе уникальных модулей из таблицы импорта
         known = []
         unknown = []
         for mod in module_counts.keys():
@@ -372,7 +370,6 @@ class MachOReportGenerator(BaseReportGenerator):
         data["unknown_modules"] = sorted(unknown)
         data["elf_sections"] = []
 
-        # Построение module_deps с реальными счётчиками
         deps = []
         for mod, count in module_counts.items():
             cat_label, desc = self._classify_full(mod, internal_set)
@@ -386,13 +383,14 @@ class MachOReportGenerator(BaseReportGenerator):
             })
         data["module_deps"] = sorted(deps, key=lambda x: (x["category"], x["name"]))
 
-        # Обработка module_display для каждого импорта
+        # Исправление: безопасное присвоение module_display
         for imp in imports:
             if "module" in imp:
                 imp["module_display"] = self._normalize_display_name(imp["module"])
             else:
                 imp["module_display"] = imp.get("module_display", "")
         return data
+
 
 class ReportGenerator:
     def __init__(self):
@@ -426,8 +424,6 @@ class ReportGenerator:
                        total_size_bytes: Optional[int] = None,
                        error_count: Optional[int] = None,
                        generation_time: Optional[str] = None) -> Path:
-        # Индекс строится через Windows генератор, но он теперь использует глобальный classify_module,
-        # который безопасно пробует все платформы
         return self._macho.generate_index(
             reports_dir, input_dir, reports, unique_modules,
             ida_info, elf_sections, internal_set,

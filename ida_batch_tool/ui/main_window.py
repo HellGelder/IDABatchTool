@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from collections import Counter
@@ -232,7 +231,6 @@ class MainWindow(QMainWindow):
         self.radio_to_platform: Dict[QRadioButton, str] = {}
         grid = QGridLayout()
         row, col = 0, 0
-        # Итерация только по трём платформам (без "All platforms")
         for key, info in PLATFORM_EXTENSIONS.items():
             radio = QRadioButton(info["label"])
             self.platform_buttons.addButton(radio)
@@ -317,7 +315,6 @@ class MainWindow(QMainWindow):
         self.process_progress = QProgressBar()
         self.process_progress.setRange(0, 100)
 
-        # Горизонтальный слой для кнопок (запуск, отмена, генерация HTML)
         buttons_row = QHBoxLayout()
         self.start_btn = QPushButton("Запустить анализ")
         self.start_btn.setFixedHeight(40)
@@ -340,7 +337,7 @@ class MainWindow(QMainWindow):
         process_layout.addLayout(buttons_row)
         layout.addWidget(process_group)
 
-        # 5. Окно ошибок (растянуто на всю ширину)
+        # 5. Окно ошибок
         self.error_text = QTextEdit()
         self.error_text.setReadOnly(True)
         self.error_text.setMaximumHeight(150)
@@ -349,6 +346,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
         return page
+
     # ------------------------------------------------------------------
     # Сигналы и слоты
     # ------------------------------------------------------------------
@@ -384,9 +382,6 @@ class MainWindow(QMainWindow):
         if checked and checked in self.radio_to_platform:
             platform_key = self.radio_to_platform[checked]
             return PLATFORM_EXTENSIONS[platform_key]["exts"]
-        # Если ни одна радио‑кнопка не выбрана (например, при первом запуске),
-        # возвращаем объединённые расширения всех трёх платформ,
-        # чтобы поиск файлов всё равно работал.
         all_exts = []
         for info in PLATFORM_EXTENSIONS.values():
             for ext in info["exts"]:
@@ -464,10 +459,12 @@ class MainWindow(QMainWindow):
             return
 
         idat_path = get_ida_executable()
-        if not shutil.which(idat_path):
+        # Используем прямую проверку существования файла вместо shutil.which,
+        # т.к. which может не находить файлы с пробелами или нестандартными расширениями.
+        if not Path(idat_path).is_file():
             QMessageBox.warning(
                 self, "Утилита IDA не найдена",
-                f"Исполняемый файл '{idat_path}' не найден в системном PATH.\n\n"
+                f"Исполняемый файл '{idat_path}' не найден.\n\n"
                 "Пожалуйста, проверьте путь к idat.exe в разделе «Конфигурация» или "
                 "добавьте папку с IDA в переменную PATH."
             )
@@ -622,7 +619,6 @@ class MainWindow(QMainWindow):
             delete_json=self.delete_json_check.isChecked(),
             internal_set=internal_set
         )
-        # Используем прогресс из воркера для обновления основного прогрессбара
         self.html_worker.progress_updated.connect(self._on_html_progress)
         self.html_worker.error_occurred.connect(self._on_error)
         self.html_worker.finished.connect(self._on_html_finished)
@@ -636,12 +632,10 @@ class MainWindow(QMainWindow):
                       global_modules_set: set, global_elf_set: set,
                       ida_info: dict, ida_reports: Path, input_dir: Path,
                       total_files: int, total_size_bytes: int):
-        """После генерации индивидуальных отчётов создаём сводный индекс."""
         self.process_label.setText("Создание сводного отчёта...")
         QApplication.processEvents()
 
         error_count = 0
-        from datetime import datetime
         generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         generator = ReportGenerator()
@@ -666,7 +660,6 @@ class MainWindow(QMainWindow):
             self.process_progress.setValue(100)
             self.process_label.setText("Готово")
 
-            # --- Очистка временных файлов после успешной генерации HTML ---
             self._cleanup_after_report()
 
             QMessageBox.information(self, "Готово", f"Отчёты сохранены в {ida_reports}\nИндекс: {index_path}")
@@ -677,10 +670,7 @@ class MainWindow(QMainWindow):
             self.cancel_btn.setEnabled(False)
             self.html_generate_btn.setEnabled(True)
             self.process_label.setText("Ошибка при создании индекса")
-    
-    # ------------------------------------------------------------------
-    # Прочие методы
-    # ------------------------------------------------------------------
+
     def _on_config_changed(self, new_config: Dict[str, Any]):
         self.cfg = new_config
         new_theme = new_config.get("theme", "light")
@@ -688,11 +678,8 @@ class MainWindow(QMainWindow):
             self.current_theme = new_theme
             apply_theme(QApplication.instance(), new_theme)
             self._update_menu_styles()
-    
 
     def _cleanup_after_report(self):
-        """Удаляет временные файлы (asm, log, id0, id1, nam, til) для всех кэшированных файлов,
-        если соответствующие чекбоксы активны."""
         files = self._cached_files
         if not files:
             return
@@ -706,14 +693,11 @@ class MainWindow(QMainWindow):
         if not patterns:
             return
 
-        # Используем статический метод безопасного удаления из IDAAnalyzer
         from ida_batch_tool.ida.runner import IDAAnalyzer
 
         for f in files:
-            out_dir = f.parent  # по умолчанию временные файлы лежат рядом с исходным
+            out_dir = f.parent
             for pattern in patterns:
-                # ищем файлы, чьё имя совпадает с именем исходного файла (без расширения)
                 for temp_file in out_dir.glob(pattern):
-                    # IDA создаёт файлы с базой: для file.ext -> file.asm, file.id0 и т.д.
                     if temp_file.stem == f.stem:
                         IDAAnalyzer._safe_clean_file(temp_file, description=temp_file.suffix)
