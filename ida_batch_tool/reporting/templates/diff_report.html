@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Сравнение: {{ primary }} ↔ {{ secondary }}</title>
+    <style>
+        :root {
+            --bg: #f5f5f5;
+            --card-bg: white;
+            --text: #303030;
+            --accent: #007aff;
+            --border: #d1d1d1;
+        }
+        body {
+            font-family: "Segoe UI", system-ui, sans-serif;
+            font-size: 12px;
+            margin: 20px;
+            background: var(--bg);
+            color: var(--text);
+        }
+        h1, h2, h3 { color: var(--accent); }
+        h1 { font-size: 16px; }
+        h2 { font-size: 14px; margin-top: 24px; }
+        h3 { font-size: 13px; margin: 12px 0 4px; }
+        .back-link {
+            display: block;
+            margin-bottom: 20px;
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 10px;
+            margin: 12px 0;
+            padding: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 8px 0;
+            font-size: 11px;
+        }
+        th, td {
+            text-align: left;
+            padding: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+        th { background: #f0f0f5; }
+        .flex-row {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .flex-row > div {
+            flex: 1;
+            min-width: 250px;
+        }
+        .stat-big {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .progress-bar {
+            background: #e0e0e0;
+            border-radius: 4px;
+            height: 8px;
+            margin: 4px 0 12px 0;
+        }
+        .progress-fill {
+            background: var(--accent);
+            height: 100%;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <a class="back-link" href="{{ back_link }}">← Назад к сводному отчёту</a>
+
+    <h1>Сравнение файлов</h1>
+    <div class="card">
+        <p><strong>Первичный (эталон):</strong> {{ primary }}</p>
+        <p><strong>Вторичный (текущий):</strong> {{ secondary }}</p>
+        {% if error %}
+        <p style="color: red;">Ошибка: {{ error }}</p>
+        {% endif %}
+    </div>
+
+    <h2>Общая схожесть</h2>
+    <div class="card">
+        <div class="flex-row">
+            <div>
+                <span class="stat-big">{{ "%.2f"|format(similarity * 100) }}%</span>
+                <span class="stat-label">Схожесть</span>
+                <div class="progress-bar"><div class="progress-fill" style="width:{{ similarity * 100 }}%;"></div></div>
+            </div>
+            <div>
+                <span class="stat-big">{{ "%.2f"|format(confidence * 100) }}%</span>
+                <span class="stat-label">Уверенность</span>
+                <div class="progress-bar"><div class="progress-fill" style="width:{{ confidence * 100 }}%;"></div></div>
+            </div>
+        </div>
+        {% if description %}<p><em>{{ description }}</em></p>{% endif %}
+        {% if version %}<p>Версия BinDiff: {{ version }}</p>{% endif %}
+    </div>
+
+    <h2>Статистика по файлам</h2>
+    <div class="card">
+        <div class="flex-row">
+            <div>
+                <h3>Первичный файл</h3>
+                <table>
+                    <tr><td>Имя</td><td>{{ file1.filename }}</td></tr>
+                    <tr><td>Хэш</td><td><code>{{ file1.hash }}</code></td></tr>
+                    <tr><td>Всего функций</td><td>{{ total_functions1 }}</td></tr>
+                    <tr><td>Базовых блоков</td><td>{{ file1.basicblocks + file1.libbasicblocks }}</td></tr>
+                    <tr><td>Инструкций</td><td>{{ file1.instructions + file1.libinstructions }}</td></tr>
+                    <tr><td>Рёбер</td><td>{{ file1.edges + file1.libedges }}</td></tr>
+                </table>
+            </div>
+            <div>
+                <h3>Вторичный файл</h3>
+                <table>
+                    <tr><td>Имя</td><td>{{ file2.filename }}</td></tr>
+                    <tr><td>Хэш</td><td><code>{{ file2.hash }}</code></td></tr>
+                    <tr><td>Всего функций</td><td>{{ total_functions2 }}</td></tr>
+                    <tr><td>Базовых блоков</td><td>{{ file2.basicblocks + file2.libbasicblocks }}</td></tr>
+                    <tr><td>Инструкций</td><td>{{ file2.instructions + file2.libinstructions }}</td></tr>
+                    <tr><td>Рёбер</td><td>{{ file2.edges + file2.libedges }}</td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <h2>Совпадающие функции ({{ matched_functions|length }})</h2>
+    <div class="card">
+        <p>Показатель совпадения: {{ matched_functions|length }} из {{ total_functions1 }} функций первичного файла 
+        ({{ "%.1f"|format(matched_functions|length / total_functions1 * 100) if total_functions1 else 0 }}%)</p>
+        {% if matched_functions %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Имя (primary)</th>
+                    <th>Адрес</th>
+                    <th>Имя (secondary)</th>
+                    <th>Адрес</th>
+                    <th>Схожесть</th>
+                    <th>Уверенность</th>
+                    <th>Совп. блоков</th>
+                    <th>Совп. инструкций</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for f in matched_functions %}
+                <tr>
+                    <td>{{ f.name1 }}</td>
+                    <td><code>{{ f.address1 }}</code></td>
+                    <td>{{ f.name2 }}</td>
+                    <td><code>{{ f.address2 }}</code></td>
+                    <td>{{ "%.2f"|format(f.similarity * 100) }}%</td>
+                    <td>{{ "%.2f"|format(f.confidence * 100) }}%</td>
+                    <td>{{ f.basicblocks }}</td>
+                    <td>{{ f.instructions }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>Нет совпавших функций.</p>
+        {% endif %}
+    </div>
+</body>
+</html>

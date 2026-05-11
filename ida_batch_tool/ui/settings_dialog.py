@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path          # <-- добавлен импорт
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLineEdit, QPushButton, QGroupBox, QMessageBox,
-    QFileDialog, QLabel
+    QFileDialog
 )
 from PySide6.QtCore import Signal, Qt
 
-from ida_batch_tool.config.loader import load_config, save_config, get_ida_executable
+from ida_batch_tool.config.loader import (
+    load_config, save_config, get_ida_executable, get_bindiff_executable
+)
 
 
 class SettingsPage(QWidget):
@@ -35,14 +38,31 @@ class SettingsPage(QWidget):
 
         self.idat_edit = QLineEdit()
         self.idat_edit.setPlaceholderText("idat (или idat.exe на Windows)")
-        self.browse_btn = QPushButton("Обзор...")
-        self.auto_btn = QPushButton("Автопоиск")
+        self.browse_ida_btn = QPushButton("Обзор...")
+        self.auto_ida_btn = QPushButton("Автопоиск")
 
-        hbox = QHBoxLayout()
-        hbox.addWidget(self.idat_edit, 1)
-        hbox.addWidget(self.browse_btn)
-        hbox.addWidget(self.auto_btn)
-        ida_layout.addRow("Исполняемый файл:", hbox)
+        ida_hbox = QHBoxLayout()
+        ida_hbox.addWidget(self.idat_edit, 1)
+        ida_hbox.addWidget(self.browse_ida_btn)
+        ida_hbox.addWidget(self.auto_ida_btn)
+        ida_layout.addRow("Исполняемый файл:", ida_hbox)
+
+        # --- Группа BinDiff ---
+        bindiff_group = QGroupBox("Путь к BinDiff")
+        bindiff_layout = QFormLayout(bindiff_group)
+        bindiff_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        bindiff_layout.setSpacing(12)
+
+        self.bindiff_edit = QLineEdit()
+        self.bindiff_edit.setPlaceholderText("bindiff (или bindiff.exe на Windows)")
+        self.browse_bindiff_btn = QPushButton("Обзор...")
+        self.auto_bindiff_btn = QPushButton("Автопоиск")
+
+        bindiff_hbox = QHBoxLayout()
+        bindiff_hbox.addWidget(self.bindiff_edit, 1)
+        bindiff_hbox.addWidget(self.browse_bindiff_btn)
+        bindiff_hbox.addWidget(self.auto_bindiff_btn)
+        bindiff_layout.addRow("Исполняемый файл:", bindiff_hbox)
 
         # --- Тема ---
         theme_group = QGroupBox("Оформление")
@@ -53,12 +73,13 @@ class SettingsPage(QWidget):
         self.theme_dark_btn = QPushButton("Тёмная")
         self.theme_dark_btn.setCheckable(True)
 
-        hbox_theme = QHBoxLayout()
-        hbox_theme.addWidget(self.theme_light_btn)
-        hbox_theme.addWidget(self.theme_dark_btn)
-        theme_layout.addRow("Тема:", hbox_theme)
+        theme_hbox = QHBoxLayout()
+        theme_hbox.addWidget(self.theme_light_btn)
+        theme_hbox.addWidget(self.theme_dark_btn)
+        theme_layout.addRow("Тема:", theme_hbox)
 
         main_layout.addWidget(ida_group)
+        main_layout.addWidget(bindiff_group)
         main_layout.addWidget(theme_group)
 
         # Кнопка сохранения
@@ -71,8 +92,10 @@ class SettingsPage(QWidget):
         main_layout.addStretch()
 
         # Сигналы
-        self.browse_btn.clicked.connect(self._browse_executable)
-        self.auto_btn.clicked.connect(self._autodetect_ida)
+        self.browse_ida_btn.clicked.connect(self._browse_ida)
+        self.auto_ida_btn.clicked.connect(self._autodetect_ida)
+        self.browse_bindiff_btn.clicked.connect(self._browse_bindiff)
+        self.auto_bindiff_btn.clicked.connect(self._autodetect_bindiff)
         self.save_btn.clicked.connect(self._save_settings)
 
         self.theme_light_btn.clicked.connect(lambda: self._switch_theme("light"))
@@ -81,6 +104,10 @@ class SettingsPage(QWidget):
     def _load_to_ui(self):
         ida = self.cfg.get("ida", {})
         self.idat_edit.setText(ida.get("executable", "idat"))
+
+        bindiff = self.cfg.get("bindiff", {})
+        self.bindiff_edit.setText(bindiff.get("executable", "bindiff"))
+
         theme = self.cfg.get("theme", "light")
         self.theme_light_btn.setChecked(theme == "light")
         self.theme_dark_btn.setChecked(theme == "dark")
@@ -99,6 +126,9 @@ class SettingsPage(QWidget):
             "ida": {
                 "executable": self.idat_edit.text().strip() or "idat"
             },
+            "bindiff": {
+                "executable": self.bindiff_edit.text().strip() or "bindiff"
+            },
         }
         try:
             save_config(new_cfg)
@@ -106,12 +136,9 @@ class SettingsPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
 
-    def _browse_executable(self):
+    def _browse_ida(self):
         current = self.idat_edit.text()
-        if sys.platform == "win32":
-            filter_str = "idat (idat.exe);;Все файлы (*)"
-        else:
-            filter_str = "Все файлы (*)"
+        filter_str = "idat (idat.exe);;Все файлы (*)" if sys.platform == "win32" else "Все файлы (*)"
         path, _ = QFileDialog.getOpenFileName(
             self, "Укажите исполняемый файл IDA (idat)", current, filter_str
         )
@@ -120,7 +147,6 @@ class SettingsPage(QWidget):
 
     def _autodetect_ida(self):
         found = get_ida_executable()
-        # Теперь Path доступен
         if not found or not Path(found).exists():
             QMessageBox.information(
                 self, "Не найдено",
@@ -129,3 +155,26 @@ class SettingsPage(QWidget):
             return
         self.idat_edit.setText(found)
         QMessageBox.information(self, "Найдено", f"IDAT найден:\n{found}")
+
+    def _browse_bindiff(self):
+        current = self.bindiff_edit.text()
+        if sys.platform == "win32":
+            filter_str = "bindiff (bindiff.exe);;Все файлы (*)"
+        else:
+            filter_str = "Все файлы (*)"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Укажите исполняемый файл BinDiff", current, filter_str
+        )
+        if path:
+            self.bindiff_edit.setText(path)
+
+    def _autodetect_bindiff(self):
+        found = get_bindiff_executable()
+        if not found or not Path(found).exists():
+            QMessageBox.information(
+                self, "Не найдено",
+                "Не удалось автоматически найти bindiff.\nПроверьте PATH или поместите файл в корень проекта."
+            )
+            return
+        self.bindiff_edit.setText(found)
+        QMessageBox.information(self, "Найдено", f"BinDiff найден:\n{found}")

@@ -26,7 +26,7 @@ from ida_batch_tool.ui.settings_dialog import SettingsPage
 from ida_batch_tool.ui.widgets.treemap import TreemapWidget
 from ida_batch_tool.ui.workers.html_generation import HtmlGeneratorWorker
 from ida_batch_tool.ui.analysis_worker import AnalysisWorker
-
+from ida_batch_tool.ui.diff_page import DiffPage
 
 class MainWindow(QMainWindow):
     WINDOW_WIDTH = 1200
@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         self.current_theme: str = self.cfg.get("theme", "light")
         self.analysis_in_progress = False
         self.html_in_progress = False
+        self._diff_in_progress = False          # <-- добавлено
         self.worker: Optional[AnalysisWorker] = None
         self.html_worker: Optional[HtmlGeneratorWorker] = None
         self.active_page = 0
@@ -52,6 +53,8 @@ class MainWindow(QMainWindow):
         apply_theme(QApplication.instance(), self.current_theme)
         self.btn_analysis.setChecked(True)
         self.btn_settings.setChecked(False)
+        if hasattr(self, 'btn_compare'):
+            self.btn_compare.setChecked(False)
         self._update_menu_styles()
         self._refresh_file_list()
 
@@ -61,6 +64,8 @@ class MainWindow(QMainWindow):
     def _update_menu_styles(self):
         self.btn_analysis.setStyleSheet(self._menu_button_style(self.btn_analysis.isChecked(), self.current_theme))
         self.btn_settings.setStyleSheet(self._menu_button_style(self.btn_settings.isChecked(), self.current_theme))
+        if hasattr(self, 'btn_compare'):
+            self.btn_compare.setStyleSheet(self._menu_button_style(self.btn_compare.isChecked(), self.current_theme))
 
     @staticmethod
     def _create_help_button(tooltip_text: str) -> QPushButton:
@@ -165,6 +170,13 @@ class MainWindow(QMainWindow):
         self.btn_analysis.setChecked(True)
         sidebar_layout.addWidget(self.btn_analysis)
 
+        # !!! Новая кнопка «Сравнение» !!!
+        self.btn_compare = QPushButton("  Сравнение")
+        self.btn_compare.setCheckable(True)
+        self.btn_compare.setChecked(False)
+        sidebar_layout.addWidget(self.btn_compare)
+        # !!! конец нового блока !!!
+
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         sidebar_layout.addWidget(spacer)
@@ -183,8 +195,17 @@ class MainWindow(QMainWindow):
         self.analysis_page = self._create_analysis_page()
         self.settings_page = SettingsPage()
         self.settings_page.config_changed.connect(self._on_config_changed)
-        self.pages.addWidget(self.analysis_page)
-        self.pages.addWidget(self.settings_page)
+
+        # !!! Добавление DiffPage !!!
+        self.diff_page = DiffPage()
+        # связываем сигналы, чтобы главное окно знало о состоянии сравнения
+        self.diff_page.diff_started.connect(lambda: setattr(self, '_diff_in_progress', True))
+        self.diff_page.diff_finished.connect(lambda: setattr(self, '_diff_in_progress', False))
+        # !!! конец добавления !!!
+
+        self.pages.addWidget(self.analysis_page)   # индекс 0
+        self.pages.addWidget(self.settings_page)   # индекс 1
+        self.pages.addWidget(self.diff_page)       # индекс 2
         self.pages.setCurrentIndex(0)
         self.active_page = 0
 
@@ -353,6 +374,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self.btn_analysis.clicked.connect(lambda: self.switch_page(0))
         self.btn_settings.clicked.connect(lambda: self.switch_page(1))
+        self.btn_compare.clicked.connect(lambda: self.switch_page(2))
         self.browse_dir_btn.clicked.connect(self._browse_input_dir)
         self.start_btn.clicked.connect(self._start_analysis)
         self.cancel_btn.clicked.connect(self._cancel_analysis)
@@ -362,9 +384,13 @@ class MainWindow(QMainWindow):
     def switch_page(self, index: int):
         if self.analysis_in_progress and index != 0:
             return
+        if self._diff_in_progress and index != 2:       
+            return
         self.active_page = index
         self.btn_analysis.setChecked(index == 0)
         self.btn_settings.setChecked(index == 1)
+        if hasattr(self, 'btn_compare'):
+            self.btn_compare.setChecked(index == 2)
         self._update_menu_styles()
         self.pages.setCurrentIndex(index)
 

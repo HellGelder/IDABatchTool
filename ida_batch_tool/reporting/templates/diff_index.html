@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Сводка сравнения директорий</title>
+    <style>
+        :root {
+            --bg: #f5f5f5;
+            --card-bg: white;
+            --text: #303030;
+            --accent: #007aff;
+            --border: #d1d1d1;
+        }
+        body {
+            font-family: "Segoe UI", system-ui, sans-serif;
+            font-size: 12px;
+            margin: 20px;
+            background: var(--bg);
+            color: var(--text);
+        }
+        h1, h2 { color: var(--accent); }
+        .card {
+            background: var(--card-bg);
+            border-radius: 10px;
+            margin: 12px 0;
+            padding: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 8px 0;
+            font-size: 11px;
+        }
+        th, td {
+            text-align: left;
+            padding: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+        th { background: #f0f0f5; }
+        .global-stats {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            font-size: 14px;
+            font-weight: 600;
+            margin: 10px 0;
+        }
+        .back-link {
+            display: block;
+            margin-bottom: 15px;
+            color: var(--accent);
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Сводка сравнения директорий</h1>
+    <p>Левая (эталонная): <strong>{{ left_dir }}</strong><br>
+       Правая (текущая): <strong>{{ right_dir }}</strong></p>
+
+    <h2>Общая статистика</h2>
+    <div class="card">
+        <div class="global-stats">
+            <div>Всего пар: {{ total_pairs }}</div>
+            <div>Средняя схожесть: {{ "%.2f"|format(avg_similarity * 100) }}%</div>
+            <div>Средняя уверенность: {{ "%.2f"|format(avg_confidence * 100) }}%</div>
+        </div>
+    </div>
+
+    <h2>Список сравнений</h2>
+    <div class="card">
+        {% if pairs %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Файл</th>
+                    <th>Схожесть</th>
+                    <th>Уверенность</th>
+                    <th>Совпало функций</th>
+                    <th>Всего функций в первичном</th>
+                    <th>Подробнее</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pair in pairs %}
+                <tr>
+                    <td>{{ pair.stem }}</td>
+                    <td>{{ "%.2f"|format(pair.similarity * 100) }}%</td>
+                    <td>{{ "%.2f"|format(pair.confidence * 100) }}%</td>
+                    <td>{{ pair.matched_count }}</td>
+                    <td>{{ pair.total_funcs1 }}</td>
+                    <td><a href="{{ pair.report_filename }}">Отчёт</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>Нет данных сравнения.</p>
+        {% endif %}
+    </div>
+</body>
+</html>

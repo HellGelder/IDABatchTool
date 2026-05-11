@@ -1,3 +1,4 @@
+# ida_batch_tool/ui/constants.py (обновлённая версия)
 """Константы интерфейса."""
 from enum import Enum
 from pathlib import Path
@@ -6,6 +7,13 @@ from typing import Dict, List
 
 class AnalysisStatus(Enum):
     NOT_ANALYZED = "not_analyzed"
+    IN_PROGRESS = "in_progress"
+    SUCCESS = "success"
+    ERROR = "error"
+
+
+class DiffStatus(Enum):
+    NONE = "none"
     IN_PROGRESS = "in_progress"
     SUCCESS = "success"
     ERROR = "error"

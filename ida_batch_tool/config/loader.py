@@ -23,6 +23,9 @@ def _default_config() -> Dict[str, Any]:
         "ida": {
             "executable": _IDA_EXECUTABLE_NAME,
         },
+        "bindiff": {
+            "executable": _BINDIFF_EXECUTABLE_NAME,
+        },
         "max_ida": 4,
         "default_inputdir": ".",
         "log_level": "INFO",
@@ -35,12 +38,11 @@ def _merge_with_defaults(user_cfg: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in default.items():
         if key not in user_cfg:
             user_cfg[key] = value
-    if "ida" in default:
-        if "ida" not in user_cfg:
-            user_cfg["ida"] = {}
-        for subkey, subval in default["ida"].items():
-            if subkey not in user_cfg["ida"]:
-                user_cfg["ida"][subkey] = subval
+        elif isinstance(value, dict):
+            # рекурсивно объединяем подсловари
+            for subkey, subval in value.items():
+                if subkey not in user_cfg[key]:
+                    user_cfg[key][subkey] = subval
     return user_cfg
 
 
@@ -171,3 +173,38 @@ def get_max_ida() -> int:
 
 def get_default_inputdir() -> str:
     return load_config().get("default_inputdir", ".")
+
+
+
+_BINDIFF_EXECUTABLE_NAME = "bindiff"
+
+def get_bindiff_executable() -> str:
+    """
+    Возвращает полный путь к bindiff.exe.
+    Порядок поиска:
+    1. Значение из config.yaml (ключ 'bindiff.executable').
+    2. Поиск в корне проекта (рядом с config.yaml).
+    3. Поиск в системном PATH.
+    Если ничего не найдено, возвращает имя по умолчанию.
+    """
+    cfg = load_config()
+    name = cfg.get("bindiff", {}).get("executable", _BINDIFF_EXECUTABLE_NAME)
+
+    if sys.platform == "win32" and not name.endswith(".exe"):
+        name += ".exe"
+
+    # 1. Абсолютный путь из конфига
+    if os.path.isabs(name):
+        p = Path(name)
+        if p.is_file():
+            return str(p)
+        return name
+
+    # 2. Поиск в корне проекта
+    local_path = PROJECT_ROOT / name
+    if local_path.is_file():
+        return str(local_path)
+
+    # 3. Поиск в PATH
+    found = shutil.which(name)
+    return found if found else name

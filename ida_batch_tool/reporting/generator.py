@@ -429,3 +429,75 @@ class ReportGenerator:
             ida_info, elf_sections, internal_set,
             total_files, total_size_bytes, error_count, generation_time
         )
+    
+class DiffReportGenerator(BaseReportGenerator):
+    """Генератор отчёта сравнения из .diff.json."""
+
+    def __init__(self):
+        super().__init__()
+        self.diff_template = self.env.get_template("diff_report.html")
+        # переназначаем report_template для использования в generate_from_json
+        self.report_template = self.diff_template
+        from ida_batch_tool.classifier.platform_classifier import get_platform_classifier
+        self._classifier = get_platform_classifier("Linux / Android")
+
+    def prepare_report_data(self, data: Dict[str, Any],
+                            internal_set: Optional[Set[str]] = None) -> Dict[str, Any]:
+        """Дополняет данные для шаблона, сохраняя все поля из JSON."""
+        data.setdefault("matched_functions", [])
+        data.setdefault("file1", {})
+        data.setdefault("file2", {})
+        data.setdefault("total_functions1", 0)
+        data.setdefault("total_functions2", 0)
+        data["total_matched"] = len(data["matched_functions"])
+        data["has_error"] = bool(data.get("error"))
+        return data
+    
+    def generate_diff_index(self, reports_dir: Path, json_files: List[Path],
+                            left_dir: Path, right_dir: Path) -> Path:
+        """
+        Создаёт индексный HTML-файл со сводкой всех сравнений.
+        """
+        pairs = []
+        total_similarity = 0.0
+        total_confidence = 0.0
+        count = 0
+
+        for jf in json_files:
+            with open(jf, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            stem = jf.stem.replace(".diff", "")
+            html_filename = stem + ".html"
+            sim = float(data.get("similarity", 0.0))
+            conf = float(data.get("confidence", 0.0))
+            matched = len(data.get("matched_functions", []))
+            total1 = data.get("total_functions1", 0)
+            pairs.append({
+                "stem": stem,
+                "similarity": sim,
+                "confidence": conf,
+                "matched_count": matched,
+                "total_funcs1": total1,
+                "report_filename": html_filename,
+            })
+            total_similarity += sim
+            total_confidence += conf
+            count += 1
+
+        avg_similarity = total_similarity / count if count else 0.0
+        avg_confidence = total_confidence / count if count else 0.0
+
+        template = self.env.get_template("diff_index.html")
+        html = template.render(
+            left_dir=str(left_dir),
+            right_dir=str(right_dir),
+            total_pairs=count,
+            avg_similarity=avg_similarity,
+            avg_confidence=avg_confidence,
+            pairs=pairs,
+        )
+        index_path = reports_dir / "index.html"
+        with open(index_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        logger.info(f"Сводный отчёт сохранён: {index_path}")
+        return index_path
