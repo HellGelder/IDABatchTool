@@ -251,7 +251,9 @@ class DiffPage(QWidget):
 
     def _generate_report(self) -> None:
         from ida_batch_tool.reporting.generator import DiffReportGenerator, _build_internal_set
+        import json
         import logging
+        from datetime import datetime
         logger = logging.getLogger(__name__)
 
         if not self._output_dir or not self._output_dir.is_dir():
@@ -271,6 +273,19 @@ class DiffPage(QWidget):
         right_dir = Path(self.right_edit.text().strip())
         internal_set = _build_internal_set(left_dir).union(_build_internal_set(right_dir))
 
+        # Пытаемся получить версию IDA из первого попавшегося .export.json в левой папке
+        ida_version = ""
+        export_jsons = list(left_dir.glob("*.export.json"))
+        if export_jsons:
+            try:
+                with open(export_jsons[0], "r", encoding="utf-8") as f:
+                    analysis_data = json.load(f)
+                ida_version = analysis_data.get("ida_info", {}).get("kernel_version", "")
+            except Exception:
+                pass
+
+        generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         logger.info(f"Генерация отчётов из {len(json_files)} JSON файлов в {reports_dir}")
         try:
             for jf in json_files:
@@ -284,7 +299,11 @@ class DiffPage(QWidget):
                     internal_set=internal_set
                 )
             # Генерация сводного индекса
-            index_path = gen.generate_diff_index(reports_dir, json_files, left_dir, right_dir)
+            index_path = gen.generate_diff_index(
+                reports_dir, json_files, left_dir, right_dir,
+                generation_time=generation_time,
+                ida_version=ida_version
+            )
             QMessageBox.information(self, "Готово",
                                     f"Отчёты сохранены в {reports_dir}\nСводный индекс: {index_path}")
         except Exception as e:

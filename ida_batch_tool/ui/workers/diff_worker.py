@@ -1,3 +1,4 @@
+# ida_batch_tool/ui/workers/diff_worker.py
 """Фоновый поток для параллельного сравнения BinDiff. Экспорт через -OBinExportAutoAction."""
 from __future__ import annotations
 
@@ -12,6 +13,9 @@ from pathlib import Path
 from typing import List, Tuple
 
 from PySide6.QtCore import QThread, Signal
+
+from ida_batch_tool.ida.runner import IDAAnalyzer
+from ida_batch_tool.ui.constants import SCRIPTS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,10 @@ class DiffWorker(QThread):
 
     def run(self) -> None:
         total = len(self.file_pairs)
+        if total == 0:
+            self.finished.emit(0, 0)
+            return
+
         logger.info(f"Сравнение {total} пар, параллельно до {self.max_workers}, результаты в {self.output_dir}")
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -78,13 +86,12 @@ class DiffWorker(QThread):
             # 1. Экспорт первичной базы
             primary_binexport = self.output_dir / f"{stem}_primary.BinExport"
             if not self._export_binexport(primary_i64, primary_binexport):
-                self.error_occurred.emit(f"Ошибка экспорта primary для {stem}")
+                # ошибка уже отправлена через error_occurred в _export_binexport
                 return False
 
             # 2. Экспорт вторичной базы
             secondary_binexport = self.output_dir / f"{stem}_secondary.BinExport"
             if not self._export_binexport(secondary_i64, secondary_binexport):
-                self.error_occurred.emit(f"Ошибка экспорта secondary для {stem}")
                 return False
 
             # 3. Сравнение
@@ -103,7 +110,7 @@ class DiffWorker(QThread):
             return False
 
     def _export_binexport(self, i64_path: Path, output_file: Path) -> bool:
-        """Экспорт через опции IDA -OBinExportAutoAction и -OBinExportModule."""
+        """Экспорт с немедленным оповещением при любом сбое."""
         if self._cancel_event.is_set():
             return False
 
@@ -112,23 +119,50 @@ class DiffWorker(QThread):
         cmd = [
             self.idat_path,
             "-A",
-            f"-OBinExportAutoAction:BinExportBinary",
+            "-OBinExportAutoAction:BinExportBinary",
             f"-OBinExportModule:{output_file}",
             str(i64_path)
         ]
         logger.info(f"Экспорт BinExport: {' '.join(cmd)}")
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                                  encoding='utf-8', errors='replace')
+            stdout = (proc.stdout or "").strip()
+            stderr = (proc.stderr or "").strip()
+
+            # Всегда сохраняем вывод в лог для диагностики
+            if stdout:
+                logger.debug(f"stdout ({i64_path.name}):\n{stdout[:1000]}")
+            if stderr:
+                logger.debug(f"stderr ({i64_path.name}):\n{stderr[:1000]}")
+
             if proc.returncode != 0:
-                logger.error(f"Экспорт завершился с ошибкой (код {proc.returncode}): {proc.stderr.strip()}")
+                # Собираем подсказку по содержимому stderr/stdout
+                if "BinExport" in stderr or "BinExport" in stdout:
+                    hint = "Плагин BinExport завершился с ошибкой."
+                elif "not found" in stderr.lower() or "not found" in stdout.lower():
+                    hint = "Плагин BinExport не найден или не загружен."
+                else:
+                    hint = f"IDA завершилась с кодом {proc.returncode}."
+                detail = f"stdout:\n{stdout[:500]}\nstderr:\n{stderr[:500]}"
+                logger.error(f"Экспорт {i64_path.name}: {hint}\n{detail}")
+                self.error_occurred.emit(f"Ошибка экспорта {i64_path.name}: {hint}\n{detail}")
                 return False
+
             if not output_file.is_file():
-                logger.error(f"Файл {output_file} не создан после экспорта")
+                # Успешный код возврата, но файла нет – подробности критически важны
+                detail = f"stdout:\n{stdout[:1000]}\nstderr:\n{stderr[:1000]}"
+                logger.error(f"Файл {output_file} не создан после успешного выхода IDA. Вывод:\n{detail}")
+                self.error_occurred.emit(
+                    f"Файл BinExport не создан для {i64_path.name}, хотя IDA завершилась успешно.\n{detail}"
+                )
                 return False
+
             logger.info(f"BinExport создан: {output_file}")
             return True
         except Exception as e:
             logger.exception(f"Ошибка при экспорте BinExport: {e}")
+            self.error_occurred.emit(f"Системная ошибка при экспорте {i64_path.name}: {e}")
             return False
 
     def _run_bindiff(self, primary: Path, secondary: Path, output: Path) -> bool:
@@ -168,7 +202,7 @@ class DiffWorker(QThread):
 
     def _parse_bindiff_result(self, db_path: Path, primary: str, secondary: str,
                               json_output: Path) -> None:
-        """Читает SQLite .BinDiff и сохраняет расширенный JSON."""
+        """Читает SQLite .BinDiff и сохраняет JSON с совпадениями."""
         result = {
             "primary": primary,
             "secondary": secondary,
@@ -210,7 +244,6 @@ class DiffWorker(QThread):
                 file_cols = [desc[0] for desc in cur.description]
                 file1 = dict(zip(file_cols, file_rows[0]))
                 file2 = dict(zip(file_cols, file_rows[1]))
-                # Извлекаем нужные поля
                 for f_dict, key in [(file1, "file1"), (file2, "file2")]:
                     result[key] = {
                         "filename": f_dict.get("filename", ""),

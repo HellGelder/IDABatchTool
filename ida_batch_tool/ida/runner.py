@@ -74,7 +74,7 @@ class IDAAnalyzer:
         idb_path = self._unique_idb_path(file_path, out_dir)
         log_path = out_dir / (file_path.name + LOG_EXT)
 
-        cmd = [self.idat, "-B", f"-o{idb_path}", f"-L{log_path}"]
+        cmd = [self.idat, "-B", f"-o{idb_path}", f"-L{log_path}", "-P+"]
         if script_path:
             cmd.append(f"-S{script_path}")
         cmd.append(str(file_path))
