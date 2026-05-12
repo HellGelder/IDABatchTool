@@ -50,6 +50,11 @@ class DiffWorker(QThread):
 
         logger.info(f"Сравнение {total} пар, параллельно до {self.max_workers}, результаты в {self.output_dir}")
 
+        # Проверяем плагин один раз в начале
+        if not self._verify_binexport():
+            self.finished.emit(0, total)
+            return
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_pair = {
                 executor.submit(self._process_pair, primary, secondary, idx): (primary, secondary, idx)
@@ -110,7 +115,7 @@ class DiffWorker(QThread):
             return False
 
     def _export_binexport(self, i64_path: Path, output_file: Path) -> bool:
-        """Экспорт с немедленным оповещением при любом сбое."""
+        """Экспорт через опции IDA -OBinExportAutoAction и -OBinExportModule."""
         if self._cancel_event.is_set():
             return False
 
@@ -125,44 +130,19 @@ class DiffWorker(QThread):
         ]
         logger.info(f"Экспорт BinExport: {' '.join(cmd)}")
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
-                                  encoding='utf-8', errors='replace')
-            stdout = (proc.stdout or "").strip()
-            stderr = (proc.stderr or "").strip()
-
-            # Всегда сохраняем вывод в лог для диагностики
-            if stdout:
-                logger.debug(f"stdout ({i64_path.name}):\n{stdout[:1000]}")
-            if stderr:
-                logger.debug(f"stderr ({i64_path.name}):\n{stderr[:1000]}")
-
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if proc.returncode != 0:
-                # Собираем подсказку по содержимому stderr/stdout
-                if "BinExport" in stderr or "BinExport" in stdout:
-                    hint = "Плагин BinExport завершился с ошибкой."
-                elif "not found" in stderr.lower() or "not found" in stdout.lower():
-                    hint = "Плагин BinExport не найден или не загружен."
-                else:
-                    hint = f"IDA завершилась с кодом {proc.returncode}."
-                detail = f"stdout:\n{stdout[:500]}\nstderr:\n{stderr[:500]}"
-                logger.error(f"Экспорт {i64_path.name}: {hint}\n{detail}")
-                self.error_occurred.emit(f"Ошибка экспорта {i64_path.name}: {hint}\n{detail}")
+                logger.error(f"Экспорт завершился с ошибкой (код {proc.returncode}): {proc.stderr.strip()}")
                 return False
 
             if not output_file.is_file():
-                # Успешный код возврата, но файла нет – подробности критически важны
-                detail = f"stdout:\n{stdout[:1000]}\nstderr:\n{stderr[:1000]}"
-                logger.error(f"Файл {output_file} не создан после успешного выхода IDA. Вывод:\n{detail}")
-                self.error_occurred.emit(
-                    f"Файл BinExport не создан для {i64_path.name}, хотя IDA завершилась успешно.\n{detail}"
-                )
+                logger.error(f"Файл {output_file} не создан после экспорта")
                 return False
 
             logger.info(f"BinExport создан: {output_file}")
             return True
         except Exception as e:
             logger.exception(f"Ошибка при экспорте BinExport: {e}")
-            self.error_occurred.emit(f"Системная ошибка при экспорте {i64_path.name}: {e}")
             return False
 
     def _run_bindiff(self, primary: Path, secondary: Path, output: Path) -> bool:
