@@ -42,6 +42,11 @@ class DiffWorker(QThread):
         total = len(self.file_pairs)
         logger.info(f"Сравнение {total} пар, параллельно до {self.max_workers}, результаты в {self.output_dir}")
 
+        # Проверяем плагин один раз в начале
+        if not self._verify_binexport():
+            self.finished.emit(0, total)
+            return
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_pair = {
                 executor.submit(self._process_pair, primary, secondary, idx): (primary, secondary, idx)
@@ -103,7 +108,7 @@ class DiffWorker(QThread):
             return False
 
     def _export_binexport(self, i64_path: Path, output_file: Path) -> bool:
-        """Экспорт через опции IDA -OBinExportAutoAction и -OBinExportModule."""
+        """Экспорт с анализом вывода IDA при ошибке."""
         if self._cancel_event.is_set():
             return False
 
@@ -112,23 +117,36 @@ class DiffWorker(QThread):
         cmd = [
             self.idat_path,
             "-A",
-            f"-OBinExportAutoAction:BinExportBinary",
+            "-OBinExportAutoAction:BinExportBinary",
             f"-OBinExportModule:{output_file}",
             str(i64_path)
         ]
         logger.info(f"Экспорт BinExport: {' '.join(cmd)}")
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                                  encoding='utf-8', errors='replace')
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
             if proc.returncode != 0:
-                logger.error(f"Экспорт завершился с ошибкой (код {proc.returncode}): {proc.stderr.strip()}")
+                # Собираем подсказки
+                if "not found" in stderr.lower() or "not found" in stdout.lower():
+                    hint = "Плагин BinExport не установлен или не загружается."
+                elif "BinExport" in stdout or "BinExport" in stderr:
+                    hint = "Плагин BinExport вызван, но завершился с ошибкой."
+                else:
+                    hint = "IDA завершилась с ненулевым кодом."
+                logger.error(f"Экспорт не удался (код {proc.returncode}). {hint}\nstdout: {stdout[:500]}\nstderr: {stderr[:500]}")
+                self.error_occurred.emit(f"Ошибка экспорта {i64_path.name}: {hint}")
                 return False
             if not output_file.is_file():
-                logger.error(f"Файл {output_file} не создан после экспорта")
+                logger.error(f"Файл {output_file} не создан. Вывод IDA:\n{stdout[:500]}\n{stderr[:500]}")
+                self.error_occurred.emit(f"Файл BinExport не создан для {i64_path.name}. Проверьте логи IDA.")
                 return False
             logger.info(f"BinExport создан: {output_file}")
             return True
         except Exception as e:
-            logger.exception(f"Ошибка при экспорте BinExport: {e}")
+            logger.exception(f"Исключение при экспорте: {e}")
+            self.error_occurred.emit(f"Системная ошибка при экспорте {i64_path.name}: {e}")
             return False
 
     def _run_bindiff(self, primary: Path, secondary: Path, output: Path) -> bool:
@@ -260,3 +278,29 @@ class DiffWorker(QThread):
 
         with open(json_output, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
+
+    def _verify_binexport(self) -> bool:
+        """
+        Проверяет работоспособность плагина BinExport, запуская тестовый экспорт
+        на первой доступной базе из списка пар.
+        """
+        if not self.file_pairs:
+            return False
+
+        # Берём первую первичную базу, создаём временный файл в output_dir
+        test_i64 = self.file_pairs[0][0]
+        test_output = self.output_dir / "___binexport_test___.BinExport"
+        test_output.unlink(missing_ok=True)
+
+        logger.info("Тестирование плагина BinExport на %s", test_i64.name)
+        success = self._export_binexport(test_i64, test_output)
+
+        if test_output.is_file():
+            test_output.unlink()  # удаляем временный файл
+
+        if not success:
+            self.error_occurred.emit(
+                "Плагин BinExport не работает или не установлен.\n"
+                "Проверьте наличие файла plugins/binexport12_ida64.dll в папке IDA."
+            )
+        return success

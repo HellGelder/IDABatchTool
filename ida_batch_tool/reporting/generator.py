@@ -454,7 +454,9 @@ class DiffReportGenerator(BaseReportGenerator):
         return data
     
     def generate_diff_index(self, reports_dir: Path, json_files: List[Path],
-                            left_dir: Path, right_dir: Path) -> Path:
+                            left_dir: Path, right_dir: Path,
+                            generation_time: str = "",
+                            ida_version: str = "") -> Path:
         """
         Создаёт индексный HTML-файл со сводкой всех сравнений.
         """
@@ -472,6 +474,8 @@ class DiffReportGenerator(BaseReportGenerator):
             conf = float(data.get("confidence", 0.0))
             matched = len(data.get("matched_functions", []))
             total1 = data.get("total_functions1", 0)
+            hash1 = data.get("file1", {}).get("hash", "")
+            hash2 = data.get("file2", {}).get("hash", "")
             pairs.append({
                 "stem": stem,
                 "similarity": sim,
@@ -479,6 +483,8 @@ class DiffReportGenerator(BaseReportGenerator):
                 "matched_count": matched,
                 "total_funcs1": total1,
                 "report_filename": html_filename,
+                "hash1": hash1,
+                "hash2": hash2,
             })
             total_similarity += sim
             total_confidence += conf
@@ -495,6 +501,8 @@ class DiffReportGenerator(BaseReportGenerator):
             avg_similarity=avg_similarity,
             avg_confidence=avg_confidence,
             pairs=pairs,
+            generation_time=generation_time,
+            ida_version=ida_version,
         )
         index_path = reports_dir / "index.html"
         with open(index_path, "w", encoding="utf-8") as f:
