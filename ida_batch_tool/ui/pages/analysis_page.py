@@ -18,7 +18,8 @@ from ida_batch_tool.discovery.finder import find_executables
 from ida_batch_tool.reporting.generator import ReportGenerator, _build_internal_set
 from ida_batch_tool.ui.constants import AnalysisStatus, PLATFORM_EXTENSIONS, SCRIPTS_DIR
 from ida_batch_tool.ui.workers.html_generation import HtmlGeneratorWorker
-from ida_batch_tool.ui.workers.analysis_worker import AnalysisWorker      # исправленный импорт
+from ida_batch_tool.ui.workers.analysis_worker import AnalysisWorker      
+from ida_batch_tool.archive_handler import extract_archive, ARCHIVE_EXTENSIONS, find_7z
 
 
 class AnalysisPage(QWidget):
@@ -47,8 +48,14 @@ class AnalysisPage(QWidget):
         src_layout = QVBoxLayout(source_grp)
         dir_row = QHBoxLayout()
         self.inputdir_edit = QLineEdit()
-        self.inputdir_edit.setPlaceholderText("Путь к папке с бинарными файлами...")
-        self.inputdir_edit.setText(get_default_inputdir())
+        self.inputdir_edit.setPlaceholderText(
+            "Путь к папке с бинарными файлами или к архиву (.apk, .ipa, .dmg)..."
+        )
+        self.inputdir_edit.setToolTip(
+            "Можно указать директорию с исполняемыми файлами или напрямую архив.\n"
+            "Поддерживаемые форматы архивов: APK, IPA, DMG (для DMG требуется 7z).\n"
+            "Архив будет распакован в папку с тем же именем рядом с файлом."
+        )
         self.browse_dir_btn = QPushButton("Обзор...")
         dir_row.addWidget(self.inputdir_edit, 1)
         dir_row.addWidget(self.browse_dir_btn)
@@ -257,6 +264,21 @@ class AnalysisPage(QWidget):
 
         extensions = self._selected_extensions()
         files = find_executables(input_dir, extensions=extensions)
+
+        # Обработка архивов: распаковываем рядом, затем ищем исполняемые файлы внутри
+        for ext in ARCHIVE_EXTENSIONS:
+            for archive_path in Path(input_dir).glob(f'*{ext}'):
+                extracted_dir = extract_archive(archive_path)
+                if extracted_dir and extracted_dir.is_dir():
+                    # добавляем файлы из распакованной папки (рекурсивно)
+                    archive_files = find_executables(str(extracted_dir), extensions=extensions)
+                    files.extend(archive_files)
+                    logger.info(f"Архив {archive_path.name}: добавлено {len(archive_files)} файлов")
+                else:
+                    if ext == '.dmg':
+                        self.error_text.append(
+                            f"Не удалось извлечь {archive_path.name}. Убедитесь, что 7z установлен и доступен в PATH.")
+
         self._cached_files = files
         if not files:
             self.treemap.set_data([])
@@ -266,6 +288,7 @@ class AnalysisPage(QWidget):
         detected = self._detect_platform_by_files(files)
         self._set_platform_radio(detected)
 
+        # Проверка, не изменился ли фильтр расширений после автоопределения платформы
         new_ext = self._selected_extensions()
         if set(new_ext) != set(extensions):
             files = find_executables(input_dir, extensions=new_ext)
@@ -289,6 +312,13 @@ class AnalysisPage(QWidget):
 
     # --- Запуск анализа ---
     def _start_analysis(self) -> None:
+        # Проверка наличия 7z при обнаружении .dmg среди исходных файлов
+        if any(f.suffix.lower() == '.dmg' for f in files):
+            if not find_7z():
+                QMessageBox.warning(self, "Требуется 7z",
+                                    "Для обработки .dmg файлов необходим 7-Zip.\n"
+                                    "Убедитесь, что '7z' доступен в системном PATH.")
+                return
         if self.analysis_in_progress:
             return
 
