@@ -75,7 +75,6 @@ class TreemapWidget(QWidget):
             painter.fillRect(rect, color)
             painter.setPen(QPen(Qt.black, 1))
             painter.drawRect(rect)
-            # Текст (номер) не рисуем, убрано
 
     @staticmethod
     def _color_for_status(status: AnalysisStatus) -> QColor:
@@ -86,5 +85,3 @@ class TreemapWidget(QWidget):
             AnalysisStatus.ERROR: QColor(255, 0, 0),
         }
         return colors.get(status, QColor(128, 128, 128))
-
-    # Удалены методы mouseMoveEvent, hovered_index, tooltip больше не устанавливается

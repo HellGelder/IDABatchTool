@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QProgressBar, QTextEdit, QGroupBox, QFileDialog,
-    QLineEdit, QMessageBox
+    QLineEdit, QMessageBox, QFrame, QSizePolicy
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 
 from ida_batch_tool.config.loader import get_ida_executable, get_bindiff_executable
 from ida_batch_tool.ui.workers.diff_worker import DiffWorker
@@ -29,6 +29,9 @@ class DiffPage(QWidget):
         self._output_dir: Optional[Path] = None
 
         self._init_ui()
+
+    def is_diff_running(self) -> bool:
+        return self._diff_in_progress
 
     def _init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
@@ -69,14 +72,21 @@ class DiffPage(QWidget):
 
         main_layout.addWidget(dir_group)
 
-        # --- Информация ---
+        # --- Динамическое сопоставление файлов ---
         map_group = QGroupBox("Сопоставление файлов")
         map_layout = QVBoxLayout(map_group)
-        self.map_label = QLabel(
-            "Файлы будут сопоставлены по имени (без расширения .i64).\n"
-            "Убедитесь, что в обеих папках присутствуют соответствующие .i64 базы."
-        )
-        map_layout.addWidget(self.map_label)
+
+        self.map_status_label = QLabel("Укажите обе директории для анализа.")
+        self.map_status_label.setWordWrap(True)
+        map_layout.addWidget(self.map_status_label)
+
+        # Таблица несоответствий (скрываемая)
+        self.mismatch_text = QTextEdit()
+        self.mismatch_text.setReadOnly(True)
+        self.mismatch_text.setMaximumHeight(100)
+        self.mismatch_text.setVisible(False)
+        map_layout.addWidget(self.mismatch_text)
+
         main_layout.addWidget(map_group)
 
         # --- Запуск и прогресс ---
@@ -90,6 +100,7 @@ class DiffPage(QWidget):
         btn_layout = QHBoxLayout()
         self.start_btn = QPushButton("Запустить сравнение")
         self.start_btn.setFixedHeight(40)
+        self.start_btn.setEnabled(False)   # будет включено только при наличии пар
         self.cancel_btn = QPushButton("Отмена")
         self.cancel_btn.setFixedHeight(40)
         self.cancel_btn.setEnabled(False)
@@ -124,6 +135,13 @@ class DiffPage(QWidget):
         self.cancel_btn.clicked.connect(self._cancel_comparison)
         self.generate_report_btn.clicked.connect(self._generate_report)
 
+        # Автоматический анализ при изменении путей
+        self.left_edit.textChanged.connect(self._analyze_directories)
+        self.right_edit.textChanged.connect(self._analyze_directories)
+
+        # Первоначальное обновление
+        self._analyze_directories()
+
     def _browse_dir(self, line_edit: QLineEdit) -> None:
         path = QFileDialog.getExistingDirectory(self, "Выберите папку")
         if path:
@@ -134,6 +152,74 @@ class DiffPage(QWidget):
         if path:
             self.output_edit.setText(path)
 
+    # ----------------------------------------------------------------
+    # Анализ директорий и отображение статуса сопоставления
+    # ----------------------------------------------------------------
+    def _analyze_directories(self) -> None:
+        """Анализирует левую и правую папки, обновляет метки и кнопку запуска."""
+        left_dir = self.left_edit.text().strip()
+        right_dir = self.right_edit.text().strip()
+
+        if not left_dir or not os.path.isdir(left_dir) or not right_dir or not os.path.isdir(right_dir):
+            self.map_status_label.setText("Укажите обе директории для анализа.")
+            self.mismatch_text.setVisible(False)
+            self.start_btn.setEnabled(False)
+            return
+
+        left_i64 = sorted(Path(left_dir).glob("*.i64"))
+        right_i64 = sorted(Path(right_dir).glob("*.i64"))
+
+        left_names = {p.stem for p in left_i64}
+        right_names = {p.stem for p in right_i64}
+
+        common = left_names & right_names
+        only_left = left_names - right_names
+        only_right = right_names - left_names
+
+        # Статусная строка
+        if len(common) == len(left_names) == len(right_names) and len(left_names) > 0:
+            status_text = (
+                f"✅ <b>Зеркальные директории</b> — все файлы имеют пару "
+                f"({len(left_names)} .i64 в каждой папке, {len(common)} пар)."
+            )
+            self.start_btn.setEnabled(True)
+        elif common:
+            status_text = (
+                f"⚠️ <b>Частичное совпадение</b>: {len(common)} пар из "
+                f"{len(left_names)} файлов слева и {len(right_names)} справа."
+            )
+            self.start_btn.setEnabled(True)
+        else:
+            status_text = (
+                f"❌ <b>Нет совпадений</b>: {len(left_names)} файлов слева, "
+                f"{len(right_names)} справа. Проверьте директории."
+            )
+            self.start_btn.setEnabled(False)
+
+        self.map_status_label.setText(status_text)
+
+        # Список отсутствующих файлов
+        mismatch_lines = []
+        if only_left:
+            mismatch_lines.append(
+                f"<span style='color:#c62828;'>Только в левой папке ({len(only_left)}): "
+                + ", ".join(sorted(only_left)) + "</span>"
+            )
+        if only_right:
+            mismatch_lines.append(
+                f"<span style='color:#c62828;'>Только в правой папке ({len(only_right)}): "
+                + ", ".join(sorted(only_right)) + "</span>"
+            )
+
+        if mismatch_lines:
+            self.mismatch_text.setHtml("<br>".join(mismatch_lines))
+            self.mismatch_text.setVisible(True)
+        else:
+            self.mismatch_text.setVisible(False)
+
+    # ----------------------------------------------------------------
+    # Логика сравнения (осталась без изменений)
+    # ----------------------------------------------------------------
     def _start_comparison(self) -> None:
         if self._diff_in_progress:
             return
@@ -185,27 +271,15 @@ class DiffPage(QWidget):
 
         # Сопоставление с правой директорией по имени
         right_i64_map = {p.stem: p for p in Path(right_dir).glob("*.i64")}
-        pairs = []
-        missing = 0
+        pairs: List[Tuple[Path, Path]] = []
         for left_path in left_i64:
             stem = left_path.stem
             if stem in right_i64_map:
                 pairs.append((left_path, right_i64_map[stem]))
-            else:
-                missing += 1
 
         if not pairs:
             QMessageBox.warning(self, "Нет совпадений", "Ни один файл из левой директории не имеет пары в правой.")
             return
-
-        if missing > 0:
-            res = QMessageBox.question(
-                self, "Частичное совпадение",
-                f"Найдено {len(pairs)} пар для сравнения, {missing} файлов не имеют пары.\nПродолжить?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if res != QMessageBox.Yes:
-                return
 
         self._diff_in_progress = True
         self._output_dir = output_path
@@ -251,9 +325,7 @@ class DiffPage(QWidget):
 
     def _generate_report(self) -> None:
         from ida_batch_tool.reporting.generator import DiffReportGenerator, _build_internal_set
-        import json
         import logging
-        from datetime import datetime
         logger = logging.getLogger(__name__)
 
         if not self._output_dir or not self._output_dir.is_dir():
@@ -273,19 +345,6 @@ class DiffPage(QWidget):
         right_dir = Path(self.right_edit.text().strip())
         internal_set = _build_internal_set(left_dir).union(_build_internal_set(right_dir))
 
-        # Пытаемся получить версию IDA из первого попавшегося .export.json в левой папке
-        ida_version = ""
-        export_jsons = list(left_dir.glob("*.export.json"))
-        if export_jsons:
-            try:
-                with open(export_jsons[0], "r", encoding="utf-8") as f:
-                    analysis_data = json.load(f)
-                ida_version = analysis_data.get("ida_info", {}).get("kernel_version", "")
-            except Exception:
-                pass
-
-        generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
         logger.info(f"Генерация отчётов из {len(json_files)} JSON файлов в {reports_dir}")
         try:
             for jf in json_files:
@@ -299,6 +358,19 @@ class DiffPage(QWidget):
                     internal_set=internal_set
                 )
             # Генерация сводного индекса
+            from datetime import datetime
+            generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Попытка получить версию IDA из первого попавшегося .export.json в левой папке
+            ida_version = ""
+            export_jsons = list(left_dir.glob("*.export.json"))
+            if export_jsons:
+                try:
+                    import json
+                    with open(export_jsons[0], "r", encoding="utf-8") as f:
+                        analysis_data = json.load(f)
+                    ida_version = analysis_data.get("ida_info", {}).get("kernel_version", "")
+                except Exception:
+                    pass
             index_path = gen.generate_diff_index(
                 reports_dir, json_files, left_dir, right_dir,
                 generation_time=generation_time,

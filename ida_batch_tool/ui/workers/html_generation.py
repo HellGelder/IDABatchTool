@@ -26,10 +26,8 @@ class HtmlGeneratorWorker(QThread):
         self.delete_json = delete_json
         self.internal_set = internal_set
 
-    # Добавлен статический метод нормализации для устранения дубликатов
     @staticmethod
     def _normalize_display_name(module_name: str) -> str:
-        """Обрезает путь, расширения и @rpath/, возвращая короткое имя (как в BaseReportGenerator)."""
         if not module_name:
             return ""
         if '\\' in module_name or '/' in module_name:
@@ -66,7 +64,6 @@ class HtmlGeneratorWorker(QThread):
                 if ida_info is None and "ida_info" in data:
                     ida_info = data["ida_info"]
 
-                # ---- Сбор модулей с нормализацией ----
                 if data.get("is_elf") or data.get("is_macho"):
                     for needed in data.get("needed_libs", []):
                         global_modules_set.add(self._normalize_display_name(needed))

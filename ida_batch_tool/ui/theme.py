@@ -5,6 +5,7 @@ LIGHT_THEME = """
 * {
     font-family: "Segoe UI", "San Francisco", "Helvetica Neue", sans-serif;
     font-size: 12px;
+    color: #303030;                 /* глобальный цвет текста */
 }
 QMainWindow {
     background-color: #f5f5f5;
@@ -22,6 +23,7 @@ QGroupBox {
     margin: 10px;
     padding: 15px;
     border: 1px solid #d1d1d1;
+    color: #303030;                 /* текст внутри группы */
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -48,6 +50,10 @@ QPushButton:pressed {
 }
 QPushButton:disabled {
     background-color: #b0b0b0;
+    color: #ffffff;
+}
+QCheckBox, QRadioButton {
+    color: #303030;
 }
 QLineEdit, QSpinBox, QComboBox {
     background-color: #ffffff;
@@ -55,6 +61,7 @@ QLineEdit, QSpinBox, QComboBox {
     border-radius: 8px;
     padding: 8px;
     font-size: 12px;
+    color: #303030;
 }
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
     border: 1.5px solid #007aff;
@@ -67,6 +74,7 @@ QComboBox QAbstractItemView {
     border: 1px solid #c6c6c8;
     selection-background-color: #007aff;
     selection-color: white;
+    color: #303030;
 }
 QProgressBar {
     border: none;
@@ -87,6 +95,7 @@ QTextEdit, QPlainTextEdit {
     border-radius: 8px;
     padding: 8px;
     font-size: 12px;
+    color: #303030;
 }
 QTabWidget::pane {
     border: none;
@@ -113,6 +122,7 @@ DARK_THEME = """
 * {
     font-family: "Segoe UI", "San Francisco", "Helvetica Neue", sans-serif;
     font-size: 12px;
+    color: #ffffff;                 /* глобальный цвет текста для тёмной темы */
 }
 QMainWindow {
     background-color: #1c1c1e;
@@ -130,6 +140,7 @@ QGroupBox {
     margin: 10px;
     padding: 15px;
     border: 1px solid #3a3a3c;
+    color: #ffffff;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -156,6 +167,7 @@ QPushButton:pressed {
 }
 QPushButton:disabled {
     background-color: #505050;
+    color: #ffffff;
 }
 QCheckBox, QRadioButton {
     color: #ffffff;
@@ -179,6 +191,7 @@ QComboBox QAbstractItemView {
     border: 1px solid #48484a;
     selection-background-color: #0a84ff;
     selection-color: white;
+    color: #ffffff;
 }
 QProgressBar {
     border: none;
