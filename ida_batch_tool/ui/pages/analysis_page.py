@@ -273,7 +273,6 @@ class AnalysisPage(QWidget):
                     # добавляем файлы из распакованной папки (рекурсивно)
                     archive_files = find_executables(str(extracted_dir), extensions=extensions)
                     files.extend(archive_files)
-                    logger.info(f"Архив {archive_path.name}: добавлено {len(archive_files)} файлов")
                 else:
                     if ext == '.dmg':
                         self.error_text.append(
