@@ -18,8 +18,12 @@ from ida_batch_tool.discovery.finder import find_executables
 from ida_batch_tool.reporting.generator import ReportGenerator, _build_internal_set
 from ida_batch_tool.ui.constants import AnalysisStatus, PLATFORM_EXTENSIONS, SCRIPTS_DIR
 from ida_batch_tool.ui.workers.html_generation import HtmlGeneratorWorker
-from ida_batch_tool.ui.workers.analysis_worker import AnalysisWorker      
+from ida_batch_tool.ui.workers.analysis_worker import AnalysisWorker
 from ida_batch_tool.archive_handler import extract_archive, ARCHIVE_EXTENSIONS, find_7z
+from ida_batch_tool.ida.runner import IDAAnalyzer          # <-- добавлен импорт
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class AnalysisPage(QWidget):
@@ -30,6 +34,7 @@ class AnalysisPage(QWidget):
         self.worker: Optional[AnalysisWorker] = None
         self.html_worker: Optional[HtmlGeneratorWorker] = None
         self._cached_files: List[Path] = []
+        self._export_all_after_analysis = False
         self._build_ui()
         self._connect_signals()
         self._refresh_file_list()
@@ -270,9 +275,9 @@ class AnalysisPage(QWidget):
             for archive_path in Path(input_dir).glob(f'*{ext}'):
                 extracted_dir = extract_archive(archive_path)
                 if extracted_dir and extracted_dir.is_dir():
-                    # добавляем файлы из распакованной папки (рекурсивно)
                     archive_files = find_executables(str(extracted_dir), extensions=extensions)
                     files.extend(archive_files)
+                    logger.info(f"Архив {archive_path.name}: добавлено {len(archive_files)} файлов")
                 else:
                     if ext == '.dmg':
                         self.error_text.append(
@@ -287,7 +292,6 @@ class AnalysisPage(QWidget):
         detected = self._detect_platform_by_files(files)
         self._set_platform_radio(detected)
 
-        # Проверка, не изменился ли фильтр расширений после автоопределения платформы
         new_ext = self._selected_extensions()
         if set(new_ext) != set(extensions):
             files = find_executables(input_dir, extensions=new_ext)
@@ -311,13 +315,6 @@ class AnalysisPage(QWidget):
 
     # --- Запуск анализа ---
     def _start_analysis(self) -> None:
-        # Проверка наличия 7z при обнаружении .dmg среди исходных файлов
-        if any(f.suffix.lower() == '.dmg' for f in files):
-            if not find_7z():
-                QMessageBox.warning(self, "Требуется 7z",
-                                    "Для обработки .dmg файлов необходим 7-Zip.\n"
-                                    "Убедитесь, что '7z' доступен в системном PATH.")
-                return
         if self.analysis_in_progress:
             return
 
@@ -329,8 +326,12 @@ class AnalysisPage(QWidget):
             return
 
         input_dir = self.inputdir_edit.text().strip()
-        if not input_dir or not os.path.isdir(input_dir):
-            QMessageBox.warning(self, "Ошибка", "Укажите существующую директорию.")
+        if not input_dir:
+            input_dir = get_default_inputdir()
+            self.inputdir_edit.setText(input_dir)
+
+        if not os.path.isdir(input_dir):
+            QMessageBox.warning(self, "Ошибка", f"Указанная директория не существует: {input_dir}")
             return
 
         files = self._cached_files
@@ -338,22 +339,60 @@ class AnalysisPage(QWidget):
             QMessageBox.information(self, "Информация", "Не найдено подходящих файлов.")
             return
 
-        all_i64 = all(self._get_expected_i64_path(f).exists() for f in files)
+        # Проверка наличия 7z при обнаружении .dmg файлов в списке
+        if any(f.suffix.lower() == '.dmg' for f in files):
+            if not find_7z():
+                QMessageBox.warning(self, "Требуется 7z",
+                                    "Для обработки .dmg файлов необходим 7-Zip.\n"
+                                    "Убедитесь, что '7z' доступен в системном PATH.")
+                return
+
+        # Разделяем файлы на готовые (есть .i64) и требующие анализа
+        files_with_idb = [f for f in files if self._get_expected_i64_path(f).exists()]
+        files_without_idb = [f for f in files if not self._get_expected_i64_path(f).exists()]
+
         export_only = False
-        if all_i64:
+        if files_with_idb:
+            # Есть хотя бы одна готовая база – предлагаем выбор
             msg = QMessageBox(self)
-            msg.setWindowTitle("Базы данных уже существуют")
-            msg.setText("Для всех файлов уже есть .i64 базы.\nВыберите действие:")
-            btn_export_only = msg.addButton("Сформировать только JSON", QMessageBox.ButtonRole.AcceptRole)
-            btn_overwrite = msg.addButton("Перезаписать результаты", QMessageBox.ButtonRole.DestructiveRole)
+            msg.setWindowTitle("Обнаружены существующие базы данных")
+            msg.setText(f"Готово баз: {len(files_with_idb)} из {len(files)}\n"
+                        f"Требуют анализа: {len(files_without_idb)}")
+
+            btn_continue = msg.addButton("Доанализировать новые", QMessageBox.ButtonRole.AcceptRole)
+            btn_overwrite = msg.addButton("Перезаписать всё", QMessageBox.ButtonRole.DestructiveRole)
+            btn_export = msg.addButton("Экспортировать существующие", QMessageBox.ButtonRole.ActionRole)
             btn_cancel = msg.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-            msg.setDefaultButton(btn_export_only)
+
+            msg.setDefaultButton(btn_continue)
             msg.exec()
+
             clicked = msg.clickedButton()
             if clicked == btn_cancel:
                 return
-            elif clicked == btn_export_only:
+            elif clicked == btn_continue:
+                if not files_without_idb:
+                    QMessageBox.information(self, "Информация", "Все файлы уже проанализированы.")
+                    # Переходим к экспорту для всех
+                    files = files_with_idb
+                    export_only = True
+                else:
+                    # Анализируем только новые, затем экспорт для всех
+                    files = files_without_idb
+                    self._export_all_after_analysis = True
+            elif clicked == btn_overwrite:
+                files = files  # остаются все
+                export_only = False
+            elif clicked == btn_export:
+                files = files_with_idb
                 export_only = True
+        else:
+            # Нет ни одной базы – сразу анализ
+            pass
+
+        if not files:
+            QMessageBox.information(self, "Информация", "Нет файлов для обработки.")
+            return
 
         self.analysis_in_progress = True
         self.start_btn.setEnabled(False)
@@ -429,6 +468,20 @@ class AnalysisPage(QWidget):
         self.cancel_btn.setEnabled(False)
         self.process_label.setText(f"Завершено. Обработано: {succeeded}/{total}")
         self.process_progress.setValue(100)
+
+        # Если после анализа новых файлов нужно автоматически запустить экспорт для всех
+        if self._export_all_after_analysis and succeeded > 0:
+            self._export_all_after_analysis = False
+            self.process_label.setText("Автоматический экспорт всех баз...")
+            QApplication.processEvents()
+            # Собираем все файлы, у которых теперь есть .i64
+            all_idb_files = [self._get_expected_i64_path(f) for f in self._cached_files if self._get_expected_i64_path(f).exists()]
+            if all_idb_files:
+                self._start_export_only(all_idb_files)
+            else:
+                self.process_label.setText("Нет готовых баз для экспорта")
+            return
+
         input_dir = self.inputdir_edit.text().strip()
         if input_dir:
             any_json = any(Path(input_dir).rglob("*.export.json"))
@@ -436,6 +489,35 @@ class AnalysisPage(QWidget):
         if self.worker:
             self.worker.deleteLater()
             self.worker = None
+        self._refresh_file_list()
+
+    def _start_export_only(self, idb_files: List[Path]) -> None:
+        """Запускает экспорт в JSON для указанных .i64 файлов (без анализа)."""
+        idat_path = get_ida_executable()
+        script_path = SCRIPTS_DIR / "export_data.py"
+        if not script_path.exists():
+            self.error_text.append(f"Скрипт экспорта не найден: {script_path}")
+            return
+
+        script_args = {}
+        if self.pseudocode_check.isChecked():
+            script_args["pseudocode"] = "1"
+
+        analyzer = IDAAnalyzer(idat_path=idat_path, max_workers=self.max_ida_slider.value())
+        analyzer.set_progress_callback(self._on_export_progress)
+        analyzer.set_file_start_callback(self._on_export_file_started)
+        analyzer.set_file_done_callback(self._on_export_file_completed)
+
+        self.process_label.setText("Фаза: экспорт в JSON...")
+        self.process_progress.setValue(0)
+        QApplication.processEvents()
+
+        export_results = analyzer.run_script_on_batch(
+            idb_files, script_path, script_args=script_args,
+            cancel_event=None
+        )
+        succeeded = sum(1 for ok in export_results.values() if ok)
+        self.process_label.setText(f"Экспорт завершён. Успешно: {succeeded}/{len(idb_files)}")
         self._refresh_file_list()
 
     # --- Генерация HTML ---

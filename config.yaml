@@ -1,8 +1,8 @@
 bindiff:
-  executable: C:/Users/Alekseev.Dmitry/Documents/python/ForGitProject/IDABatchTool/IDABatchTool/bindiff.exe
+  executable: /home/sfb/ida-pro-9.3/idat
 default_inputdir: .
 ida:
-  executable: C:/Program Files/IDA Professional 9.3/idat.exe
+  executable: /home/sfb/ida-pro-9.3/ida
 log_level: INFO
 max_ida: 6
 theme: dark
