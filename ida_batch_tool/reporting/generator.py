@@ -168,11 +168,13 @@ class BaseReportGenerator(ABC):
         categories: Dict[str, dict] = {}
         for mod in unique_modules:
             display_mod = self._normalize_display_name(mod)
-            desc = self._classify_with_context(mod, internal_set)
-            if "Собственный модуль" in desc:
+            # Универсальный классификатор для сводного индекса
+            if self._is_internal_module(mod, internal_set):
+                desc = "Собственный модуль проекта (внутренняя библиотека)"
                 cat = "Внутренние модули проекта"
                 cat_desc = "Библиотеки и исполняемые файлы, находящиеся внутри исследуемой директории."
             else:
+                desc = classify_module(mod)  # композитный поиск по всем платформам
                 cat, cat_desc = get_module_category_and_description(mod)
             categories.setdefault(cat, {"description": cat_desc, "modules": []})
             categories[cat]["modules"].append({
