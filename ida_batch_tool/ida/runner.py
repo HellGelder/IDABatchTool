@@ -86,6 +86,8 @@ class IDAAnalyzer:
                       script_path: Optional[Path] = None,
                       cleanup_temp: bool = True, temp_cleanup: bool = True,
                       cancel_event: Optional[threading.Event] = None) -> Dict[Path, bool]:
+        
+        files = sorted(files, key=lambda f: f.stat().st_size if f.exists() else 0, reverse=True)
         total = len(files)
         results: Dict[Path, bool] = {}
         completed = 0
@@ -185,6 +187,8 @@ class IDAAnalyzer:
                             output_dir: Optional[Path] = None,
                             script_args: Optional[Dict[str, str]] = None,
                             cancel_event: Optional[threading.Event] = None) -> Dict[Path, bool]:
+        
+        idb_files = sorted(idb_files, key=lambda f: f.stat().st_size if f.exists() else 0, reverse=True)
         total = len(idb_files)
         results: Dict[Path, bool] = {}
         completed = 0
