@@ -18,10 +18,11 @@ import idc
 import ida_nalt
 import ida_bytes
 
-# Для парсинга DT_NEEDED (ELF)
+# Для парсинга DT_NEEDED (ELF) – с корректной обработкой отсутствия библиотеки
 try:
     from elftools.elf.elffile import ELFFile
 except ImportError:
+    ELFFile = None
     print("[IDAPython] pyelftools не установлен. ELF-зависимости не будут получены.")
 
 
@@ -130,6 +131,10 @@ def _extract_framework_name(raw_path: str) -> str:
 
 
 def _get_elf_needed_libraries(elf_path: str) -> List[str]:
+    """Возвращает список DT_NEEDED из ELF-файла или пустой список, если pyelftools недоступен."""
+    if ELFFile is None:
+        return []
+
     try:
         with open(elf_path, 'rb') as f:
             elffile = ELFFile(f)

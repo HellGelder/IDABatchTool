@@ -20,7 +20,8 @@ from ida_batch_tool.ui.constants import AnalysisStatus, PLATFORM_EXTENSIONS, SCR
 from ida_batch_tool.ui.workers.html_generation import HtmlGeneratorWorker
 from ida_batch_tool.ui.workers.analysis_worker import AnalysisWorker
 from ida_batch_tool.archive_handler import extract_archive, ARCHIVE_EXTENSIONS, find_7z
-from ida_batch_tool.ida.runner import IDAAnalyzer          # <-- добавлен импорт
+from ida_batch_tool.ida.runner import IDAAnalyzer
+from ida_batch_tool.ida.cleanup import clean_directory          # <-- новый импорт
 
 import logging
 logger = logging.getLogger(__name__)
@@ -598,20 +599,22 @@ class AnalysisPage(QWidget):
             self.process_label.setText("Ошибка при создании индекса")
 
     def _cleanup_after_report(self) -> None:
-        files = self._cached_files
-        if not files:
-            return
+        """
+        Удаляет временные файлы (.asm, .log, .id0, .id1, .nam, .til)
+        в зависимости от установленных флагов.
+        """
         patterns = []
         if self.cleanup_check.isChecked():
             patterns.extend(["*.asm", "*.log"])
         if self.temp_cleanup_check.isChecked():
             patterns.extend(["*.id0", "*.id1", "*.nam", "*.til"])
+
         if not patterns:
             return
-        from ida_batch_tool.ida.runner import IDAAnalyzer
-        for f in files:
-            out_dir = f.parent
-            for pattern in patterns:
-                for temp_file in out_dir.glob(pattern):
-                    if temp_file.stem == f.stem:
-                        IDAAnalyzer._safe_clean_file(temp_file, description=temp_file.suffix)
+
+        input_dir = self.inputdir_edit.text().strip()
+        if not input_dir or not os.path.isdir(input_dir):
+            return
+
+        clean_directory(input_dir, patterns=patterns)
+        logger.info(f"Cleanup: удалены файлы по паттернам {patterns} в {input_dir}")
