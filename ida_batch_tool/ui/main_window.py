@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from ida_batch_tool.ui.sidebar import Sidebar
 from ida_batch_tool.ui.pages.analysis_page import AnalysisPage
 from ida_batch_tool.ui.pages.difff_page import DiffPage
+from ida_batch_tool.ui.pages.sfa_page import SfaPage
 from ida_batch_tool.ui.pages.settings_dialog import SettingsPage
 from ida_batch_tool.config.loader import load_config
 from ida_batch_tool.ui.theme import apply_theme
@@ -36,11 +37,13 @@ class MainWindow(QMainWindow):
 
         self.analysis_page = AnalysisPage()
         self.diff_page = DiffPage()
+        self.sfa_page = SfaPage()
         self.settings_page = SettingsPage()
 
         self.pages.addWidget(self.analysis_page)   # 0
         self.pages.addWidget(self.diff_page)       # 1
-        self.pages.addWidget(self.settings_page)   # 2
+        self.pages.addWidget(self.sfa_page)        # 2
+        self.pages.addWidget(self.settings_page)   # 3
 
         main_layout.addWidget(self.sidebar)
         main_layout.addWidget(self.pages, 1)
@@ -54,6 +57,8 @@ class MainWindow(QMainWindow):
         if index != 0 and self.analysis_page.is_analysis_running():
             return
         if index != 1 and self.diff_page.is_diff_running():
+            return
+        if index != 2 and self.sfa_page.is_analysis_running():
             return
         self.pages.setCurrentIndex(index)
         self.sidebar.set_active_button(index)

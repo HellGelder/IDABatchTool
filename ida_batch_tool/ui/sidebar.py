@@ -27,16 +27,19 @@ class Sidebar(QWidget):
         title.setFont(QFont("Segoe UI Variable", 16, QFont.Weight.DemiBold))
         layout.addWidget(title)
 
-        btn_analysis = self._create_button("Анализ", 0)
+        btn_analysis = self._create_button("Общий анализ", 0)
         btn_compare = self._create_button("Сравнение", 1)
-        btn_settings = self._create_button("Конфигурация", 2)
+        btn_sfa = self._create_button("Анализ СФ", 2)
+        btn_settings = self._create_button("Конфигурация", 3)
 
         self._buttons[0] = btn_analysis
         self._buttons[1] = btn_compare
-        self._buttons[2] = btn_settings
+        self._buttons[2] = btn_sfa
+        self._buttons[3] = btn_settings
 
         layout.addWidget(btn_analysis)
         layout.addWidget(btn_compare)
+        layout.addWidget(btn_sfa)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -61,7 +64,6 @@ class Sidebar(QWidget):
             btn.setChecked(idx == index)
 
     def apply_theme(self, theme: str) -> None:
-        """Обновляет стилизацию боковой панели."""
         base = """
             QPushButton {
                 text-align: left;

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Анализ СФ: {{ file_name }}</title>
+    <style>
+        :root {
+            --bg: #f5f5f5;
+            --card-bg: white;
+            --text: #303030;
+            --accent: #007aff;
+            --border: #d1d1d1;
+            --hover: #f0f0f5;
+        }
+        body {
+            font-family: "Segoe UI", system-ui, sans-serif;
+            font-size: 12px;
+            margin: 20px;
+            background: var(--bg);
+            color: var(--text);
+        }
+        h1, h2 { color: var(--accent); font-size: 14px; }
+        .back-link {
+            display: block;
+            margin-bottom: 20px;
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 10px;
+            margin: 12px 0;
+            padding: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 8px 0;
+            font-size: 11px;
+        }
+        th, td {
+            text-align: left;
+            padding: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            background: var(--hover);
+        }
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 10px;
+            border-radius: 8px;
+            border-left: 4px solid #c62828;
+        }
+        .func-name {
+            font-family: monospace;
+            font-weight: 600;
+        }
+        .dll-name {
+            font-family: monospace;
+            color: #666;
+        }
+        .badge {
+            display: inline-block;
+            background: var(--accent);
+            color: white;
+            border-radius: 10px;
+            padding: 2px 8px;
+            font-size: 10px;
+            margin-left: 8px;
+        }
+        .call-card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            margin: 8px 0;
+            padding: 10px;
+            border: 1px solid var(--border);
+        }
+        .call-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .params-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .param {
+            background: var(--hover);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-family: monospace;
+            font-size: 10px;
+        }
+        .warning {
+            background: #fff3e0;
+            border-left: 3px solid #ff9800;
+            padding: 4px 8px;
+            margin-top: 6px;
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+    <a class="back-link" href="{{ back_link }}">← Назад к сводному отчёту</a>
+
+    <h1>Анализ системных функций (СФ)</h1>
+    <div class="card">
+        <p><strong>Файл:</strong> {{ file_name }}</p>
+    </div>
+
+    {% if error %}
+        <div class="card error">
+            {{ error }}
+        </div>
+    {% else %}
+        <h2>Обнаруженные системные вызовы <span class="badge">{{ system_calls|length }}</span></h2>
+        {% if system_calls %}
+            {% for call in system_calls %}
+                <div class="call-card">
+                    <div class="call-header">
+                        <div>
+                            <span class="func-name">{{ call.name }}</span>
+                            <span class="dll-name">({{ call.dll }})</span>
+                        </div>
+                        <div>
+                            {% if call.expected_args > 0 %}
+                                <span class="badge">{{ call.expected_args }} аргументов</span>
+                            {% endif %}
+                            {% if call.return_type and call.return_type != "unknown" %}
+                                <span class="badge">→ {{ call.return_type }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="params-list">
+                        {% for param in call.params %}
+                            <span class="param">
+                                {% if param.in_out %}[{{ param.in_out }}]{% endif %}
+                                {{ param.type }} {{ param.name }}
+                            </span>
+                        {% endfor %}
+                    </div>
+                    <div style="margin-top: 6px; font-size: 10px; color: #666;">
+                        Адрес: {{ call.address }} | Модуль: {{ call.module }}
+                    </div>
+                    {% if call.warning %}
+                        <div class="warning">⚠️ {{ call.warning }}</div>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>Системные вызовы не обнаружены.</p>
+        {% endif %}
+    {% endif %}
+</body>
+</html>

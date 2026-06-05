@@ -7,13 +7,14 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLineEdit, QPushButton, QGroupBox, QMessageBox,
-    QFileDialog
+    QFileDialog, QLabel
 )
 from PySide6.QtCore import Signal, Qt
 
 from ida_batch_tool.config.loader import (
-    load_config, save_config, get_ida_executable, get_bindiff_executable
+    load_config, save_config, get_ida_executable, get_bindiff_executable, get_sf_db_path
 )
+from ida_batch_tool.database.win32_sync import Win32DatabaseSync
 
 
 class SettingsPage(QWidget):
@@ -22,6 +23,7 @@ class SettingsPage(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.cfg = load_config()
+        self.sync_thread: Win32DatabaseSync | None = None
         self._init_ui()
         self._load_to_ui()
 
@@ -64,7 +66,28 @@ class SettingsPage(QWidget):
         bindiff_hbox.addWidget(self.auto_bindiff_btn)
         bindiff_layout.addRow("Исполняемый файл:", bindiff_hbox)
 
-        # --- Тема ---
+        # --- Группа БД функций СФ ---
+        sf_db_group = QGroupBox("База данных системных функций (СФ)")
+        sf_db_layout = QFormLayout(sf_db_group)
+        sf_db_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        sf_db_layout.setSpacing(12)
+
+        self.sf_db_path_edit = QLineEdit()
+        self.sf_db_path_edit.setPlaceholderText("Папка для хранения баз данных (по умолчанию: databases)")
+        self.browse_sf_db_btn = QPushButton("Обзор...")
+        self.sync_sf_db_btn = QPushButton("Синхронизация (Win32 API)")
+        self.sf_db_status_label = QLabel("Статус: не синхронизировано")
+        self.sf_db_status_label.setWordWrap(True)
+
+        sf_db_hbox = QHBoxLayout()
+        sf_db_hbox.addWidget(self.sf_db_path_edit, 1)
+        sf_db_hbox.addWidget(self.browse_sf_db_btn)
+
+        sf_db_layout.addRow("Папка для БД:", sf_db_hbox)
+        sf_db_layout.addRow("", self.sync_sf_db_btn)
+        sf_db_layout.addRow("", self.sf_db_status_label)
+
+        # --- Группа темы ---
         theme_group = QGroupBox("Оформление")
         theme_layout = QFormLayout(theme_group)
 
@@ -78,8 +101,10 @@ class SettingsPage(QWidget):
         theme_hbox.addWidget(self.theme_dark_btn)
         theme_layout.addRow("Тема:", theme_hbox)
 
+        # Добавляем все группы
         main_layout.addWidget(ida_group)
         main_layout.addWidget(bindiff_group)
+        main_layout.addWidget(sf_db_group)
         main_layout.addWidget(theme_group)
 
         # Кнопка сохранения
@@ -96,6 +121,8 @@ class SettingsPage(QWidget):
         self.auto_ida_btn.clicked.connect(self._autodetect_ida)
         self.browse_bindiff_btn.clicked.connect(self._browse_bindiff)
         self.auto_bindiff_btn.clicked.connect(self._autodetect_bindiff)
+        self.browse_sf_db_btn.clicked.connect(self._browse_sf_db_dir)
+        self.sync_sf_db_btn.clicked.connect(self._sync_win32_database)
         self.save_btn.clicked.connect(self._save_settings)
 
         self.theme_light_btn.clicked.connect(lambda: self._switch_theme("light"))
@@ -108,9 +135,26 @@ class SettingsPage(QWidget):
         bindiff = self.cfg.get("bindiff", {})
         self.bindiff_edit.setText(bindiff.get("executable", "bindiff"))
 
+        sf_db_path = self.cfg.get("sf_db_path", "databases")
+        self.sf_db_path_edit.setText(sf_db_path)
+
         theme = self.cfg.get("theme", "light")
         self.theme_light_btn.setChecked(theme == "light")
         self.theme_dark_btn.setChecked(theme == "dark")
+
+        # Проверяем наличие БД
+        self._update_sf_db_status()
+
+    def _update_sf_db_status(self):
+        db_dir = self.sf_db_path_edit.text().strip()
+        if db_dir:
+            db_path = Path(db_dir) / "win32api.db"
+            if db_path.exists():
+                self.sf_db_status_label.setText(f"Статус: БД существует ({db_path})")
+            else:
+                self.sf_db_status_label.setText("Статус: БД не найдена. Нажмите «Синхронизация» для загрузки.")
+        else:
+            self.sf_db_status_label.setText("Статус: не указана папка для БД")
 
     def _switch_theme(self, theme: str):
         new_cfg = {**self.cfg, "theme": theme}
@@ -129,10 +173,13 @@ class SettingsPage(QWidget):
             "bindiff": {
                 "executable": self.bindiff_edit.text().strip() or "bindiff"
             },
+            "sf_db_path": self.sf_db_path_edit.text().strip() or "databases",
         }
         try:
             save_config(new_cfg)
             self.cfg = new_cfg
+            QMessageBox.information(self, "Успех", "Настройки сохранены.")
+            self._update_sf_db_status()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
 
@@ -178,3 +225,48 @@ class SettingsPage(QWidget):
             return
         self.bindiff_edit.setText(found)
         QMessageBox.information(self, "Найдено", f"BinDiff найден:\n{found}")
+
+    def _browse_sf_db_dir(self):
+        current = self.sf_db_path_edit.text().strip()
+        if not current:
+            current = "."
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку для хранения БД системных функций", current)
+        if path:
+            self.sf_db_path_edit.setText(path)
+            self._update_sf_db_status()
+
+    def _sync_win32_database(self):
+        db_dir = self.sf_db_path_edit.text().strip()
+        if not db_dir:
+            QMessageBox.warning(self, "Ошибка", "Укажите папку для хранения базы данных.")
+            return
+
+        # Проверяем, не выполняется ли уже синхронизация
+        if self.sync_thread and self.sync_thread.isRunning():
+            QMessageBox.warning(self, "Синхронизация", "Процесс синхронизации уже запущен.")
+            return
+
+        self.sync_sf_db_btn.setEnabled(False)
+        self.sf_db_status_label.setText("Статус: синхронизация...")
+        self.sync_thread = Win32DatabaseSync(db_dir)
+        self.sync_thread.progress.connect(self._on_sync_progress)
+        self.sync_thread.error.connect(self._on_sync_error)
+        self.sync_thread.finished.connect(self._on_sync_finished)
+        self.sync_thread.start()
+
+    def _on_sync_progress(self, message: str, percent: int):
+        self.sf_db_status_label.setText(f"Статус: {message} ({percent}%)")
+
+    def _on_sync_error(self, error_msg: str):
+        self.sync_sf_db_btn.setEnabled(True)
+        self.sf_db_status_label.setText(f"Статус: ошибка - {error_msg}")
+        QMessageBox.critical(self, "Ошибка синхронизации", error_msg)
+
+    def _on_sync_finished(self, success: bool, result: str):
+        self.sync_sf_db_btn.setEnabled(True)
+        if success:
+            self.sf_db_status_label.setText(f"Статус: синхронизировано (БД: {result})")
+            QMessageBox.information(self, "Успех", f"База данных Win32 API успешно создана.\n{result}")
+        else:
+            self.sf_db_status_label.setText(f"Статус: ошибка - {result}")
+            QMessageBox.critical(self, "Ошибка синхронизации", result)
