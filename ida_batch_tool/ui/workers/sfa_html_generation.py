@@ -1,4 +1,3 @@
-# ida_batch_tool/ui/workers/sfa_html_generation.py
 import json
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
@@ -50,7 +49,7 @@ class SfaHtmlGeneratorWorker(QThread):
                 output_html = self.reports_dir / out_rel
                 output_html.parent.mkdir(parents=True, exist_ok=True)
 
-                self.generator.generate_report_from_json(json_path, output_html)
+                self.generator.generate_report_from_json(json_path, output_html, self.reports_dir)
                 link = out_rel.as_posix()
                 display = rel.as_posix()
                 report_links.append({"filename": link, "display_name": display})

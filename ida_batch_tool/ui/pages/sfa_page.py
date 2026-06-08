@@ -1,4 +1,3 @@
-# ida_batch_tool/ui/pages/sfa_page.py
 """Страница «Анализ СФ» (системных функций)."""
 from __future__ import annotations
 
@@ -48,21 +47,17 @@ class SfaPage(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        # Источник файлов
         source_grp = QGroupBox("Источник файлов")
         src_layout = QVBoxLayout(source_grp)
         dir_row = QHBoxLayout()
         self.inputdir_edit = QLineEdit()
-        self.inputdir_edit.setPlaceholderText(
-            "Путь к папке с бинарными файлами или к архиву (.apk, .ipa, .dmg)..."
-        )
+        self.inputdir_edit.setPlaceholderText("Путь к папке с бинарными файлами или к архиву...")
         self.browse_dir_btn = QPushButton("Обзор...")
         dir_row.addWidget(self.inputdir_edit, 1)
         dir_row.addWidget(self.browse_dir_btn)
         src_layout.addLayout(dir_row)
         layout.addWidget(source_grp)
 
-        # Treemap
         from ida_batch_tool.ui.widgets.treemap import TreemapWidget
         treemap_grp = QGroupBox("Графическое отображение директории")
         treemap_layout = QVBoxLayout(treemap_grp)
@@ -71,13 +66,11 @@ class SfaPage(QWidget):
         treemap_layout.addWidget(self.treemap)
         layout.addWidget(treemap_grp)
 
-        # Параметры сканирования
         scan_grp = QGroupBox("Параметры сканирования")
         scan_layout = QHBoxLayout(scan_grp)
         left_col = QVBoxLayout()
         right_col = QVBoxLayout()
 
-        # Платформа
         platform_grp = QGroupBox("Целевая платформа")
         plat_layout = QVBoxLayout(platform_grp)
         self.platform_buttons = QButtonGroup(self)
@@ -90,9 +83,7 @@ class SfaPage(QWidget):
             self.platform_buttons.addButton(radio)
             self.radio_to_platform[radio] = key
             ext_list = ", ".join(info["exts"])
-            help_btn = self._create_help_button(
-                f"Платформа: {info['label']}\nАнализируемые расширения: {ext_list}"
-            )
+            help_btn = self._create_help_button(f"Платформа: {info['label']}\nРасширения: {ext_list}")
             item_layout = QHBoxLayout()
             item_layout.setContentsMargins(0, 0, 0, 0)
             item_layout.addWidget(radio)
@@ -106,18 +97,14 @@ class SfaPage(QWidget):
         plat_layout.addLayout(grid)
         left_col.addWidget(platform_grp)
 
-        # Потоки IDA
         self.max_ida_slider_container, self.max_ida_slider, _ = self._create_slider_with_label(4)
         slider_row = QHBoxLayout()
         slider_row.addWidget(QLabel("Потоков IDA:"))
         slider_row.addWidget(self.max_ida_slider_container)
-        slider_row.addWidget(self._create_help_button(
-            "Максимальное количество одновременно работающих экземпляров IDA."
-        ))
+        slider_row.addWidget(self._create_help_button("Максимальное количество одновременно работающих экземпляров IDA."))
         left_col.addLayout(slider_row)
         left_col.addStretch()
 
-        # Флаги анализа
         flags_grp = QGroupBox("Флаги анализа")
         flags_layout = QVBoxLayout(flags_grp)
         self.cleanup_check = QCheckBox("Удалять .asm и .log после успешного анализа")
@@ -139,7 +126,6 @@ class SfaPage(QWidget):
         scan_layout.addLayout(right_col, 1)
         layout.addWidget(scan_grp)
 
-        # Процесс
         process_grp = QGroupBox("Процесс анализа СФ")
         process_layout = QVBoxLayout(process_grp)
         self.process_label = QLabel("Готов к запуску")
@@ -163,13 +149,11 @@ class SfaPage(QWidget):
         process_layout.addLayout(btn_row)
         layout.addWidget(process_grp)
 
-        # Ошибки
         self.error_text = QTextEdit()
         self.error_text.setReadOnly(True)
         self.error_text.setMaximumHeight(150)
-        self.error_text.setPlaceholderText("Здесь будут появляться сообщения об ошибках...")
+        self.error_text.setPlaceholderText("Ошибки...")
         layout.addWidget(self.error_text)
-
         layout.addStretch()
 
     def _create_help_button(self, tooltip: str) -> QPushButton:
@@ -177,19 +161,13 @@ class SfaPage(QWidget):
         btn.setFixedSize(22, 22)
         btn.setFlat(True)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setToolTip("Нажмите для пояснения")
-        btn.setStyleSheet(
-            "QPushButton { border-radius: 11px; background-color: #007aff; color: white; "
-            "font-weight: bold; font-size: 14px; text-align: center; padding: 0; }"
-            "QPushButton:hover { background-color: #005bb5; }"
-        )
-        def show_tooltip():
-            from PySide6.QtWidgets import QToolTip
-            QToolTip.showText(btn.mapToGlobal(btn.rect().center()), tooltip, btn)
-        btn.clicked.connect(show_tooltip)
+        btn.setStyleSheet("QPushButton { border-radius: 11px; background-color: #007aff; color: white; font-weight: bold; }")
+        from PySide6.QtWidgets import QToolTip
+        def show(): QToolTip.showText(btn.mapToGlobal(btn.rect().center()), tooltip, btn)
+        btn.clicked.connect(show)
         return btn
 
-    def _create_slider_with_label(self, initial: int, min_val: int = 1, max_val: int = 32) -> tuple:
+    def _create_slider_with_label(self, initial: int, min_val: int = 1, max_val: int = 32):
         container = QWidget()
         lay = QHBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -198,31 +176,27 @@ class SfaPage(QWidget):
         slider.setValue(initial)
         lbl = QLabel(str(initial))
         lbl.setFixedWidth(40)
-        lbl.setAlignment(Qt.AlignCenter)
         slider.valueChanged.connect(lambda v: lbl.setText(str(v)))
         lay.addWidget(slider)
         lay.addWidget(lbl)
         return container, slider, lbl
 
-    def _browse_input_dir(self) -> None:
+    def _browse_input_dir(self):
         path = QFileDialog.getExistingDirectory(self, "Выберите папку для анализа СФ")
         if path:
             self.inputdir_edit.setText(path)
             self._refresh_file_list()
 
-    def _on_input_dir_changed(self) -> None:
+    def _on_input_dir_changed(self):
         self._refresh_file_list()
 
     def _selected_extensions(self) -> List[str]:
         checked = self.platform_buttons.checkedButton()
         if checked and checked in self.radio_to_platform:
-            platform_key = self.radio_to_platform[checked]
-            return PLATFORM_EXTENSIONS[platform_key]["exts"]
+            return PLATFORM_EXTENSIONS[self.radio_to_platform[checked]]["exts"]
         all_exts = []
         for info in PLATFORM_EXTENSIONS.values():
-            for ext in info["exts"]:
-                if ext not in all_exts:
-                    all_exts.append(ext)
+            all_exts.extend(info["exts"])
         return all_exts
 
     def _detect_platform_by_files(self, files: List[Path]) -> str:
@@ -237,109 +211,81 @@ class SfaPage(QWidget):
         best = max(scores, key=scores.get)
         return best if scores[best] > 0 else "Windows"
 
-    def _set_platform_radio(self, platform_key: str) -> None:
+    def _set_platform_radio(self, platform_key: str):
         for radio, key in self.radio_to_platform.items():
             if key == platform_key:
                 radio.setChecked(True)
                 return
 
-    def _refresh_file_list(self) -> None:
+    def _refresh_file_list(self):
         input_dir = self.inputdir_edit.text().strip()
         if not input_dir or not os.path.isdir(input_dir):
             self._cached_files = []
             self.treemap.set_data([])
             self.html_generate_btn.setEnabled(False)
             return
-
         extensions = self._selected_extensions()
         files = find_executables(input_dir, extensions=extensions)
-
-        # Обработка архивов
         for ext in ARCHIVE_EXTENSIONS:
             for archive_path in Path(input_dir).glob(f'*{ext}'):
                 extracted_dir = extract_archive(archive_path)
                 if extracted_dir and extracted_dir.is_dir():
                     archive_files = find_executables(str(extracted_dir), extensions=extensions)
                     files.extend(archive_files)
-                    logger.info(f"Архив {archive_path.name}: добавлено {len(archive_files)} файлов")
-                else:
-                    if ext == '.dmg':
-                        self.error_text.append(
-                            f"Не удалось извлечь {archive_path.name}. Убедитесь, что 7z установлен и доступен в PATH.")
-
         self._cached_files = files
         if not files:
             self.treemap.set_data([])
             self.html_generate_btn.setEnabled(False)
             return
-
         detected = self._detect_platform_by_files(files)
         self._set_platform_radio(detected)
-
         items = []
         for f in files:
             size = f.stat().st_size if f.exists() else 0
             status = AnalysisStatus.NOT_ANALYZED
-            i64_path = self._get_expected_i64_path(f)
-            if i64_path.exists():
+            if (f.parent / (f.name + ".i64")).exists():
                 status = AnalysisStatus.SUCCESS
             items.append({'name': f.name, 'size': size, 'status': status.value, 'path': str(f)})
         self.treemap.set_data(items)
-
-        any_i64 = any(self._get_expected_i64_path(f).exists() for f in files)
+        any_i64 = any((f.parent / (f.name + ".i64")).exists() for f in files)
         self.html_generate_btn.setEnabled(any_i64)
 
     def _get_expected_i64_path(self, file_path: Path) -> Path:
         return file_path.parent / (file_path.name + ".i64")
 
-    def _start_analysis(self) -> None:
+    def _start_analysis(self):
         if self.analysis_in_progress:
             return
-
         idat_path = get_ida_executable()
         if not Path(idat_path).is_file():
-            QMessageBox.warning(self, "Утилита IDA не найдена",
-                                f"Исполняемый файл '{idat_path}' не найден.\n"
-                                "Проверьте путь в разделе «Конфигурация».")
+            QMessageBox.warning(self, "IDA не найдена", f"{idat_path} не найден.\nПроверьте конфигурацию.")
             return
-
         input_dir = self.inputdir_edit.text().strip()
         if not input_dir:
             input_dir = get_default_inputdir()
             self.inputdir_edit.setText(input_dir)
-
         if not os.path.isdir(input_dir):
-            QMessageBox.warning(self, "Ошибка", f"Указанная директория не существует: {input_dir}")
+            QMessageBox.warning(self, "Ошибка", f"Директория не существует: {input_dir}")
             return
-
         files = self._cached_files
         if not files:
             QMessageBox.information(self, "Информация", "Не найдено подходящих файлов.")
             return
+        if any(f.suffix.lower() == '.dmg' for f in files) and not find_7z():
+            QMessageBox.warning(self, "Требуется 7z", "Для DMG необходим 7-Zip.")
+            return
 
-        # Проверка 7z для DMG
-        if any(f.suffix.lower() == '.dmg' for f in files):
-            if not find_7z():
-                QMessageBox.warning(self, "Требуется 7z",
-                                    "Для обработки .dmg файлов необходим 7-Zip.\n"
-                                    "Убедитесь, что '7z' доступен в системном PATH.")
-                return
-
-        # Логика работы с существующими базами (аналогично analysis_page)
         files_with_idb = [f for f in files if self._get_expected_i64_path(f).exists()]
         files_without_idb = [f for f in files if not self._get_expected_i64_path(f).exists()]
-
         export_only = False
         if files_with_idb:
             msg = QMessageBox(self)
-            msg.setWindowTitle("Обнаружены существующие базы данных")
-            msg.setText(f"Готово баз: {len(files_with_idb)} из {len(files)}\n"
-                        f"Требуют анализа: {len(files_without_idb)}")
+            msg.setWindowTitle("Существующие базы")
+            msg.setText(f"Готово: {len(files_with_idb)} из {len(files)}\nТребуют анализа: {len(files_without_idb)}")
             btn_continue = msg.addButton("Доанализировать новые", QMessageBox.ButtonRole.AcceptRole)
             btn_overwrite = msg.addButton("Перезаписать всё", QMessageBox.ButtonRole.DestructiveRole)
             btn_export = msg.addButton("Экспортировать существующие", QMessageBox.ButtonRole.ActionRole)
             btn_cancel = msg.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-            msg.setDefaultButton(btn_continue)
             msg.exec()
             clicked = msg.clickedButton()
             if clicked == btn_cancel:
@@ -358,8 +304,6 @@ class SfaPage(QWidget):
             elif clicked == btn_export:
                 files = files_with_idb
                 export_only = True
-        else:
-            pass
 
         if not files:
             QMessageBox.information(self, "Информация", "Нет файлов для обработки.")
@@ -393,63 +337,60 @@ class SfaPage(QWidget):
         self.worker.finished.connect(self._on_analysis_finished)
         self.worker.start()
 
-    def _cancel_analysis(self) -> None:
+    def _cancel_analysis(self):
         if self.worker:
             self.worker.cancel()
             self.process_label.setText("Отмена...")
-            self.cancel_btn.setEnabled(False)
 
-    def _on_phase_changed(self, phase: str) -> None:
+    def _on_phase_changed(self, phase: str):
         self.process_label.setText("Фаза: анализ файлов..." if phase == "analysis" else "Фаза: экспорт в JSON...")
 
-    def _on_analysis_progress(self, filename: str, current: int, total: int) -> None:
+    def _on_analysis_progress(self, filename: str, current: int, total: int):
         self.process_label.setText(f"Анализ: {current}/{total} – {filename}")
         self.process_progress.setValue(int(100 * current / total))
 
-    def _on_analysis_file_started(self, filename: str) -> None:
+    def _on_analysis_file_started(self, filename: str):
         for f in self._cached_files:
             if f.name == filename:
                 self.treemap.update_status(str(f), AnalysisStatus.IN_PROGRESS)
                 break
 
-    def _on_analysis_file_completed(self, filename: str, success: bool) -> None:
+    def _on_analysis_file_completed(self, filename: str, success: bool):
         for f in self._cached_files:
             if f.name == filename:
                 self.treemap.update_status(str(f), AnalysisStatus.SUCCESS if success else AnalysisStatus.ERROR)
                 break
 
-    def _on_export_progress(self, filename: str, current: int, total: int) -> None:
+    def _on_export_progress(self, filename: str, current: int, total: int):
         self.process_label.setText(f"Экспорт: {current}/{total} – {filename}")
         self.process_progress.setValue(int(100 * current / total))
 
-    def _on_export_file_started(self, filename: str) -> None:
+    def _on_export_file_started(self, filename: str):
         pass
 
-    def _on_export_file_completed(self, filename: str, success: bool) -> None:
+    def _on_export_file_completed(self, filename: str, success: bool):
         if not success:
             self.error_text.append(f"Ошибка экспорта для {filename}")
 
-    def _on_error(self, message: str) -> None:
+    def _on_error(self, message: str):
         self.error_text.append(message)
 
-    def _on_analysis_finished(self, succeeded: int, total: int) -> None:
+    def _on_analysis_finished(self, succeeded: int, total: int):
         self.analysis_in_progress = False
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.process_label.setText(f"Завершено. Обработано: {succeeded}/{total}")
         self.process_progress.setValue(100)
-
         if self._export_all_after_analysis and succeeded > 0:
             self._export_all_after_analysis = False
             self.process_label.setText("Автоматический экспорт всех баз...")
             QApplication.processEvents()
-            all_idb_files = [self._get_expected_i64_path(f) for f in self._cached_files if self._get_expected_i64_path(f).exists()]
-            if all_idb_files:
-                self._start_export_only(all_idb_files)
+            all_idb = [self._get_expected_i64_path(f) for f in self._cached_files if self._get_expected_i64_path(f).exists()]
+            if all_idb:
+                self._start_export_only(all_idb)
             else:
                 self.process_label.setText("Нет готовых баз для экспорта")
             return
-
         input_dir = self.inputdir_edit.text().strip()
         if input_dir:
             any_json = any(Path(input_dir).rglob("*.export.json"))
@@ -459,7 +400,7 @@ class SfaPage(QWidget):
             self.worker = None
         self._refresh_file_list()
 
-    def _start_export_only(self, idb_files: List[Path]) -> None:
+    def _start_export_only(self, idb_files: List[Path]):
         idat_path = get_ida_executable()
         script_path = SCRIPTS_DIR / "export_data.py"
         if not script_path.exists():
@@ -475,55 +416,40 @@ class SfaPage(QWidget):
         self.process_label.setText("Фаза: экспорт в JSON...")
         self.process_progress.setValue(0)
         QApplication.processEvents()
-        export_results = analyzer.run_script_on_batch(
-            idb_files, script_path, script_args=script_args,
-            cancel_event=None
-        )
-        succeeded = sum(1 for ok in export_results.values() if ok)
+        results = analyzer.run_script_on_batch(idb_files, script_path, script_args=script_args, cancel_event=None)
+        succeeded = sum(1 for ok in results.values() if ok)
         self.process_label.setText(f"Экспорт завершён. Успешно: {succeeded}/{len(idb_files)}")
         self._refresh_file_list()
 
-    def _start_html_generation(self) -> None:
+    def _start_html_generation(self):
         if self.html_in_progress:
             return
         input_dir = Path(self.inputdir_edit.text().strip())
         if not input_dir.is_dir():
             QMessageBox.warning(self, "Ошибка", "Папка не найдена.")
             return
-
         json_files = list(input_dir.rglob("*.export.json"))
         if not json_files:
-            QMessageBox.warning(self, "Ошибка", "Нет JSON-файлов экспорта. Сначала выполните анализ.")
+            QMessageBox.warning(self, "Ошибка", "Нет JSON-файлов экспорта.")
             return
-
-        # Проверка наличия базы данных Win32 API
-        db_dir = Path(get_sf_db_path())
-        db_path = db_dir / "win32api.db"
+        db_path = Path(get_sf_db_path()) / "win32api.db"
         if not db_path.exists():
-            # Предложить синхронизировать
-            reply = QMessageBox.question(
-                self, "База данных не найдена",
-                "База данных системных функций (win32api.db) не найдена.\n"
-                "Хотите синхронизировать её сейчас? (потребуется интернет)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
+            reply = QMessageBox.question(self, "Нет базы", "База сигнатур не найдена. Синхронизировать сейчас?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
-                # Запускаем синхронизацию в отдельном потоке, затем продолжаем
-                self.sync_thread = Win32DatabaseSync(str(db_dir))
+                self.sync_thread = Win32DatabaseSync(get_sf_db_path())
                 self.sync_thread.progress.connect(self._on_sync_progress)
                 self.sync_thread.finished.connect(lambda success, msg: self._on_sync_finished(success, msg, input_dir, json_files))
                 self.sync_thread.error.connect(self._on_sync_error)
                 self.sync_thread.start()
-                self.process_label.setText("Синхронизация базы данных...")
+                self.process_label.setText("Синхронизация БД...")
                 self.start_btn.setEnabled(False)
                 self.cancel_btn.setEnabled(False)
                 self.html_generate_btn.setEnabled(False)
                 return
             else:
-                QMessageBox.warning(self, "Нет базы", "Невозможно выполнить анализ СФ без базы данных Win32 API.")
+                QMessageBox.warning(self, "Нет базы", "Невозможно выполнить анализ СФ.")
                 return
-
-        # База есть, запускаем генерацию
         self._do_generate_html(input_dir, json_files)
 
     def _on_sync_progress(self, message: str, percent: int):
@@ -534,16 +460,14 @@ class SfaPage(QWidget):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.html_generate_btn.setEnabled(False)
-        QMessageBox.critical(self, "Ошибка синхронизации", error_msg)
 
     def _on_sync_finished(self, success: bool, result: str, input_dir: Path, json_files: List[Path]):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         if not success:
             self.process_label.setText("Синхронизация не удалась")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось синхронизировать базу данных: {result}")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось синхронизировать: {result}")
             return
-        # Синхронизация успешна, продолжаем
         self._do_generate_html(input_dir, json_files)
 
     def _do_generate_html(self, input_dir: Path, json_files: List[Path]):
@@ -551,15 +475,12 @@ class SfaPage(QWidget):
         generator = SfaReportGenerator()
         sfa_reports = input_dir / "SFAReports"
         sfa_reports.mkdir(parents=True, exist_ok=True)
-
         self.html_in_progress = True
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
         self.html_generate_btn.setEnabled(False)
         self.process_progress.setValue(0)
         self.process_label.setText("Генерация HTML-отчётов СФ...")
-        self.error_text.clear()
-
         self.html_worker = SfaHtmlGeneratorWorker(
             {json_path: True for json_path in json_files},
             generator, sfa_reports, input_dir,
@@ -570,16 +491,16 @@ class SfaPage(QWidget):
         self.html_worker.finished.connect(self._on_html_finished)
         self.html_worker.start()
 
-    def _on_html_progress(self, current: int, total: int, message: str) -> None:
+    def _on_html_progress(self, current: int, total: int, message: str):
         self.process_label.setText(f"Генерация HTML: {current}/{total} {message}")
         self.process_progress.setValue(int(100 * current / total))
 
-    def _on_html_finished(self, generated_count: int, report_links: list, ida_info: dict, sfa_reports: Path, input_dir: Path, total_files: int, total_size_bytes: int) -> None:
+    def _on_html_finished(self, generated_count: int, report_links: list, ida_info: dict, sfa_reports: Path, input_dir: Path, total_files: int, total_size_bytes: int):
         self.process_label.setText("Создание сводного отчёта СФ...")
         QApplication.processEvents()
         from datetime import datetime
-        gen_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         from ida_batch_tool.reporting.sfa_generator import SfaReportGenerator
+        gen_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         generator = SfaReportGenerator()
         try:
             index_path = generator.generate_index(
@@ -602,8 +523,7 @@ class SfaPage(QWidget):
             self.html_generate_btn.setEnabled(True)
             self.process_label.setText("Ошибка при создании индекса")
 
-    # Сигналы подключения
-    def _connect_signals(self) -> None:
+    def _connect_signals(self):
         self.browse_dir_btn.clicked.connect(self._browse_input_dir)
         self.start_btn.clicked.connect(self._start_analysis)
         self.cancel_btn.clicked.connect(self._cancel_analysis)

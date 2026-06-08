@@ -4,15 +4,16 @@ import sqlite3
 from pathlib import Path
 
 import requests
+import git
 from PySide6.QtCore import QThread, Signal
 
 logger = logging.getLogger(__name__)
 
 
 class Win32DatabaseSync(QThread):
-    progress = Signal(str, int)  # message, percent (0-100)
-    finished = Signal(bool, str)  # success, message (path or error)
-    error = Signal(str)           # error message
+    progress = Signal(str, int)
+    finished = Signal(bool, str)
+    error = Signal(str)
 
     def __init__(self, db_dir: str):
         super().__init__()
@@ -24,31 +25,12 @@ class Win32DatabaseSync(QThread):
 
     def run(self):
         try:
-            self.progress.emit("Подготовка к загрузке...", 5)
-
-            # 1. Скачиваем готовый файл winapi_categories.json
+            self.progress.emit("Загрузка сигнатур функций...", 10)
             json_url = "https://raw.githubusercontent.com/reverseame/winapi-categories/main/winapi_categories.json"
-            self.progress.emit("Скачивание winapi_categories.json...", 20)
+            resp_json = requests.get(json_url, timeout=30)
+            resp_json.raise_for_status()
+            categories_data = resp_json.json()
 
-            response = requests.get(json_url, stream=True, timeout=60)
-            response.raise_for_status()
-            total_size = int(response.headers.get('content-length', 0))
-            content = bytearray()
-            downloaded = 0
-            for chunk in response.iter_content(chunk_size=8192):
-                if self._cancel:
-                    self.error.emit("Отменено пользователем")
-                    return
-                content.extend(chunk)
-                downloaded += len(chunk)
-                if total_size:
-                    percent = 20 + int(40 * downloaded / total_size)
-                    self.progress.emit("Скачивание...", percent)
-
-            self.progress.emit("Обработка JSON...", 65)
-            data = json.loads(content.decode('utf-8'))
-
-            # 2. Создаём SQLite базу данных
             self.db_dir.mkdir(parents=True, exist_ok=True)
             db_path = self.db_dir / "win32api.db"
 
@@ -61,7 +43,6 @@ class Win32DatabaseSync(QThread):
                     id INTEGER PRIMARY KEY,
                     name TEXT UNIQUE,
                     category TEXT,
-                    description TEXT,
                     dll_name TEXT,
                     return_type TEXT,
                     n_arguments INTEGER
@@ -75,7 +56,6 @@ class Win32DatabaseSync(QThread):
                     in_out TEXT,
                     name TEXT,
                     type TEXT,
-                    description TEXT,
                     FOREIGN KEY(function_id) REFERENCES functions(id)
                 )
             """)
@@ -86,19 +66,15 @@ class Win32DatabaseSync(QThread):
                 )
             """)
             cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
-                           ("version", "winapi_categories_latest"))
-            cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
-                           ("source_url", json_url))
+                           ("signatures_version", "latest"))
 
             count = 0
-            for func_name, func_info in data.items():
+            for func_name, func_info in categories_data.items():
                 if self._cancel:
                     conn.close()
-                    self.error.emit("Отменено пользователем")
                     return
                 if not isinstance(func_info, dict):
                     continue
-
                 category = func_info.get("category", "")
                 dll_name = func_info.get("dll", "")
                 return_type = func_info.get("return_type", "")
@@ -120,22 +96,31 @@ class Win32DatabaseSync(QThread):
                         in_out = arg.get("in_out", "")
                         arg_name = arg.get("name", f"arg{idx}")
                         arg_type = arg.get("type", "unknown")
-                        description = arg.get("description", "")
                         cursor.execute(
-                            "INSERT INTO parameters (function_id, idx, in_out, name, type, description) VALUES (?, ?, ?, ?, ?, ?)",
-                            (func_id, idx, in_out, arg_name, arg_type, description)
+                            "INSERT INTO parameters (function_id, idx, in_out, name, type) VALUES (?, ?, ?, ?, ?)",
+                            (func_id, idx, in_out, arg_name, arg_type)
                         )
                 count += 1
                 if count % 100 == 0:
                     conn.commit()
-                    self.progress.emit(f"Обработано функций: {count}", 65 + min(30, int(count / 5000 * 30)))
+                    self.progress.emit(f"Обработано сигнатур: {count}", 50 + min(30, count // 5000))
 
             conn.commit()
             conn.close()
-            self.progress.emit(f"Готово. Обработано функций: {count}", 100)
+            self.progress.emit(f"Сигнатуры сохранены: {count} функций", 80)
+
+            # Клонирование репозитория win32_docs
+            self.progress.emit("Клонирование репозитория документации (может занять несколько минут)...", 85)
+            docs_dir = self.db_dir / "win32_docs"
+            if docs_dir.exists():
+                repo = git.Repo(docs_dir)
+                repo.remotes.origin.pull()
+            else:
+                git.Repo.clone_from("https://github.com/MicrosoftDocs/win32.git", docs_dir)
+            self.progress.emit("Синхронизация завершена", 100)
             self.finished.emit(True, str(db_path))
 
         except Exception as e:
-            logger.exception("Ошибка синхронизации Win32 API")
+            logger.exception("Ошибка синхронизации")
             self.error.emit(str(e))
             self.finished.emit(False, str(e))

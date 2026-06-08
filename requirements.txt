@@ -1,7 +1,11 @@
 pyyaml
-pyside6
+PySide6
 jinja2
-circlify
+requests
+beautifulsoup4
+lxml
+gitpython
 pyelftools
 macholib
-requests
+circlify
+markdown
