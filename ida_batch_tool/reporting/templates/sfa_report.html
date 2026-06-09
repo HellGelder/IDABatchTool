@@ -21,9 +21,16 @@
         table { width: 100%; border-collapse: collapse; margin: 10px 0; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
         th { background: #f5f5f5; }
-        .embedded-doc { margin-top: 20px; border-top: 1px solid #ccc; padding-top: 15px; }
-        .embedded-doc * { max-width: 100%; }
+        .tabs { display: flex; border-bottom: 1px solid #ccc; margin: 15px 0 10px 0; }
+        .tab-button { background: none; border: none; padding: 6px 12px; cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; }
+        .tab-button.active { border-bottom-color: #007aff; color: #007aff; font-weight: 600; }
+        .tab-content { display: none; margin-top: 10px; }
+        .tab-content.active { display: block; }
+        .markdown-content { background: #f8f8f8; padding: 15px; border-radius: 8px; overflow-x: auto; }
+        .markdown-content pre { background: #eee; padding: 10px; border-radius: 6px; overflow-x: auto; }
+        .markdown-content code { background: #eee; padding: 2px 4px; border-radius: 4px; }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
     <div class="header">
@@ -57,36 +64,75 @@
             });
         }
 
-        function renderFunction(index) {
+        async function renderFunction(index) {
             const f = functions[index];
             if (!f) return;
-            let html = `<div class="func-name">${escapeHtml(f.name)}</div>
-                        <div class="func-dll">${escapeHtml(f.dll)} | Возвращает: ${escapeHtml(f.return_type)} | Ожидается аргументов: ${f.expected_args}</div>`;
+
+            let html = `
+                <div class="func-name">${escapeHtml(f.name)}</div>
+                <div class="func-dll">${escapeHtml(f.dll)} | Возвращает: ${escapeHtml(f.return_type)} | Ожидается аргументов: ${f.expected_args}</div>
+            `;
             if (f.warning) html += `<div class="warning-box">⚠️ ${escapeHtml(f.warning)}</div>`;
             if (f.params && f.params.length) {
                 html += `<h3>Параметры</h3>
                          <table>
-                             <thead>
-                                 <tr><th>#</th><th>Направление</th><th>Имя</th><th>Тип</th></tr>
-                             </thead>
+                             <thead><tr><th>#</th><th>Направление</th><th>Имя</th><th>Тип</th></tr></thead>
                              <tbody>`;
                 f.params.forEach(p => {
                     html += `<tr>
                                  <td>${p.idx}</td>
                                  <td>${escapeHtml(p.in_out)}</td>
-                                 <td>${escapeHtml(p.name)}</td>
-                                 <td>${escapeHtml(p.type)}</td>
+                                 <td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.type)}</td>
                              </tr>`;
                 });
                 html += `</tbody>
                          </table>`;
             }
-            if (f.doc_html) {
-                html += `<div class="embedded-doc">${f.doc_html}</div>`;
+
+            if (f.search_results && f.search_results.length) {
+                html += `<div class="tabs" id="tabs-${index}">`;
+                f.search_results.forEach((res, idx) => {
+                    const activeClass = idx === 0 ? 'active' : '';
+                    html += `<button class="tab-button ${activeClass}" data-tab="${idx}">${escapeHtml(res.title)}</button>`;
+                });
+                html += `</div>`;
+                f.search_results.forEach((res, idx) => {
+                    const activeClass = idx === 0 ? 'active' : '';
+                    html += `<div class="tab-content ${activeClass}" data-tab-content="${idx}">
+                                 <div class="markdown-content" id="md-${index}-${idx}">Загрузка...</div>
+                             </div>`;
+                });
+                document.getElementById('content-area').innerHTML = html;
+                // Рендеринг Markdown через marked
+                for (let idx = 0; idx < f.search_results.length; idx++) {
+                    const mdText = f.search_results[idx].markdown;
+                    const container = document.getElementById(`md-${index}-${idx}`);
+                    if (container && mdText) {
+                        try {
+                            const rendered = await marked.parse(mdText);
+                            container.innerHTML = rendered;
+                        } catch(e) {
+                            container.innerHTML = `<pre>${escapeHtml(mdText)}</pre>`;
+                        }
+                    }
+                }
+                // Обработчики вкладок
+                const buttons = document.querySelectorAll(`#tabs-${index} .tab-button`);
+                const contents = document.querySelectorAll(`#content-area .tab-content`);
+                buttons.forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const tabIdx = btn.getAttribute('data-tab');
+                        buttons.forEach(b => b.classList.remove('active'));
+                        contents.forEach(c => c.classList.remove('active'));
+                        btn.classList.add('active');
+                        const target = document.querySelector(`.tab-content[data-tab-content="${tabIdx}"]`);
+                        if (target) target.classList.add('active');
+                    });
+                });
             } else {
                 html += `<p>Документация не найдена.</p>`;
+                document.getElementById('content-area').innerHTML = html;
             }
-            document.getElementById('content-area').innerHTML = html;
         }
 
         function setActive(index) {
@@ -100,7 +146,11 @@
             const idx = parseInt(li.dataset.index, 10);
             li.addEventListener('click', () => { renderFunction(idx); setActive(idx); });
         });
-        {% if system_calls %} renderFunction(0); setActive(0); {% endif %}
+
+        {% if system_calls %}
+        renderFunction(0);
+        setActive(0);
+        {% endif %}
     </script>
 </body>
 </html>

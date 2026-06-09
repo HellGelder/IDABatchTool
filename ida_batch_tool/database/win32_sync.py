@@ -4,7 +4,6 @@ import sqlite3
 from pathlib import Path
 
 import requests
-import git
 from PySide6.QtCore import QThread, Signal
 
 logger = logging.getLogger(__name__)
@@ -107,17 +106,7 @@ class Win32DatabaseSync(QThread):
 
             conn.commit()
             conn.close()
-            self.progress.emit(f"Сигнатуры сохранены: {count} функций", 80)
-
-            # Клонирование репозитория win32_docs
-            self.progress.emit("Клонирование репозитория документации (может занять несколько минут)...", 85)
-            docs_dir = self.db_dir / "win32_docs"
-            if docs_dir.exists():
-                repo = git.Repo(docs_dir)
-                repo.remotes.origin.pull()
-            else:
-                git.Repo.clone_from("https://github.com/MicrosoftDocs/win32.git", docs_dir)
-            self.progress.emit("Синхронизация завершена", 100)
+            self.progress.emit(f"Сигнатуры сохранены: {count} функций", 100)
             self.finished.emit(True, str(db_path))
 
         except Exception as e:
