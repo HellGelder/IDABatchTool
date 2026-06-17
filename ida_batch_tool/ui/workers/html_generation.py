@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Set
 from PySide6.QtCore import QThread, Signal
 
 from ida_batch_tool.reporting.generator import ReportGenerator
+from ida_batch_tool.reporting.utils import normalize_display_name
 
 
 class HtmlGeneratorWorker(QThread):
@@ -28,19 +29,8 @@ class HtmlGeneratorWorker(QThread):
 
     @staticmethod
     def _normalize_display_name(module_name: str) -> str:
-        if not module_name:
-            return ""
-        if '\\' in module_name or '/' in module_name:
-            module_name = module_name.replace('\\', '/').split('/')[-1]
-        if module_name.endswith('.dylib'):
-            module_name = module_name[:-6]
-        elif module_name.endswith('.framework'):
-            module_name = module_name[:-10]
-        elif '.dylib' in module_name:
-            module_name = module_name.split('.dylib')[0]
-        if module_name.startswith('@rpath/'):
-            module_name = module_name[7:]
-        return module_name
+        # Делегируем канонической реализации из reporting.utils
+        return normalize_display_name(module_name)
 
     def run(self):
         report_links = []

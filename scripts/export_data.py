@@ -258,7 +258,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
     for mod_idx in range(mod_cnt):
         try:
             mod_name = ida_nalt.get_import_module_name(mod_idx)
-        except:
+        except Exception:
             mod_name = "unknown"
         def callback(ea, name, ordinal):
             if name:
@@ -268,7 +268,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             return True
         try:
             ida_nalt.enum_import_names(mod_idx, callback)
-        except:
+        except Exception:
             pass
     data["imports"] = raw_imports
 

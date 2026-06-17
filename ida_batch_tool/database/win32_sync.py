@@ -33,79 +33,92 @@ class Win32DatabaseSync(QThread):
             self.db_dir.mkdir(parents=True, exist_ok=True)
             db_path = self.db_dir / "win32api.db"
 
+            # Контекстный менеджер гарантирует закрытие соединения даже при ошибке
             conn = sqlite3.connect(str(db_path))
-            conn.execute("PRAGMA journal_mode=WAL")
-            cursor = conn.cursor()
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                cursor = conn.cursor()
 
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS functions (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT UNIQUE,
-                    category TEXT,
-                    dll_name TEXT,
-                    return_type TEXT,
-                    n_arguments INTEGER
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS parameters (
-                    id INTEGER PRIMARY KEY,
-                    function_id INTEGER,
-                    idx INTEGER,
-                    in_out TEXT,
-                    name TEXT,
-                    type TEXT,
-                    FOREIGN KEY(function_id) REFERENCES functions(id)
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            """)
-            cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
-                           ("signatures_version", "latest"))
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS functions (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT UNIQUE,
+                        category TEXT,
+                        dll_name TEXT,
+                        return_type TEXT,
+                        n_arguments INTEGER
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS parameters (
+                        id INTEGER PRIMARY KEY,
+                        function_id INTEGER,
+                        idx INTEGER,
+                        in_out TEXT,
+                        name TEXT,
+                        type TEXT,
+                        FOREIGN KEY(function_id) REFERENCES functions(id)
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
+                cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+                               ("signatures_version", "latest"))
 
-            count = 0
-            for func_name, func_info in categories_data.items():
-                if self._cancel:
-                    conn.close()
-                    return
-                if not isinstance(func_info, dict):
-                    continue
-                category = func_info.get("category", "")
-                dll_name = func_info.get("dll", "")
-                return_type = func_info.get("return_type", "")
-                n_arguments = func_info.get("n_arguments", 0)
-                args = func_info.get("arguments", [])
+                count = 0
+                for func_name, func_info in categories_data.items():
+                    if self._cancel:
+                        conn.rollback()
+                        break
+                    if not isinstance(func_info, dict):
+                        continue
+                    category = func_info.get("category", "")
+                    dll_name = func_info.get("dll", "")
+                    return_type = func_info.get("return_type", "")
+                    n_arguments = func_info.get("n_arguments", 0)
+                    args = func_info.get("arguments", [])
 
-                cursor.execute(
-                    "INSERT OR IGNORE INTO functions (name, category, dll_name, return_type, n_arguments) VALUES (?, ?, ?, ?, ?)",
-                    (func_name, category, dll_name, return_type, n_arguments)
-                )
-                cursor.execute("SELECT id FROM functions WHERE name = ?", (func_name,))
-                row = cursor.fetchone()
-                if row:
-                    func_id = row[0]
-                    cursor.execute("DELETE FROM parameters WHERE function_id = ?", (func_id,))
-                    for idx, arg in enumerate(args):
-                        if not isinstance(arg, dict):
-                            continue
-                        in_out = arg.get("in_out", "")
-                        arg_name = arg.get("name", f"arg{idx}")
-                        arg_type = arg.get("type", "unknown")
-                        cursor.execute(
-                            "INSERT INTO parameters (function_id, idx, in_out, name, type) VALUES (?, ?, ?, ?, ?)",
-                            (func_id, idx, in_out, arg_name, arg_type)
-                        )
-                count += 1
-                if count % 100 == 0:
-                    conn.commit()
-                    self.progress.emit(f"Обработано сигнатур: {count}", 50 + min(30, count // 5000))
+                    # INSERT OR IGNORE: lastrowid действителен для реально вставленной строки.
+                    # Если строка уже существовала (ignore), берём id через SELECT LAST_INSERT_ROWID не подходит —
+                    # используем ON CONFLICT-безопасный путь: проверяем cursor.rowcount.
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO functions (name, category, dll_name, return_type, n_arguments) VALUES (?, ?, ?, ?, ?)",
+                        (func_name, category, dll_name, return_type, n_arguments)
+                    )
+                    if cursor.rowcount > 0:
+                        # Новая строка — lastrowid указывает на её id
+                        func_id = cursor.lastrowid
+                    else:
+                        # Строка уже существовала — получаем её id
+                        cursor.execute("SELECT id FROM functions WHERE name = ?", (func_name,))
+                        row = cursor.fetchone()
+                        func_id = row[0] if row else None
 
-            conn.commit()
-            conn.close()
+                    if func_id is not None:
+                        cursor.execute("DELETE FROM parameters WHERE function_id = ?", (func_id,))
+                        for idx, arg in enumerate(args):
+                            if not isinstance(arg, dict):
+                                continue
+                            in_out = arg.get("in_out", "")
+                            arg_name = arg.get("name", f"arg{idx}")
+                            arg_type = arg.get("type", "unknown")
+                            cursor.execute(
+                                "INSERT INTO parameters (function_id, idx, in_out, name, type) VALUES (?, ?, ?, ?, ?)",
+                                (func_id, idx, in_out, arg_name, arg_type)
+                            )
+                    count += 1
+                    if count % 100 == 0:
+                        conn.commit()
+                        self.progress.emit(f"Обработано сигнатур: {count}", 50 + min(30, count // 5000))
+
+                conn.commit()
+            finally:
+                conn.close()
+
             self.progress.emit(f"Сигнатуры сохранены: {count} функций", 100)
             self.finished.emit(True, str(db_path))
 

@@ -15,6 +15,9 @@ from PySide6.QtCore import Signal, Qt
 from ida_batch_tool.config.loader import get_ida_executable, get_bindiff_executable
 from ida_batch_tool.ui.workers.diff_worker import DiffWorker
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class DiffPage(QWidget):
     """Страница для запуска сравнения двух директорий с BinDiff и генерации отчёта."""
@@ -325,8 +328,6 @@ class DiffPage(QWidget):
 
     def _generate_report(self) -> None:
         from ida_batch_tool.reporting.generator import DiffReportGenerator, _build_internal_set
-        import logging
-        logger = logging.getLogger(__name__)
 
         if not self._output_dir or not self._output_dir.is_dir():
             QMessageBox.warning(self, "Ошибка", "Выходная папка не существует.")

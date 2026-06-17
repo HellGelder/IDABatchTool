@@ -8,6 +8,7 @@ import subprocess
 import time
 import logging
 import threading
+from collections import deque
 from pathlib import Path
 from typing import List, Optional, Callable, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
@@ -49,6 +50,55 @@ class IDAAnalyzer:
         self._file_done_callback = callback
 
     # ------------------------------------------------------------------
+    # Общий метод параллельного выполнения задач
+    # ------------------------------------------------------------------
+    def _run_in_parallel(self, files: List[Path], task: Callable[[Path], bool],
+                         cancel_event: Optional[threading.Event] = None) -> Dict[Path, bool]:
+        """Запускает ``task(file)`` для каждого файла в ThreadPoolExecutor.
+
+        Сортирует файлы по убыванию размера (крупные первыми),
+        отслеживает прогресс через коллбэки и поддерживает отмену.
+        """
+        files = sorted(files, key=lambda f: f.stat().st_size if f.exists() else 0, reverse=True)
+        total = len(files)
+        results: Dict[Path, bool] = {}
+        completed = 0
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_file: Dict[Future, Path] = {}
+            for f in files:
+                if cancel_event and cancel_event.is_set():
+                    break
+                future = executor.submit(task, f)
+                future_to_file[future] = f
+
+            for future in as_completed(future_to_file):
+                f = future_to_file[future]
+                try:
+                    success = future.result()
+                    results[f] = success
+                except Exception as e:
+                    logger.error(f"Error processing {f}: {e}")
+                    results[f] = False
+                completed += 1
+                if self._progress_callback:
+                    self._progress_callback(f.name, completed, total)
+                if self._file_done_callback:
+                    self._file_done_callback(f.name, results[f])
+
+                if cancel_event and cancel_event.is_set():
+                    for f_left_future in list(future_to_file):
+                        if not f_left_future.done():
+                            try:
+                                f_left_future.cancel()
+                            except Exception:
+                                pass
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+
+        return results
+
+    # ------------------------------------------------------------------
     # Анализ файлов (создание .i64)
     # ------------------------------------------------------------------
     @staticmethod
@@ -86,46 +136,10 @@ class IDAAnalyzer:
                       script_path: Optional[Path] = None,
                       cleanup_temp: bool = True, temp_cleanup: bool = True,
                       cancel_event: Optional[threading.Event] = None) -> Dict[Path, bool]:
-        
-        files = sorted(files, key=lambda f: f.stat().st_size if f.exists() else 0, reverse=True)
-        total = len(files)
-        results: Dict[Path, bool] = {}
-        completed = 0
+        def task(f: Path) -> bool:
+            return self.analyze_file(f, output_dir, script_path, cancel_event=cancel_event)
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_file = {}
-            for f in files:
-                if cancel_event and cancel_event.is_set():
-                    break
-                future = executor.submit(self.analyze_file, f, output_dir, script_path,
-                                         cancel_event=cancel_event)
-                future_to_file[future] = f
-
-            for future in as_completed(future_to_file):
-                f = future_to_file[future]
-                try:
-                    success = future.result()
-                    results[f] = success
-                except Exception as e:
-                    logger.error(f"Error during analysis of {f}: {e}")
-                    results[f] = False
-                completed += 1
-                if self._progress_callback:
-                    self._progress_callback(f.name, completed, total)
-                if self._file_done_callback:
-                    self._file_done_callback(f.name, results[f])
-
-                if cancel_event and cancel_event.is_set():
-                    # Пытаемся отменить ещё не запущенные задачи (Python 3.9+)
-                    for f_left_future, _ in list(future_to_file.items()):
-                        if not f_left_future.done():
-                            try:
-                                f_left_future.cancel()
-                            except Exception:
-                                pass
-                    # Принудительно завершаем работу executor'а без ожидания оставшихся задач
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    break
+        results = self._run_in_parallel(files, task, cancel_event)
 
         if cancel_event and cancel_event.is_set():
             logger.info("Анализ прерван пользователем.")
@@ -187,46 +201,10 @@ class IDAAnalyzer:
                             output_dir: Optional[Path] = None,
                             script_args: Optional[Dict[str, str]] = None,
                             cancel_event: Optional[threading.Event] = None) -> Dict[Path, bool]:
-        
-        idb_files = sorted(idb_files, key=lambda f: f.stat().st_size if f.exists() else 0, reverse=True)
-        total = len(idb_files)
-        results: Dict[Path, bool] = {}
-        completed = 0
-
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_file = {}
-            for f in idb_files:
-                if cancel_event and cancel_event.is_set():
-                    break
-                future = executor.submit(self.run_script_on_idb, f, script_path, output_dir,
-                                         script_args, cancel_event=cancel_event)
-                future_to_file[future] = f
-
-            for future in as_completed(future_to_file):
-                f = future_to_file[future]
-                try:
-                    success = future.result()
-                    results[f] = success
-                except Exception as e:
-                    logger.error(f"Error running script on {f}: {e}")
-                    results[f] = False
-                completed += 1
-                if self._progress_callback:
-                    self._progress_callback(f.name, completed, total)
-                if self._file_done_callback:
-                    self._file_done_callback(f.name, results[f])
-
-                if cancel_event and cancel_event.is_set():
-                    for f_left_future, _ in list(future_to_file.items()):
-                        if not f_left_future.done():
-                            try:
-                                f_left_future.cancel()
-                            except Exception:
-                                pass
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    break
-
-        return results
+        def task(f: Path) -> bool:
+            return self.run_script_on_idb(f, script_path, output_dir, script_args,
+                                           cancel_event=cancel_event)
+        return self._run_in_parallel(idb_files, task, cancel_event)
 
     # ------------------------------------------------------------------
     # Вспомогательные методы
@@ -301,9 +279,10 @@ class IDAAnalyzer:
     @staticmethod
     def _log_tail(log_path: Path, lines: int = 10) -> None:
         try:
+            # deque(f, n) хранит только последние n строк — без загрузки всего файла в память
             with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                log_lines = f.readlines()
-            if log_lines:
-                logger.error("Last lines from IDA log:\n" + "".join(log_lines[-lines:]))
+                last_lines = deque(f, lines)
+            if last_lines:
+                logger.error("Last lines from IDA log:\n" + "".join(last_lines))
         except Exception as e:
             logger.warning(f"Could not read log: {e}")

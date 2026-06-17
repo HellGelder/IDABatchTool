@@ -16,6 +16,7 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 # Единое имя исполняемого файла IDA 9.0+
 _IDA_EXECUTABLE_NAME = "idat"
+_BINDIFF_EXECUTABLE_NAME = "bindiff"
 
 
 def _default_config() -> Dict[str, Any]:
@@ -179,8 +180,6 @@ def get_default_inputdir() -> str:
     return load_config().get("default_inputdir", ".")
 
 
-
-_BINDIFF_EXECUTABLE_NAME = "bindiff"
 
 def get_bindiff_executable() -> str:
     """

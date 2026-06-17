@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 from ida_batch_tool.classifier.platform_classifier import get_platform_classifier, classify_module
 from ida_batch_tool.classifier.categories import get_module_category_and_description
-from ida_batch_tool.reporting.utils import compute_back_link
+from ida_batch_tool.reporting.utils import compute_back_link, normalize_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -66,19 +66,8 @@ class BaseReportGenerator(ABC):
 
     @staticmethod
     def _normalize_display_name(module_name: str) -> str:
-        if not module_name:
-            return ""
-        if '\\' in module_name or '/' in module_name:
-            module_name = module_name.replace('\\', '/').split('/')[-1]
-        if module_name.endswith('.dylib'):
-            module_name = module_name[:-6]
-        elif module_name.endswith('.framework'):
-            module_name = module_name[:-10]
-        elif '.dylib' in module_name:
-            module_name = module_name.split('.dylib')[0]
-        if module_name.startswith('@rpath/'):
-            module_name = module_name[7:]
-        return module_name
+        # Делегируем канонической реализации из reporting.utils
+        return normalize_display_name(module_name)
 
     def _is_internal_module(self, module_name: str, internal_set: Optional[Set[str]]) -> bool:
         if internal_set is None:

@@ -1,1 +1,27 @@
 .pyc
+__pycache__/
+
+# Локальная конфигурация пользователя (содержит машинно-зависимые пути)
+config.yaml
+
+# Результаты анализа и временные файлы IDA
+*.i64
+*.idb
+*.id0
+*.id1
+*.nam
+*.til
+*.asm
+*.log
+*.export.json
+*.diff.json
+*.BinExport
+*.BinDiff
+
+# Папки с отчётами
+IDAReports/
+SFAReports/
+DiffResults/
+
+# Бинарники утилит
+bindiff.exe

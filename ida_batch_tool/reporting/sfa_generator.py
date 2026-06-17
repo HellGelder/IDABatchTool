@@ -142,57 +142,58 @@ class SfaReportGenerator:
                 self._log(f"[WARN] Failed to load doc_cache: {e}")
 
         conn = sqlite3.connect(str(db_path))
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        system_calls = []
-        for imp in imports:
-            func_name = imp.get("name")
-            if not func_name:
-                continue
-            self._log(f"[DEBUG] Processing import: {func_name}")
+            system_calls = []
+            for imp in imports:
+                func_name = imp.get("name")
+                if not func_name:
+                    continue
+                self._log(f"[DEBUG] Processing import: {func_name}")
 
-            cursor.execute("SELECT dll_name, return_type, n_arguments FROM functions WHERE name = ?", (func_name,))
-            row = cursor.fetchone()
-            if not row:
-                self._log(f"[DEBUG] No signature in DB for {func_name}")
-                continue
-            dll_name, return_type, n_arguments = row
+                cursor.execute("SELECT dll_name, return_type, n_arguments FROM functions WHERE name = ?", (func_name,))
+                row = cursor.fetchone()
+                if not row:
+                    self._log(f"[DEBUG] No signature in DB for {func_name}")
+                    continue
+                dll_name, return_type, n_arguments = row
 
-            cursor.execute(
-                "SELECT idx, name, type, in_out FROM parameters WHERE function_id = (SELECT id FROM functions WHERE name = ?) ORDER BY idx",
-                (func_name,)
-            )
-            params = [{"idx": p[0], "name": p[1] or f"arg{p[0]}", "type": p[2] or "unknown", "in_out": p[3] or "in"} for p in cursor.fetchall()]
-            self._log(f"[DEBUG] Found {len(params)} parameters for {func_name}")
+                cursor.execute(
+                    "SELECT idx, name, type, in_out FROM parameters WHERE function_id = (SELECT id FROM functions WHERE name = ?) ORDER BY idx",
+                    (func_name,)
+                )
+                params = [{"idx": p[0], "name": p[1] or f"arg{p[0]}", "type": p[2] or "unknown", "in_out": p[3] or "in"} for p in cursor.fetchall()]
+                self._log(f"[DEBUG] Found {len(params)} parameters for {func_name}")
 
-            # Получаем результаты поиска
-            results = []
-            if func_name in self._doc_cache:
-                results = self._doc_cache[func_name]
-                self._log(f"[INFO] Using cached results for {func_name} (count: {len(results)})")
-            else:
-                results = self._search_function(func_name)
-                if results:
-                    self._doc_cache[func_name] = results
-                    with open(cache_file, "w", encoding="utf-8") as f:
-                        json.dump(self._doc_cache, f, indent=2, ensure_ascii=False)
-                    self._log(f"[INFO] Fetched and cached {len(results)} results for {func_name}")
+                # Получаем результаты поиска
+                results = []
+                if func_name in self._doc_cache:
+                    results = self._doc_cache[func_name]
+                    self._log(f"[INFO] Using cached results for {func_name} (count: {len(results)})")
                 else:
-                    self._log(f"[ERROR] No results for {func_name}")
+                    results = self._search_function(func_name)
+                    if results:
+                        self._doc_cache[func_name] = results
+                        with open(cache_file, "w", encoding="utf-8") as f:
+                            json.dump(self._doc_cache, f, indent=2, ensure_ascii=False)
+                        self._log(f"[INFO] Fetched and cached {len(results)} results for {func_name}")
+                    else:
+                        self._log(f"[ERROR] No results for {func_name}")
 
-            system_calls.append({
-                "name": func_name,
-                "dll": dll_name,
-                "return_type": return_type or "unknown",
-                "expected_args": n_arguments or len(params),
-                "params": params,
-                "address": imp.get("address", ""),
-                "module": imp.get("module", ""),
-                "warning": None,
-                "search_results": results
-            })
-
-        conn.close()
+                system_calls.append({
+                    "name": func_name,
+                    "dll": dll_name,
+                    "return_type": return_type or "unknown",
+                    "expected_args": n_arguments or len(params),
+                    "params": params,
+                    "address": imp.get("address", ""),
+                    "module": imp.get("module", ""),
+                    "warning": None,
+                    "search_results": results
+                })
+        finally:
+            conn.close()
         self._log(f"[INFO] Generated {len(system_calls)} system calls")
 
         back_link = "index.html"

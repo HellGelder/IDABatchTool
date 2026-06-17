@@ -18,6 +18,7 @@ from ida_batch_tool.discovery.finder import find_executables
 from ida_batch_tool.ui.constants import AnalysisStatus, PLATFORM_EXTENSIONS, SCRIPTS_DIR
 from ida_batch_tool.ui.workers.analysis_worker import AnalysisWorker
 from ida_batch_tool.ui.workers.sfa_html_generation import SfaHtmlGeneratorWorker
+from ida_batch_tool.ui.workers.export_worker import ExportWorker
 from ida_batch_tool.archive_handler import extract_archive, ARCHIVE_EXTENSIONS, find_7z
 from ida_batch_tool.ida.runner import IDAAnalyzer
 from ida_batch_tool.database.win32_sync import Win32DatabaseSync
@@ -33,6 +34,7 @@ class SfaPage(QWidget):
         self.html_in_progress = False
         self.worker: Optional[AnalysisWorker] = None
         self.html_worker: Optional[SfaHtmlGeneratorWorker] = None
+        self._export_worker: Optional[ExportWorker] = None
         self._cached_files: List[Path] = []
         self._export_all_after_analysis = False
         self._build_ui()
@@ -401,6 +403,7 @@ class SfaPage(QWidget):
         self._refresh_file_list()
 
     def _start_export_only(self, idb_files: List[Path]):
+        """Запускает экспорт в JSON в фоновом потоке (без блокировки UI)."""
         idat_path = get_ida_executable()
         script_path = SCRIPTS_DIR / "export_data.py"
         if not script_path.exists():
@@ -409,17 +412,27 @@ class SfaPage(QWidget):
         script_args = {}
         if self.pseudocode_check.isChecked():
             script_args["pseudocode"] = "1"
-        analyzer = IDAAnalyzer(idat_path=idat_path, max_workers=self.max_ida_slider.value())
-        analyzer.set_progress_callback(self._on_export_progress)
-        analyzer.set_file_start_callback(self._on_export_file_started)
-        analyzer.set_file_done_callback(self._on_export_file_completed)
         self.process_label.setText("Фаза: экспорт в JSON...")
         self.process_progress.setValue(0)
-        QApplication.processEvents()
-        results = analyzer.run_script_on_batch(idb_files, script_path, script_args=script_args, cancel_event=None)
+        self._export_worker = ExportWorker(
+            idb_files, idat_path, script_path,
+            max_workers=self.max_ida_slider.value(),
+            script_args=script_args if script_args else None
+        )
+        self._export_worker.progress.connect(self._on_export_progress)
+        self._export_worker.file_completed.connect(self._on_export_file_completed)
+        self._export_worker.error_occurred.connect(self._on_error)
+        self._export_worker.finished.connect(self._on_export_only_finished)
+        self._export_worker.start()
+
+    def _on_export_only_finished(self, results: dict):
         succeeded = sum(1 for ok in results.values() if ok)
-        self.process_label.setText(f"Экспорт завершён. Успешно: {succeeded}/{len(idb_files)}")
+        total = len(results)
+        self.process_label.setText(f"Экспорт завершён. Успешно: {succeeded}/{total}")
         self._refresh_file_list()
+        if self._export_worker:
+            self._export_worker.deleteLater()
+            self._export_worker = None
 
     def _start_html_generation(self):
         if self.html_in_progress:

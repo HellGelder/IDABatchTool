@@ -209,71 +209,73 @@ class DiffWorker(QThread):
 
         try:
             conn = sqlite3.connect(str(db_path))
-            cur = conn.cursor()
+            try:
+                cur = conn.cursor()
 
-            # Метаданные
-            cur.execute("SELECT * FROM metadata")
-            meta_row = cur.fetchone()
-            if meta_row:
-                meta_cols = [desc[0] for desc in cur.description]
-                meta = dict(zip(meta_cols, meta_row))
-                result["similarity"] = float(meta.get("similarity", 0.0))
-                result["confidence"] = float(meta.get("confidence", 0.0))
-                result["description"] = meta.get("description", "")
-                result["version"] = meta.get("version", "")
-                result["created"] = str(meta.get("created", ""))
-                result["modified"] = str(meta.get("modified", ""))
+                # Метаданные
+                cur.execute("SELECT * FROM metadata")
+                meta_row = cur.fetchone()
+                if meta_row:
+                    meta_cols = [desc[0] for desc in cur.description]
+                    meta = dict(zip(meta_cols, meta_row))
+                    result["similarity"] = float(meta.get("similarity", 0.0))
+                    result["confidence"] = float(meta.get("confidence", 0.0))
+                    result["description"] = meta.get("description", "")
+                    result["version"] = meta.get("version", "")
+                    result["created"] = str(meta.get("created", ""))
+                    result["modified"] = str(meta.get("modified", ""))
 
-            # Информация о файлах (две строки)
-            cur.execute("SELECT * FROM file ORDER BY id")
-            file_rows = cur.fetchall()
-            if len(file_rows) >= 2:
-                file_cols = [desc[0] for desc in cur.description]
-                file1 = dict(zip(file_cols, file_rows[0]))
-                file2 = dict(zip(file_cols, file_rows[1]))
-                for f_dict, key in [(file1, "file1"), (file2, "file2")]:
-                    result[key] = {
-                        "filename": f_dict.get("filename", ""),
-                        "exefilename": f_dict.get("exefilename", ""),
-                        "hash": f_dict.get("hash", ""),
-                        "functions": int(f_dict.get("functions", 0)),
-                        "libfunctions": int(f_dict.get("libfunctions", 0)),
-                        "calls": int(f_dict.get("calls", 0)),
-                        "basicblocks": int(f_dict.get("basicblocks", 0)),
-                        "libbasicblocks": int(f_dict.get("libbasicblocks", 0)),
-                        "edges": int(f_dict.get("edges", 0)),
-                        "libedges": int(f_dict.get("libedges", 0)),
-                        "instructions": int(f_dict.get("instructions", 0)),
-                        "libinstructions": int(f_dict.get("libinstructions", 0)),
-                    }
-                result["total_functions1"] = result["file1"]["functions"] + result["file1"]["libfunctions"]
-                result["total_functions2"] = result["file2"]["functions"] + result["file2"]["libfunctions"]
+                # Информация о файлах (две строки)
+                cur.execute("SELECT * FROM file ORDER BY id")
+                file_rows = cur.fetchall()
+                if len(file_rows) >= 2:
+                    file_cols = [desc[0] for desc in cur.description]
+                    file1 = dict(zip(file_cols, file_rows[0]))
+                    file2 = dict(zip(file_cols, file_rows[1]))
+                    for f_dict, key in [(file1, "file1"), (file2, "file2")]:
+                        result[key] = {
+                            "filename": f_dict.get("filename", ""),
+                            "exefilename": f_dict.get("exefilename", ""),
+                            "hash": f_dict.get("hash", ""),
+                            "functions": int(f_dict.get("functions", 0)),
+                            "libfunctions": int(f_dict.get("libfunctions", 0)),
+                            "calls": int(f_dict.get("calls", 0)),
+                            "basicblocks": int(f_dict.get("basicblocks", 0)),
+                            "libbasicblocks": int(f_dict.get("libbasicblocks", 0)),
+                            "edges": int(f_dict.get("edges", 0)),
+                            "libedges": int(f_dict.get("libedges", 0)),
+                            "instructions": int(f_dict.get("instructions", 0)),
+                            "libinstructions": int(f_dict.get("libinstructions", 0)),
+                        }
+                    result["total_functions1"] = result["file1"]["functions"] + result["file1"]["libfunctions"]
+                    result["total_functions2"] = result["file2"]["functions"] + result["file2"]["libfunctions"]
 
-            # Совпавшие функции
-            cur.execute("""
-                SELECT address1, name1, address2, name2,
-                       similarity, confidence, flags, algorithm,
-                       basicblocks, edges, instructions
-                FROM function
-                ORDER BY similarity DESC
-            """)
-            func_cols = [desc[0] for desc in cur.description]
-            for row in cur.fetchall():
-                func = dict(zip(func_cols, row))
-                result["matched_functions"].append({
-                    "name1": func.get("name1") or "<unnamed>",
-                    "address1": f"0x{func['address1']:X}" if func.get("address1") else "",
-                    "name2": func.get("name2") or "<unnamed>",
-                    "address2": f"0x{func['address2']:X}" if func.get("address2") else "",
-                    "similarity": round(func.get("similarity", 0.0), 4),
-                    "confidence": round(func.get("confidence", 0.0), 4),
-                    "flags": func.get("flags", 0),
-                    "algorithm": func.get("algorithm", 0),
-                    "basicblocks": func.get("basicblocks", 0),
-                    "edges": func.get("edges", 0),
-                    "instructions": func.get("instructions", 0),
-                })
-            conn.close()
+                # Совпавшие функции
+                cur.execute("""
+                    SELECT address1, name1, address2, name2,
+                           similarity, confidence, flags, algorithm,
+                           basicblocks, edges, instructions
+                    FROM function
+                    ORDER BY similarity DESC
+                """)
+                func_cols = [desc[0] for desc in cur.description]
+                for row in cur.fetchall():
+                    func = dict(zip(func_cols, row))
+                    result["matched_functions"].append({
+                        "name1": func.get("name1") or "<unnamed>",
+                        "address1": f"0x{func['address1']:X}" if func.get("address1") else "",
+                        "name2": func.get("name2") or "<unnamed>",
+                        "address2": f"0x{func['address2']:X}" if func.get("address2") else "",
+                        "similarity": round(func.get("similarity", 0.0), 4),
+                        "confidence": round(func.get("confidence", 0.0), 4),
+                        "flags": func.get("flags", 0),
+                        "algorithm": func.get("algorithm", 0),
+                        "basicblocks": func.get("basicblocks", 0),
+                        "edges": func.get("edges", 0),
+                        "instructions": func.get("instructions", 0),
+                    })
+            finally:
+                conn.close()
         except Exception as e:
             result["error"] = str(e)
             logger.exception("Ошибка парсинга BinDiff")
