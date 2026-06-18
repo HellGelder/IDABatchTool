@@ -571,23 +571,21 @@ class AnalysisPage(QWidget):
         self.process_label.setText(f"Генерация HTML: {current}/{total} {message}")
         self.process_progress.setValue(int(100 * current / total))
 
-    def _on_html_finished(self, generated_count: int, report_links: list,
-                          global_modules_set: set, global_elf_set: set,
-                          ida_info: dict, ida_reports: Path, input_dir: Path,
-                          total_files: int, total_size_bytes: int) -> None:
+    def _on_html_finished(self, result: object) -> None:
+        # result — HtmlGenerationResult (dataclass)
         self.process_label.setText("Создание сводного отчёта...")
         QApplication.processEvents()
         from datetime import datetime
         gen_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         generator = ReportGenerator()
         try:
-            sorted_mods = sorted(global_modules_set)
-            sorted_elf = sorted(global_elf_set)
+            sorted_mods = sorted(result.global_modules_set)
+            sorted_elf = sorted(result.global_elf_set)
             internal_set = getattr(self.html_worker, 'internal_set', None)
             index_path = generator.generate_index(
-                ida_reports, input_dir, report_links, sorted_mods,
-                ida_info, sorted_elf, internal_set=internal_set,
-                total_files=total_files, total_size_bytes=total_size_bytes,
+                result.reports_dir, result.input_dir, result.report_links, sorted_mods,
+                result.ida_info, sorted_elf, internal_set=internal_set,
+                total_files=result.total_files, total_size_bytes=result.total_size_bytes,
                 error_count=0, generation_time=gen_time
             )
             self.html_in_progress = False
@@ -597,7 +595,8 @@ class AnalysisPage(QWidget):
             self.process_progress.setValue(100)
             self.process_label.setText("Готово")
             self._cleanup_after_report()
-            QMessageBox.information(self, "Готово", f"Отчёты сохранены в {ida_reports}\nИндекс: {index_path}")
+            QMessageBox.information(self, "Готово",
+                                    f"Отчёты сохранены в {result.reports_dir}\nИндекс: {index_path}")
         except Exception as e:
             self.error_text.append(f"Ошибка создания индексного отчёта: {e}")
             self.html_in_progress = False

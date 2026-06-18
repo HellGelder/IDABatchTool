@@ -9,11 +9,13 @@ from PySide6.QtCore import QThread, Signal
 
 from ida_batch_tool.reporting.generator import ReportGenerator
 from ida_batch_tool.reporting.utils import normalize_display_name
+from ida_batch_tool.ui.workers.results import HtmlGenerationResult
 
 
 class HtmlGeneratorWorker(QThread):
     progress_updated = Signal(int, int, str)
-    finished = Signal(int, list, set, set, dict, Path, Path, int, int)
+    # Один dataclass-объект вместо 9 позиционных аргументов
+    finished = Signal(object)
     error_occurred = Signal(str)
 
     def __init__(self, json_files: Dict[Path, bool], generator: ReportGenerator,
@@ -105,6 +107,14 @@ class HtmlGeneratorWorker(QThread):
                 self.error_occurred.emit(f"Ошибка генерации отчёта для {json_path.name}: {e}")
             self.progress_updated.emit(i + 1, total, "")
 
-        self.finished.emit(generated_count, report_links, global_modules_set,
-                           global_elf_set, ida_info or {}, self.reports_dir, self.input_dir,
-                           total_files, total_size_bytes)
+        self.finished.emit(HtmlGenerationResult(
+            generated_count=generated_count,
+            report_links=report_links,
+            global_modules_set=global_modules_set,
+            global_elf_set=global_elf_set,
+            ida_info=ida_info or {},
+            reports_dir=self.reports_dir,
+            input_dir=self.input_dir,
+            total_files=total_files,
+            total_size_bytes=total_size_bytes,
+        ))

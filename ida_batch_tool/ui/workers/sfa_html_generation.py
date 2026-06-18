@@ -3,11 +3,13 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from ida_batch_tool.reporting.sfa_generator import SfaReportGenerator
+from ida_batch_tool.ui.workers.results import SfaHtmlGenerationResult
 
 
 class SfaHtmlGeneratorWorker(QThread):
     progress_updated = Signal(int, int, str)
-    finished = Signal(int, list, dict, Path, Path, int, int)
+    # Один dataclass-объект вместо 7 позиционных аргументов
+    finished = Signal(object)
     error_occurred = Signal(str)
 
     def __init__(self, json_files: dict, generator: SfaReportGenerator,
@@ -65,5 +67,12 @@ class SfaHtmlGeneratorWorker(QThread):
                 self.error_occurred.emit(f"Ошибка генерации отчёта СФ для {json_path.name}: {e}")
             self.progress_updated.emit(i + 1, total, "")
 
-        self.finished.emit(generated_count, report_links, ida_info,
-                           self.reports_dir, self.input_dir, total_files, total_size_bytes)
+        self.finished.emit(SfaHtmlGenerationResult(
+            generated_count=generated_count,
+            report_links=report_links,
+            ida_info=ida_info,
+            reports_dir=self.reports_dir,
+            input_dir=self.input_dir,
+            total_files=total_files,
+            total_size_bytes=total_size_bytes,
+        ))

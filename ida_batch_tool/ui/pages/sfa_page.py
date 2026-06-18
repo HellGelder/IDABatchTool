@@ -508,7 +508,8 @@ class SfaPage(QWidget):
         self.process_label.setText(f"Генерация HTML: {current}/{total} {message}")
         self.process_progress.setValue(int(100 * current / total))
 
-    def _on_html_finished(self, generated_count: int, report_links: list, ida_info: dict, sfa_reports: Path, input_dir: Path, total_files: int, total_size_bytes: int):
+    def _on_html_finished(self, result: object):
+        # result — SfaHtmlGenerationResult (dataclass)
         self.process_label.setText("Создание сводного отчёта СФ...")
         QApplication.processEvents()
         from datetime import datetime
@@ -517,8 +518,8 @@ class SfaPage(QWidget):
         generator = SfaReportGenerator()
         try:
             index_path = generator.generate_index(
-                sfa_reports, input_dir, report_links, ida_info,
-                total_files=total_files, total_size_bytes=total_size_bytes,
+                result.reports_dir, result.input_dir, result.report_links, result.ida_info,
+                total_files=result.total_files, total_size_bytes=result.total_size_bytes,
                 generation_time=gen_time
             )
             self.html_in_progress = False
@@ -527,7 +528,8 @@ class SfaPage(QWidget):
             self.html_generate_btn.setEnabled(True)
             self.process_progress.setValue(100)
             self.process_label.setText("Готово")
-            QMessageBox.information(self, "Готово", f"Отчёты СФ сохранены в {sfa_reports}\nИндекс: {index_path}")
+            QMessageBox.information(self, "Готово",
+                                    f"Отчёты СФ сохранены в {result.reports_dir}\nИндекс: {index_path}")
         except Exception as e:
             self.error_text.append(f"Ошибка создания индексного отчёта: {e}")
             self.html_in_progress = False
