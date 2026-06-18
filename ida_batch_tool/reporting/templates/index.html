@@ -2,141 +2,234 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Сводный отчёт анализа</title>
+    {% include "_design_tokens.html" %}
     <style>
-        :root {
-            --bg: #f5f5f5;
-            --card-bg: white;
-            --text: #303030;
-            --accent: #007aff;
-            --border: #d1d1d1;
-            --hover: #f0f0f5;
+        .pill-tag {
+            display: inline-flex; align-items: center;
+            padding: 2px 10px; border-radius: var(--radius-pill);
+            background: var(--surface-secondary); color: var(--text-secondary);
+            font-size: 11px; margin: 2px 4px 2px 0;
         }
-        body {
-            font-family: "Segoe UI", system-ui, sans-serif;
-            font-size: 12px;
-            margin: 20px;
-            background: var(--bg);
+
+        /* ▸ Интерактивный список категорий (левая панель) */
+        .split-view { display: flex; gap: 24px; align-items: flex-start; }
+        .split-left {
+            flex-shrink: 0; width: 280px;
+            display: flex; flex-direction: column;
+        }
+        .split-right { flex: 1; min-width: 0; }
+
+        .cat-list { list-style: none; padding: 0; margin: 0; }
+        .cat-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 12px; cursor: pointer; border-radius: var(--radius-sm);
+            margin-bottom: 2px; transition: background 0.1s;
+            font-size: 14px;
+        }
+        .cat-item:hover { background: var(--separator); }
+        .cat-item.active {
+            background: var(--accent-tint); color: var(--accent); font-weight: 600;
+        }
+        .cat-item .cat-count {
+            margin-left: auto; font-size: 13px; font-weight: 600;
+            color: var(--text-secondary);
+        }
+        .cat-item.active .cat-count { color: var(--accent); }
+
+        /* ▸ Детализация выбранной категории */
+        .group-detail-title {
+            font-size: 17px; font-weight: 700; margin: 0 0 4px; color: var(--text);
+        }
+        .group-detail-desc {
+            text-align: justify; color: var(--text-secondary);
+            font-size: 13px; line-height: 1.5; margin: 0 0 16px;
+        }
+        .group-empty { color: var(--text-tertiary); font-style: italic; }
+
+        /* ▸ Модуль: имя + пояснение на одной строке, оба слева */
+        .mod-entry {
+            display: flex; align-items: baseline; gap: 8px;
+            padding: 6px 4px; border-bottom: 1px solid var(--separator);
+        }
+        .mod-entry:last-child { border-bottom: none; }
+        .mod-name {
+            font-weight: 600; font-size: 13px; white-space: nowrap;
             color: var(--text);
         }
-        h1, h2 { color: var(--accent); font-size: 14px; }
-        h3 {
-            font-size: 13px;
-            margin: 10px 0 4px;
-            color: #555;
-        }
-        .card {
-            background: var(--card-bg); border-radius: 10px;
-            margin: 12px 0; padding: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        ul { padding-left: 20px; }
-        li { margin: 4px 0; }
-        a { color: var(--accent); text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        .badge {
-            display: inline-block; background: var(--accent); color: white;
-            border-radius: 10px; padding: 2px 8px; font-size: 10px; margin-left: 8px;
-        }
-        .file-tree {
-            font-family: monospace;
-            margin: 0;
-            padding-left: 0;
-            list-style: none;
-        }
-        .file-tree li {
-            padding: 2px 0;
-        }
-        .category-description {
-            font-size: 11px;
-            color: #666;
-            margin: 0 0 8px 20px;
-            font-style: italic;
-        }
-        .module-description {
-            font-size: 11px;
-            color: #666;
-            margin-left: 8px;
+        .mod-desc {
+            flex: 1; text-align: left; color: var(--text-secondary);
+            font-size: 12px; line-height: 1.4;
         }
     </style>
 </head>
 <body>
+
     <h1>Сводный отчёт анализа</h1>
 
+    <!-- Общая информация -->
     <div class="card">
-        <h2>Общая информация</h2>
-        <p><strong>Директория анализа:</strong> {{ input_dir }}</p>
-        <p><strong>Исследовано модулей:</strong> {{ total_modules }}</p>
-        {% if ida_info %}
-        <h3>Характеристики IDA Pro</h3>
-        <ul>
-            <li><strong>Версия ядра:</strong> {{ ida_info.kernel_version }}</li>
+        <h2 style="margin-top:0">Общая информация</h2>
+        <ul class="grouped-list">
+            <li class="grouped-row">
+                <span class="grouped-row-label">Директория</span>
+                <span class="grouped-row-value">{{ input_dir }}</span>
+            </li>
+            <li class="grouped-row">
+                <span class="grouped-row-label">Модулей</span>
+                <span class="grouped-row-value"><span class="badge">{{ total_modules }}</span></span>
+            </li>
         </ul>
-        {% else %}
-        <p><em>Информация о версии IDA недоступна.</em></p>
+        {% if ida_info %}
+        <h4 style="margin-top:16px">Характеристики IDA Pro</h4>
+        <ul class="grouped-list">
+            <li class="grouped-row">
+                <span class="grouped-row-label">Версия ядра</span>
+                <span class="grouped-row-value"><code>{{ ida_info.kernel_version }}</code></span>
+            </li>
+        </ul>
         {% endif %}
     </div>
 
+    <!-- Статистика -->
     <div class="card">
-        <h2>Статистика анализа</h2>
-        <ul>
-            <li><strong>Обнаружено файлов:</strong> {{ total_files }}</li>
-            <li><strong>Общий размер файлов:</strong> 
-                {% if total_size_bytes < 1024 %}
-                    {{ total_size_bytes }} байт
-                {% elif total_size_bytes < 1024*1024 %}
-                    {{ (total_size_bytes / 1024) | round(1) }} КБ
-                {% else %}
-                    {{ (total_size_bytes / (1024*1024)) | round(1) }} МБ
-                {% endif %}
-            </li>
-            <li><strong>Успешно обработано отчётов:</strong> {{ total_modules }}</li>
-            <li><strong>Ошибок:</strong> {{ error_count }}</li>
-            <li><strong>Дата и время генерации:</strong> {{ generation_time }}</li>
-        </ul>
+        <h2 style="margin-top:0">Статистика анализа</h2>
+        <div class="stat-grid">
+            <div class="stat-tile">
+                <div class="stat-value">{{ total_files }}</div>
+                <div class="stat-label">Файлов</div>
+            </div>
+            <div class="stat-tile">
+                <div class="stat-value">
+                    {% if total_size_bytes < 1024 %}{{ total_size_bytes }} Б
+                    {% elif total_size_bytes < 1024*1024 %}{{ (total_size_bytes / 1024) | round(1) }} КБ
+                    {% else %}{{ (total_size_bytes / (1024*1024)) | round(1) }} МБ{% endif %}
+                </div>
+                <div class="stat-label">Размер</div>
+            </div>
+            <div class="stat-tile">
+                <div class="stat-value">{{ total_modules }}</div>
+                <div class="stat-label">Отчётов</div>
+            </div>
+            <div class="stat-tile">
+                <div class="stat-value">{{ error_count }}</div>
+                <div class="stat-label">Ошибок</div>
+            </div>
+        </div>
+        <p class="meta-text" style="margin-top: 8px;">Сгенерировано: {{ generation_time }}</p>
     </div>
 
+    <!-- ▸ Классификация: интерактивный список + детализация справа -->
     <div class="card">
-        <h2>Классификация импортированных модулей</h2>
+        <h2 style="margin-top:0">Классификация импортированных модулей</h2>
         {% if grouped_categories %}
-            {% for category in grouped_categories %}
-                <h3>{{ category.name }} <span class="badge">{{ category.count }}</span></h3>
-                {% if category.description %}
-                <p class="category-description">{{ category.description }}</p>
-                {% endif %}
-                <ul>
-                    {% for mod in category.modules %}
-                        <li><strong>{{ mod.name }}</strong><span class="module-description">: {{ mod.desc }}</span></li>
+        <div class="split-view">
+            <div class="split-left">
+                <ul class="cat-list" id="catList">
+                    {% for cat in grouped_categories %}
+                    <li class="cat-item" data-index="{{ loop.index0 }}">
+                        {{ cat.name }} <span class="cat-count">{{ cat.count }}</span>
+                    </li>
                     {% endfor %}
                 </ul>
-            {% endfor %}
+            </div>
+            <div class="split-right" id="groupDetail">
+                <!-- Заполняется JS -->
+            </div>
+        </div>
         {% else %}
-        <p>Модули не найдены.</p>
+        <p class="empty-state">Модули не найдены.</p>
         {% endif %}
     </div>
 
+    <!-- Секции ELF -->
     {% if elf_sections %}
     <div class="card">
-        <h2>Обнаруженные секции ELF</h2>
-        <ul>
+        <h2 style="margin-top:0">Обнаруженные секции ELF</h2>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
             {% for sec in elf_sections %}
-            <li>{{ sec }}</li>
+            <span class="pill-tag">{{ sec }}</span>
             {% endfor %}
-        </ul>
+        </div>
     </div>
     {% endif %}
 
+    <!-- Исследованные файлы -->
     <div class="card">
-        <h2>Исследованные файлы</h2>
+        <h2 style="margin-top:0">Исследованные файлы</h2>
         {% if reports %}
-        <ul class="file-tree">
+        <ul class="file-list">
             {% for report in reports %}
             <li>📄 <a href="{{ report.filename }}" target="_blank">{{ report.display_name }}</a></li>
             {% endfor %}
         </ul>
         {% else %}
-        <p>Файлы не найдены.</p>
+        <p class="empty-state">Файлы не найдены.</p>
         {% endif %}
     </div>
+
+    <script>
+        const categories = {{ grouped_categories | tojson }};
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/[&<>]/g, function(m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            });
+        }
+
+        function showCategory(idx) {
+            const cat = categories[idx];
+            const container = document.getElementById('groupDetail');
+            if (!cat) { container.innerHTML = '<p class="group-empty">Выберите категорию из списка.</p>'; return; }
+            let html = '<h3 class="group-detail-title">' + escapeHtml(cat.name) +
+                       ' <span class="badge">' + cat.count + '</span></h3>';
+            if (cat.description) {
+                html += '<p class="group-detail-desc">' + escapeHtml(cat.description) + '</p>';
+            }
+            if (cat.modules && cat.modules.length) {
+                html += '<div class="grouped-list" style="margin-top:4px;">';
+                cat.modules.forEach(function(mod) {
+                    html += '<div class="mod-entry">' +
+                            '<span class="mod-name">' + escapeHtml(mod.name) + '</span>' +
+                            '<span class="mod-desc">' + escapeHtml(mod.desc) + '</span>' +
+                            '</div>';
+                });
+                html += '</div>';
+            }
+            container.innerHTML = html;
+
+            // Подсветка активного пункта
+            document.querySelectorAll('#catList .cat-item').forEach(function(li) {
+                li.classList.remove('active');
+            });
+            var items = document.querySelectorAll('#catList .cat-item');
+            if (items[idx]) items[idx].classList.add('active');
+        }
+
+        // Привязываем клики
+        document.querySelectorAll('#catList .cat-item').forEach(function(li) {
+            li.addEventListener('click', function() {
+                showCategory(parseInt(this.getAttribute('data-index'), 10));
+            });
+        });
+
+        // По умолчанию — самая многочисленная группа
+        if (categories.length) {
+            var largestIdx = 0, largestCount = categories[0].count;
+            for (var i = 1; i < categories.length; i++) {
+                if (categories[i].count > largestCount) {
+                    largestCount = categories[i].count;
+                    largestIdx = i;
+                }
+            }
+            showCategory(largestIdx);
+        }
+    </script>
+
 </body>
 </html>

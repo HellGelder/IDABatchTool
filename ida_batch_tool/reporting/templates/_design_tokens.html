@@ -1,0 +1,196 @@
+{# Apple HIG design tokens — включается через {% include "_design_tokens.html" %} #}
+<style>
+    :root {
+        /* Apple System Colors — светлая тема */
+        --bg:                #f2f2f7;
+        --surface:           #ffffff;
+        --surface-secondary: #f9f9fb;
+        --text:              #1c1c1e;
+        --text-secondary:    #8e8e93;
+        --text-tertiary:     #c7c7cc;
+        --separator:         rgba(60, 60, 67, 0.12);
+        --separator-opaque:  #e5e5ea;
+        --accent:            #007aff;
+        --accent-pressed:    #0051d5;
+        --accent-tint:       rgba(0, 122, 255, 0.10);
+        --success:           #34c759;
+        --success-tint:      rgba(52, 199, 89, 0.10);
+        --warning:           #ff9500;
+        --warning-tint:      rgba(255, 149, 0, 0.10);
+        --danger:            #ff3b30;
+        --danger-tint:       rgba(255, 59, 48, 0.10);
+        --radius:            12px;
+        --radius-sm:         8px;
+        --radius-pill:       9999px;
+        --shadow-sm:         0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+        --shadow-md:         0 4px 12px rgba(0,0,0,.08);
+    }
+
+    /* ▸ Сбросы */
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+        margin: 0; padding: 24px;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+        font-size: 15px; line-height: 1.45;
+        background: var(--bg); color: var(--text);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ▸ Типографика */
+    h1 { font-size: 22px; font-weight: 700; margin: 0 0 4px; color: var(--text); letter-spacing: -0.3px; }
+    h2 { font-size: 17px; font-weight: 600; margin: 20px 0 8px; color: var(--text); letter-spacing: -0.2px; }
+    h3 { font-size: 15px; font-weight: 600; margin: 12px 0 4px; color: var(--text-secondary); }
+    h4 { font-size: 13px; font-weight: 600; margin: 8px 0 2px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre { font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Consolas", "Courier New", monospace; }
+
+    /* ▸ Карточка */
+    .card {
+        background: var(--surface); border-radius: var(--radius);
+        margin: 10px 0; padding: 20px;
+        box-shadow: var(--shadow-sm);
+    }
+
+    /* ▸ Grouped list (стиль Настройки iOS) */
+    .grouped-list { list-style: none; padding: 0; margin: 0; }
+    .grouped-row {
+        display: flex; align-items: center; gap: 12px;
+        padding: 12px 4px;
+        border-bottom: 1px solid var(--separator);
+    }
+    .grouped-row:last-child { border-bottom: none; }
+    .grouped-row-label { flex-shrink: 0; min-width: 120px; color: var(--text-secondary); font-size: 14px; }
+    .grouped-row-value { flex: 1; color: var(--text); word-break: break-all; }
+
+    /* ▸ Статистические плитки */
+    .stat-grid { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
+    .stat-tile {
+        flex: 1; min-width: 110px;
+        background: var(--surface-secondary); border-radius: var(--radius-sm);
+        padding: 14px 16px; text-align: center;
+    }
+    .stat-value { font-size: 28px; font-weight: 700; color: var(--accent); line-height: 1.1; }
+    .stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+    /* ▸ Бейдж (пилюля) */
+    .badge {
+        display: inline-flex; align-items: center;
+        padding: 2px 10px; font-size: 11px; font-weight: 600;
+        background: var(--accent-tint); color: var(--accent);
+        border-radius: var(--radius-pill); letter-spacing: 0.3px;
+    }
+    .badge--success { background: var(--success-tint); color: var(--success); }
+    .badge--warning { background: var(--warning-tint); color: var(--warning); }
+    .badge--danger  { background: var(--danger-tint); color: var(--danger); }
+
+    /* ▸ Прогресс-бар */
+    .progress-bar {
+        background: var(--separator-opaque); border-radius: var(--radius-pill);
+        height: 10px; margin: 4px 0 10px 0; overflow: hidden;
+    }
+    .progress-fill {
+        height: 100%; border-radius: var(--radius-pill);
+        background: linear-gradient(90deg, var(--accent), var(--accent-pressed));
+        transition: width 0.4s ease;
+    }
+
+    /* ▸ Таблицы */
+    .table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+    .table th {
+        text-align: left; padding: 8px 12px; font-weight: 600;
+        color: var(--text-secondary); font-size: 11px; text-transform: uppercase;
+        letter-spacing: 0.5px; border-bottom: 2px solid var(--separator-opaque);
+    }
+    .table td {
+        padding: 10px 12px; border-bottom: 1px solid var(--separator);
+        vertical-align: top;
+    }
+    .table tbody tr:hover { background: var(--surface-secondary); }
+    .table code { font-size: 12px; color: var(--text-secondary); }
+
+    /* ▸ Кнопка «Назад» */
+    .btn-back {
+        display: inline-flex; align-items: center; gap: 4px;
+        color: var(--accent); font-size: 14px; font-weight: 500;
+        text-decoration: none; padding: 6px 0; margin-bottom: 16px;
+    }
+    .btn-back:hover { opacity: 0.8; text-decoration: none; }
+
+    /* ▸ Поисковое поле */
+    .search-field {
+        width: 100%; padding: 10px 16px; border: none; border-radius: var(--radius-pill);
+        background: var(--surface-secondary); color: var(--text);
+        font-size: 14px; outline: none; margin-bottom: 16px;
+    }
+    .search-field:focus { background: var(--surface); box-shadow: 0 0 0 3px var(--accent-tint); }
+
+    /* ▸ Аккордеон */
+    .accordion { cursor: pointer; }
+    .accordion-header {
+        display: flex; justify-content: space-between; align-items: center;
+        font-weight: 600; font-size: 15px; padding: 4px 0;
+        user-select: none;
+    }
+    .accordion-body { display: none; margin-top: 10px; }
+    .accordion.open .accordion-body { display: block; }
+    .accordion-chevron {
+        transition: transform 0.2s ease; color: var(--text-tertiary);
+        font-size: 16px;
+    }
+    .accordion.open .accordion-chevron { transform: rotate(90deg); }
+
+    /* ▸ Сетка зависимостей */
+    .deps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+    .dep-item {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px; border-radius: var(--radius-sm);
+        border: 1px solid var(--separator-opaque);
+        background: var(--surface);
+    }
+    .dep-marker { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+    .dep-info { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+    .dep-name { font-weight: 600; font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-size: 13px; }
+    .dep-count { background: var(--surface-secondary); padding: 1px 7px; border-radius: var(--radius-pill); color: var(--text-secondary); font-size: 11px; }
+    .dep-category { font-style: italic; color: var(--text-secondary); }
+    .dep-desc { cursor: help; }
+
+    /* ▸ Блок кода */
+    .code-block {
+        font-family: ui-monospace, "SF Mono", "Consolas", "Courier New", monospace;
+        white-space: pre-wrap; word-break: break-all;
+        background: var(--surface-secondary); padding: 12px 16px;
+        border-radius: var(--radius-sm); font-size: 12px; line-height: 1.5;
+        overflow-x: auto; margin: 6px 0 12px;
+        border: 1px solid var(--separator);
+    }
+
+    /* ▸ Теги (статусы) */
+    .tag {
+        display: inline-flex; align-items: center; gap: 3px;
+        padding: 2px 8px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600;
+    }
+    .tag--match   { background: var(--success-tint); color: var(--success); }
+    .tag--mismatch{ background: var(--danger-tint); color: var(--danger); }
+    .tag--neutral { background: var(--surface-secondary); color: var(--text-secondary); }
+
+    /* ▸ Вспомогательные */
+    .flex-row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .flex-row > * { flex: 1; min-width: 220px; }
+    .meta-text { color: var(--text-secondary); font-size: 13px; }
+    [title] { border-bottom: 1px dotted var(--text-tertiary); cursor: help; }
+
+    /* ▸ Файловый список */
+    .file-list { list-style: none; padding: 0; }
+    .file-list li {
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 0; border-bottom: 1px solid var(--separator);
+        font-size: 14px;
+    }
+    .file-list li:last-child { border-bottom: none; }
+    .file-list a { font-weight: 500; }
+
+    /* ▸ Сообщения */
+    .empty-state { color: var(--text-tertiary); font-style: italic; padding: 12px 0; }
+</style>

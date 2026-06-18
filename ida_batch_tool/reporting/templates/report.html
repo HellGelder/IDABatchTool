@@ -2,133 +2,31 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Отчёт: {{ file_name }}</title>
+    {% include "_design_tokens.html" %}
     <style>
-        :root {
-            --bg: #f5f5f5;
-            --card-bg: white;
-            --text: #303030;
-            --accent: #007aff;
-            --border: #d1d1d1;
-            --hover: #f0f0f5;
-        }
-        body {
-            font-family: "Segoe UI", system-ui, sans-serif;
-            font-size: 12px;
-            margin: 20px;
-            background: var(--bg);
-            color: var(--text);
-        }
-        h1, h2 { color: var(--accent); font-size: 14px; }
-        .back-link {
-            display: block;
-            margin-bottom: 20px;
-            color: var(--accent);
-            text-decoration: none;
-        }
-        .back-link:hover { text-decoration: underline; }
-        .search { margin-bottom: 15px; }
-        .search input {
-            width: 100%; padding: 10px; border: 1px solid var(--border);
-            border-radius: 6px; font-size: 12px;
-        }
-        .card {
-            background: var(--card-bg); border-radius: 10px;
-            margin: 12px 0; padding: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        .card-header {
-            cursor: pointer; font-weight: 600;
-            display: flex; justify-content: space-between; align-items: center;
-            font-size: 12px;
-        }
-        .card-body { display: none; margin-top: 8px; }
-        .card.open .card-body { display: block; }
-        table {
-            width: 100%; border-collapse: collapse; margin: 8px 0;
-            font-size: 11px;
-        }
-        th, td {
-            text-align: left; padding: 6px; border-bottom: 1px solid var(--border);
-        }
-        th { background: var(--hover); }
-        .code-block {
-            font-family: "Consolas", "Courier New", monospace;
-            white-space: pre-wrap;
-            background: #f0f0f5;
-            padding: 10px;
-            border-radius: 6px;
-            font-size: 11px;
-            line-height: 1.4;
-            overflow-x: auto;
-        }
-        .badge {
-            display: inline-block; background: var(--accent); color: white;
-            border-radius: 10px; padding: 2px 8px; font-size: 10px; margin-left: 8px;
-        }
-        .deps-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-            gap: 8px;
-        }
-        .dep-item {
-            display: flex;
-            align-items: center;
-            padding: 8px;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            background: var(--card-bg);
-        }
-        .dep-marker {
-            width: 12px;
-            height: 12px;
-            border-radius: 3px;
-            margin-right: 10px;
-            flex-shrink: 0;
-        }
-        .dep-info {
-            flex: 1;
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 6px;
-            font-size: 11px;
-        }
-        .dep-name {
-            font-weight: 600;
-            font-family: monospace;
-        }
-        .dep-count {
-            background: var(--hover);
-            padding: 1px 6px;
-            border-radius: 4px;
-            color: var(--text);
-        }
-        .dep-category {
-            font-style: italic;
-            opacity: 0.8;
-        }
-        .dep-desc {
-            cursor: help;
-        }
+        .section-badge { margin-left: 8px; }
+        .table td:nth-child(2) { font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-size: 12px; color: var(--text-secondary); }
+        .hex-addr { color: var(--text-tertiary); }
+        .func-meta { font-size: 12px; color: var(--text-secondary); margin-left: 8px; }
     </style>
 </head>
 <body>
-    <a class="back-link" href="{{ back_link }}">← Назад к сводному отчёту</a>
+
+    <a class="btn-back" href="{{ back_link }}">← Назад к сводному отчёту</a>
 
     <h1>Отчёт анализа: {{ file_name }}</h1>
 
-    <div class="search">
-        <input type="text" id="quickSearch" placeholder="Поиск по функциям, импортам, экспортам...">
-    </div>
+    <input type="text" id="quickSearch" class="search-field" placeholder="Поиск по функциям, импортам, экспортам...">
 
     <!-- Зависимости -->
-    <h2>Зависимости <span class="badge">{{ module_deps|length }}</span></h2>
-    <div class="card">
-        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-            <span>Прямые зависимости</span><span>▾</span>
+    <h2>Зависимости <span class="badge section-badge">{{ module_deps|length }}</span></h2>
+    <div class="card accordion open" id="acc-deps">
+        <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
+            <span>Прямые зависимости</span><span class="accordion-chevron">›</span>
         </div>
-        <div class="card-body">
+        <div class="accordion-body">
             {% if module_deps %}
             <div class="deps-grid searchable">
                 {% for dep in module_deps %}
@@ -148,23 +46,25 @@
                 {% endfor %}
             </div>
             {% else %}
-            <p>Нет зависимостей.</p>
+            <p class="empty-state">Нет зависимостей.</p>
             {% endif %}
         </div>
     </div>
 
-    <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
-    <div class="card">
-        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-            <span>Таблица импортов</span><span>▾</span>
+    <!-- Импорты -->
+    <h2>Импортируемые функции <span class="badge section-badge">{{ imports|length }}</span></h2>
+    <div class="card accordion" id="acc-imports">
+        <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
+            <span>Таблица импортов</span><span class="accordion-chevron">›</span>
         </div>
-        <div class="card-body">
+        <div class="accordion-body">
             {% if imports %}
-            <table>
+            <table class="table">
                 <thead>
                     <tr>
                         <th>Имя</th>
-                        {% if not is_elf %}<th>Адрес</th><th>Библиотека</th>{% else %}<th>Адрес</th>{% endif %}
+                        <th>Адрес</th>
+                        {% if not is_elf %}<th>Библиотека</th>{% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -177,18 +77,19 @@
                     {% endfor %}
                 </tbody>
             </table>
-            {% else %}<p>Нет импортируемых функций.</p>{% endif %}
+            {% else %}<p class="empty-state">Нет импортируемых функций.</p>{% endif %}
         </div>
     </div>
 
-    <h2>Экспортируемые функции <span class="badge">{{ exports|length }}</span></h2>
-    <div class="card">
-        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-            <span>Таблица экспорта</span><span>▾</span>
+    <!-- Экспорты -->
+    <h2>Экспортируемые функции <span class="badge section-badge">{{ exports|length }}</span></h2>
+    <div class="card accordion" id="acc-exports">
+        <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
+            <span>Таблица экспорта</span><span class="accordion-chevron">›</span>
         </div>
-        <div class="card-body">
+        <div class="accordion-body">
             {% if exports %}
-            <table>
+            <table class="table">
                 <thead>
                     <tr>
                         <th>Имя</th>
@@ -204,42 +105,47 @@
                     {% endfor %}
                 </tbody>
             </table>
-            {% else %}<p>Нет экспортируемых функций.</p>{% endif %}
+            {% else %}<p class="empty-state">Нет экспортируемых функций.</p>{% endif %}
         </div>
     </div>
 
+    <!-- ELF-секции -->
     {% if elf_sections %}
-    <h2>Секции ELF <span class="badge">{{ elf_sections|length }}</span></h2>
-    <div class="card">
-        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-            <span>Обнаруженные секции</span><span>▾</span>
+    <h2>Секции ELF <span class="badge section-badge">{{ elf_sections|length }}</span></h2>
+    <div class="card accordion" id="acc-elf">
+        <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
+            <span>Обнаруженные секции</span><span class="accordion-chevron">›</span>
         </div>
-        <div class="card-body">
-            <ul class="section-list searchable">
+        <div class="accordion-body">
+            <div style="display: flex; flex-wrap: wrap; gap: 4px;">
                 {% for sec in elf_sections %}
-                <li>{{ sec }}</li>
+                <span class="pill-tag">{{ sec }}</span>
                 {% endfor %}
-            </ul>
+            </div>
         </div>
     </div>
     {% endif %}
 
-    <h2>Дизассемблированные функции <span class="badge">{{ functions|length }}</span></h2>
+    <!-- Функции -->
+    <h2>Дизассемблированные функции <span class="badge section-badge">{{ functions|length }}</span></h2>
     {% for func in functions %}
-    <div class="card">
-        <div class="card-header searchable" onclick="this.parentElement.classList.toggle('open')">
-            <span>{{ func.name }} <small>({{ func.start_ea }}, размер: {{ func.size }} байт)</small></span>
-            <span>▾</span>
+    <div class="card accordion searchable" id="acc-func-{{ loop.index }}">
+        <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
+            <span>
+                {{ func.name }}
+                <span class="func-meta">({{ func.start_ea }}, размер: {{ func.size }} байт)</span>
+            </span>
+            <span class="accordion-chevron">›</span>
         </div>
-        <div class="card-body">
-            <strong>Hex-дамп:</strong>
+        <div class="accordion-body">
+            <h4>Hex‑дамп</h4>
             <div class="code-block">{{ func.hexdump }}</div>
 
-            <strong>Дизассемблирование:</strong>
+            <h4>Дизассемблирование</h4>
             <div class="code-block">{{ func.instructions_text }}</div>
 
             {% if func.pseudocode %}
-            <strong>Псевдокод:</strong>
+            <h4>Псевдокод</h4>
             <div class="code-block">{{ func.pseudocode }}</div>
             {% endif %}
         </div>
@@ -250,13 +156,14 @@
         const searchInput = document.getElementById('quickSearch');
         searchInput.addEventListener('input', function() {
             const term = this.value.toLowerCase();
-            document.querySelectorAll('.searchable').forEach(el => {
+            document.querySelectorAll('.searchable').forEach(function(el) {
                 el.style.display = el.textContent.toLowerCase().includes(term) ? '' : 'none';
             });
         });
-        document.querySelectorAll('.card').forEach((card, index) => {
-            if (index === 0) card.classList.add('open');
-        });
+        // Авто‑открытие первой карточки
+        var cards = document.querySelectorAll('.accordion');
+        if (cards.length > 0) cards[0].classList.add('open');
     </script>
+
 </body>
 </html>

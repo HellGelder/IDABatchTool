@@ -2,154 +2,98 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Сравнение: {{ primary }} ↔ {{ secondary }}</title>
+    {% include "_design_tokens.html" %}
     <style>
-        :root {
-            --bg: #f5f5f5;
-            --card-bg: white;
-            --text: #303030;
-            --accent: #007aff;
-            --border: #d1d1d1;
+        .progress-percent { font-weight: 600; font-size: 13px; color: var(--text); margin-bottom: 2px; }
+        .progress-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 2px; }
+        .danger-block {
+            background: var(--danger-tint); color: var(--danger);
+            border-radius: var(--radius-sm); padding: 10px 14px;
+            font-weight: 500; font-size: 14px; margin: 8px 0;
         }
-        body {
-            font-family: "Segoe UI", system-ui, sans-serif;
-            font-size: 12px;
-            margin: 20px;
-            background: var(--bg);
-            color: var(--text);
-        }
-        h1, h2, h3 { color: var(--accent); }
-        h1 { font-size: 16px; }
-        h2 { font-size: 14px; margin-top: 24px; }
-        h3 { font-size: 13px; margin: 12px 0 4px; }
-        .back-link {
-            display: block;
-            margin-bottom: 20px;
-            color: var(--accent);
-            text-decoration: none;
-        }
-        .card {
-            background: var(--card-bg);
-            border-radius: 10px;
-            margin: 12px 0;
-            padding: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 8px 0;
-            font-size: 11px;
-        }
-        th, td {
-            text-align: left;
-            padding: 6px;
-            border-bottom: 1px solid var(--border);
-        }
-        th { background: #f0f0f5; }
-        .flex-row {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-        .flex-row > div {
-            flex: 1;
-            min-width: 250px;
-        }
-        .stat-big {
-            font-size: 24px;
-            font-weight: 700;
-            color: var(--accent);
-        }
-        .stat-label {
-            font-size: 11px;
-            color: #888;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .progress-bar {
-            background: #e0e0e0;
-            border-radius: 4px;
-            height: 8px;
-            margin: 4px 0 12px 0;
-        }
-        .progress-fill {
-            background: var(--accent);
-            height: 100%;
-            border-radius: 4px;
-        }
-        [title] {
-            border-bottom: 1px dotted #888;
-            cursor: help;
-        }
+        .matched-summary { margin-bottom: 12px; font-size: 14px; }
     </style>
 </head>
 <body>
-    <a class="back-link" href="{{ back_link }}">← Назад к сводному отчёту</a>
+
+    <a class="btn-back" href="{{ back_link }}">← Назад к сводному отчёту</a>
 
     <h1>Сравнение файлов</h1>
     <div class="card">
-        <p><strong>Первичный (эталон):</strong> {{ primary }}</p>
-        <p><strong>Вторичный (текущий):</strong> {{ secondary }}</p>
+        <ul class="grouped-list">
+            <li class="grouped-row">
+                <span class="grouped-row-label">Первичный</span>
+                <span class="grouped-row-value" style="font-family:ui-monospace,'SF Mono','Consolas',monospace;">{{ primary }}</span>
+            </li>
+            <li class="grouped-row">
+                <span class="grouped-row-label">Вторичный</span>
+                <span class="grouped-row-value" style="font-family:ui-monospace,'SF Mono','Consolas',monospace;">{{ secondary }}</span>
+            </li>
+        </ul>
         {% if error %}
-        <p style="color: red;">Ошибка: {{ error }}</p>
+        <div class="danger-block">⚠️ {{ error }}</div>
         {% endif %}
     </div>
 
+    <!-- Общая схожесть -->
     <h2>Общая схожесть</h2>
     <div class="card">
         <div class="flex-row">
             <div>
-                <span class="stat-big">{{ "%.2f"|format(similarity * 100) }}%</span>
-                <span class="stat-label" title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов. Рассчитывается по формуле: ~35% — доля совпавших рёбер потока управления, ~25% — доля совпавших базовых блоков, ~10% — доля совпавших функций, ~10% — доля совпавших инструкций, ~20% — разница индекса MD графа вызовов. Чем ближе к 1.0, тем больше общих структурных элементов в файлах.">Схожесть</span>
+                <div class="stat-value">{{ "%.2f"|format(similarity * 100) }}%</div>
+                <div class="stat-label" style="margin-bottom:4px;" title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов. Рассчитывается по формуле: ~35% — доля совпавших рёбер потока управления, ~25% — доля совпавших базовых блоков, ~10% — доля совпавших функций, ~10% — доля совпавших инструкций, ~20% — разница индекса MD графа вызовов. Чем ближе к 1.0, тем больше общих структурных элементов в файлах.">Схожесть</div>
                 <div class="progress-bar"><div class="progress-fill" style="width:{{ similarity * 100 }}%;"></div></div>
             </div>
             <div>
-                <span class="stat-big">{{ "%.2f"|format(confidence * 100) }}%</span>
-                <span class="stat-label" title="Значение от 0 до 1, характеризующее надёжность найденного соответствия. Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией для сглаживания выбросов. Высокая схожесть при низкой уверенности означает, что слабый алгоритм (например, совпадение по адресам) дал хороший результат; низкая схожесть при высокой уверенности — что сильный алгоритм (например, хэш сырых байтов) не обнаружил значительного сходства.">Уверенность</span>
+                <div class="stat-value">{{ "%.2f"|format(confidence * 100) }}%</div>
+                <div class="stat-label" style="margin-bottom:4px;" title="Значение от 0 до 1, характеризующее надёжность найденного соответствия. Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией для сглаживания выбросов. Высокая схожесть при низкой уверенности означает, что слабый алгоритм (например, совпадение по адресам) дал хороший результат; низкая схожесть при высокой уверенности — что сильный алгоритм (например, хэш сырых байтов) не обнаружил значительного сходства.">Уверенность</div>
                 <div class="progress-bar"><div class="progress-fill" style="width:{{ confidence * 100 }}%;"></div></div>
             </div>
         </div>
-        {% if description %}<p><em>{{ description }}</em></p>{% endif %}
-        {% if version %}<p>Версия BinDiff: {{ version }}</p>{% endif %}
+        {% if description %}<p class="meta-text" style="margin-top:8px"><em>{{ description }}</em></p>{% endif %}
+        {% if version %}<p class="meta-text">Версия BinDiff: {{ version }}</p>{% endif %}
     </div>
 
+    <!-- Статистика по файлам -->
     <h2>Статистика по файлам</h2>
     <div class="card">
         <div class="flex-row">
             <div>
                 <h3>Первичный файл</h3>
-                <table>
-                    <tr><td>Имя</td><td>{{ file1.filename }}</td></tr>
-                    <tr><td>Хэш</td><td><code>{{ file1.hash }}</code></td></tr>
-                    <tr><td title="Количество определённых функций">Функций</td><td>{{ total_functions1 }}</td></tr>
-                    <tr><td title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</td><td>{{ file1.basicblocks + file1.libbasicblocks }}</td></tr>
-                    <tr><td title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</td><td>{{ file1.instructions + file1.libinstructions }}</td></tr>
-                    <tr><td title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</td><td>{{ file1.edges + file1.libedges }}</td></tr>
-                </table>
+                <ul class="grouped-list">
+                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ file1.filename }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file1.hash }}</code></span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions1 }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file1.basicblocks + file1.libbasicblocks }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</span><span class="grouped-row-value">{{ file1.instructions + file1.libinstructions }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</span><span class="grouped-row-value">{{ file1.edges + file1.libedges }}</span></li>
+                </ul>
             </div>
             <div>
                 <h3>Вторичный файл</h3>
-                <table>
-                    <tr><td>Имя</td><td>{{ file2.filename }}</td></tr>
-                    <tr><td>Хэш</td><td><code>{{ file2.hash }}</code></td></tr>
-                    <tr><td title="Количество определённых функций">Функций</td><td>{{ total_functions2 }}</td></tr>
-                    <tr><td title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</td><td>{{ file2.basicblocks + file2.libbasicblocks }}</td></tr>
-                    <tr><td title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</td><td>{{ file2.instructions + file2.libinstructions }}</td></tr>
-                    <tr><td title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</td><td>{{ file2.edges + file2.libedges }}</td></tr>
-                </table>
+                <ul class="grouped-list">
+                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ file2.filename }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file2.hash }}</code></span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions2 }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file2.basicblocks + file2.libbasicblocks }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</span><span class="grouped-row-value">{{ file2.instructions + file2.libinstructions }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</span><span class="grouped-row-value">{{ file2.edges + file2.libedges }}</span></li>
+                </ul>
             </div>
         </div>
     </div>
 
-    <h2>Совпадающие функции ({{ matched_functions|length }})</h2>
-    <div class="card">
-        <p title="Доля функций первичного файла, для которых найдено соответствие">
-            Показатель совпадения: {{ matched_functions|length }} из {{ total_functions1 }} функций первичного файла 
+    <!-- Совпадающие функции -->
+    <h2>Совпадающие функции <span class="badge">{{ matched_functions|length }}</span></h2>
+    <div class="card" style="padding:0; overflow-x:auto;">
+        <p class="matched-summary" title="Доля функций первичного файла, для которых найдено соответствие" style="padding:20px 20px 0 20px;">
+            Показатель совпадения: {{ matched_functions|length }} из {{ total_functions1 }} функций первичного файла
             ({{ "%.1f"|format(matched_functions|length / total_functions1 * 100) if total_functions1 else 0 }}%)
         </p>
         {% if matched_functions %}
-        <table>
+        <table class="table" style="margin:0;">
             <thead>
                 <tr>
                     <th>Имя (primary)</th>
@@ -169,8 +113,8 @@
                     <td><code>{{ f.address1 }}</code></td>
                     <td>{{ f.name2 }}</td>
                     <td><code>{{ f.address2 }}</code></td>
-                    <td>{{ "%.2f"|format(f.similarity * 100) }}%</td>
-                    <td>{{ "%.2f"|format(f.confidence * 100) }}%</td>
+                    <td>{{ "%.1f"|format(f.similarity * 100) }}%</td>
+                    <td>{{ "%.1f"|format(f.confidence * 100) }}%</td>
                     <td>{{ f.basicblocks }}</td>
                     <td>{{ f.instructions }}</td>
                 </tr>
@@ -178,8 +122,9 @@
             </tbody>
         </table>
         {% else %}
-        <p>Нет совпавших функций.</p>
+        <p class="empty-state" style="padding:20px;">Нет совпавших функций.</p>
         {% endif %}
     </div>
+
 </body>
 </html>
