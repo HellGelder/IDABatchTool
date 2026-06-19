@@ -440,6 +440,10 @@ class DiffReportGenerator(BaseReportGenerator):
         data.setdefault("file2", {})
         data.setdefault("total_functions1", 0)
         data.setdefault("total_functions2", 0)
+        data.setdefault("function_size_stats", {})
+        data.setdefault("similarity_distribution", {})
+        data.setdefault("algorithm_distribution", {})
+        data.setdefault("renamed_functions", [])
         data["total_matched"] = len(data["matched_functions"])
         data["has_error"] = bool(data.get("error"))
         return data

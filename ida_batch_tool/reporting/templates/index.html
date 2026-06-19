@@ -48,9 +48,10 @@
         }
         .group-empty { color: var(--text-tertiary); font-style: italic; }
 
-        /* ▸ Модуль: имя + пояснение на одной строке, оба слева */
+        /* ▸ Модуль: имя + пояснение на одной строке, строго по вертикали */
         .mod-entry {
-            display: flex; align-items: baseline; gap: 8px;
+            display: grid; grid-template-columns: minmax(160px, max-content) 1fr; gap: 16px;
+            align-items: baseline;
             padding: 6px 4px; border-bottom: 1px solid var(--separator);
         }
         .mod-entry:last-child { border-bottom: none; }
@@ -59,7 +60,7 @@
             color: var(--text);
         }
         .mod-desc {
-            flex: 1; text-align: left; color: var(--text-secondary);
+            text-align: left; color: var(--text-secondary);
             font-size: 12px; line-height: 1.4;
         }
     </style>

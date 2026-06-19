@@ -17,6 +17,8 @@ import idautils
 import idc
 import ida_nalt
 import ida_bytes
+import ida_funcs  # for callers/callees
+import ida_xref  # for xrefs (cross-references)
 
 # Для парсинга DT_NEEDED (ELF) – с корректной обработкой отсутствия библиотеки
 try:
@@ -226,11 +228,27 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             continue
         size = func.size()
         instrs = []
+        insn_types = {}  # счётчик по мнемоникам
+        callees = []     # функции, вызываемые из этой функции
+        xref_list = []   # адреса cross-references (opcodes с call/jmp на другие функции)
         for head in idautils.Heads(ea, ea + size):
             mnem = idc.print_insn_mnem(head)
             op = idc.print_operand(head, 0)
             if mnem:
                 instrs.append(f"0x{head:X}  {mnem} {op}")
+                insn_types[mnem] = insn_types.get(mnem, 0) + 1
+            # Определяем вызовы: call, jmp с reference на другую функцию
+            if mnem in ("call", "jmp", "ljmp", "callf"):
+                try:
+                    for xref in idautils.XrefsFrom(head, ida_xref.XREF_FAR):
+                        if xref.type in (ida_xref.dr_O, ida_xref.dr_U, ida_xref.fl_CF, ida_xref.fl_JF):
+                            target_name = idc.get_func_name(xref.to)
+                            if target_name and not target_name.startswith(("sub_", "j_", "def_", "nullsub_")):
+                                callees.append(_normalize_func_name(target_name))
+                            elif target_name:
+                                callees.append(_normalize_func_name(target_name))
+                except Exception:
+                    pass
         disasm = '\n'.join(instrs)
         try:
             raw = ida_bytes.get_bytes(ea, size)
@@ -246,7 +264,9 @@ def export_to_json(output_path: Optional[str] = None) -> None:
             "size": size,
             "instructions_text": disasm,
             "hexdump": hexd,
-            "pseudocode": pseudo
+            "pseudocode": pseudo,
+            "insn_types": insn_types,
+            "callees": list(set(callees)),
         })
 
     # --- Импорты ---

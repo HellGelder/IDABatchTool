@@ -6,14 +6,81 @@
     <title>Сравнение: {{ primary }} ↔ {{ secondary }}</title>
     {% include "_design_tokens.html" %}
     <style>
-        .progress-percent { font-weight: 600; font-size: 13px; color: var(--text); margin-bottom: 2px; }
-        .progress-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 2px; }
         .danger-block {
             background: var(--danger-tint); color: var(--danger);
             border-radius: var(--radius-sm); padding: 10px 14px;
             font-weight: 500; font-size: 14px; margin: 8px 0;
         }
         .matched-summary { margin-bottom: 12px; font-size: 14px; }
+
+        /* Import columns */
+        .import-col { flex: 1; min-width: 280px; }
+        .import-list { max-height: 300px; overflow-y: auto; background: var(--surface-secondary); border-radius: var(--radius-sm); padding: 8px 12px; }
+        .import-list li { font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-size: 13px; padding: 3px 0; list-style: none; }
+        .import-ok { color: var(--success); font-weight: 600; }
+
+        /* side-by-side diff */
+        .diff-sbs {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+            background: var(--separator-opaque); border-radius: var(--radius-sm); overflow: hidden;
+            margin: 12px 0;
+        }
+        .diff-cell {
+            font-family: ui-monospace, "SF Mono", "Consolas", monospace;
+            font-size: 12px; padding: 2px 10px; white-space: pre; overflow-x: auto;
+            min-height: 1.3em; line-height: 1.4;
+        }
+        .diff-equal   { background: var(--surface); }
+        .diff-removed { background: var(--danger-tint); }
+        .diff-added   { background: var(--success-tint); }
+        .diff-empty   { background: var(--surface-secondary); color: var(--text-tertiary); }
+
+        /* hex side-by-side */
+        .hex-sbs { display: flex; gap: 12px; margin: 8px 0; }
+        .hex-sbs > .code-block { flex: 1; min-width: 0; }
+
+        /* accordion overrides */
+        .accordion-body > h4 { margin-top: 12px; }
+        .no-data { color: var(--text-tertiary); font-style: italic; padding: 8px 0; }
+
+        /* Missing functions */
+        .missing-list {
+            max-height: 200px; overflow-y: auto;
+            background: var(--surface-secondary); border-radius: var(--radius-sm);
+            padding: 8px 12px; margin: 8px 0 0 0;
+            font-family: ui-monospace, "SF Mono", "Consolas", monospace;
+            font-size: 12px; line-height: 1.6;
+            display: flex; flex-wrap: wrap; gap: 2px 8px;
+        }
+        .missing-list li { list-style: none; }
+        .missing-list .count-badge {
+            display: inline-block;
+            background: var(--danger-tint); color: var(--danger);
+            border-radius: var(--radius-pill); padding: 0 8px;
+            font-size: 11px; font-weight: 600; margin-left: 4px;
+        }
+
+        /* Collapsible table wrapper */
+        .table-accordion { cursor: pointer; }
+        .table-accordion .accordion-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 12px 20px; user-select: none;
+            border-bottom: 1px solid var(--separator);
+        }
+        .table-accordion .accordion-header:hover { background: var(--surface-secondary); }
+        .table-accordion .table-wrapper { display: block; }
+        .table-accordion.collapsed .table-wrapper { display: none; }
+        .table-accordion .accordion-chevron {
+            transition: transform 0.2s ease; color: var(--text-tertiary);
+            font-size: 16px;
+        }
+        .table-accordion.collapsed .accordion-chevron { transform: rotate(-90deg); }
+
+        /* Pseudocode single blocks */
+        .pseudo-single {
+            display: flex; gap: 12px; margin: 8px 0;
+        }
+        .pseudo-single > .code-block { flex: 1; min-width: 0; }
     </style>
 </head>
 <body>
@@ -85,46 +152,324 @@
         </div>
     </div>
 
-    <!-- Совпадающие функции -->
+    <!-- ▸ Импорты: только в одном из файлов -->
+    <h2>Различия в импортах</h2>
+    <div class="card">
+        <div class="flex-row">
+            <div class="import-col">
+                <h3>Только в эталонном <span class="badge badge--danger">{{ imports_only_in_primary|length }}</span></h3>
+                {% if imports_only_in_primary %}
+                <div class="import-list"><ul>{% for name in imports_only_in_primary %}<li>{{ name }}</li>{% endfor %}</ul></div>
+                {% else %}
+                <p class="import-ok">Все импорты эталона присутствуют в сравниваемом.</p>
+                {% endif %}
+            </div>
+            <div class="import-col">
+                <h3>Только в сравниваемом <span class="badge badge--warning">{{ imports_only_in_secondary|length }}</span></h3>
+                {% if imports_only_in_secondary %}
+                <div class="import-list"><ul>{% for name in imports_only_in_secondary %}<li>{{ name }}</li>{% endfor %}</ul></div>
+                {% else %}
+                <p class="import-ok">Сравниваемый файл не добавляет новых импортов.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- ▸ Совпадающие функции -->
     <h2>Совпадающие функции <span class="badge">{{ matched_functions|length }}</span></h2>
-    <div class="card" style="padding:0; overflow-x:auto;">
-        <p class="matched-summary" title="Доля функций первичного файла, для которых найдено соответствие" style="padding:20px 20px 0 20px;">
+    <div class="card">
+        <p class="matched-summary" title="Доля функций первичного файла, для которых найдено соответствие">
             Показатель совпадения: {{ matched_functions|length }} из {{ total_functions1 }} функций первичного файла
             ({{ "%.1f"|format(matched_functions|length / total_functions1 * 100) if total_functions1 else 0 }}%)
         </p>
+
         {% if matched_functions %}
-        <table class="table" style="margin:0;">
+        <!-- Collapsible table -->
+        <div class="table-accordion" id="match-table-accordion">
+            <div class="accordion-header" onclick="
+                var wrap = this.closest('.table-accordion');
+                wrap.classList.toggle('collapsed');
+            ">
+                <span style="font-weight:600; font-size:14px; color:var(--text-secondary);">
+                    Таблица сопоставлений
+                    <span class="badge">{{ matched_functions|length }}</span>
+                </span>
+                <span style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-size:11px; color:var(--text-tertiary);">свернуть</span>
+                    <span class="accordion-chevron">▼</span>
+                </span>
+            </div>
+            <div class="table-wrapper">
+                <table class="table" style="margin:0; table-layout:fixed; width:100%;">
+                    <colgroup>
+                        <col style="width:auto; min-width:80px;">
+                        <col style="width:90px;">
+                        <col style="width:auto; min-width:80px;">
+                        <col style="width:90px;">
+                        <col style="width:65px;">
+                        <col style="width:65px;">
+                        <col style="width:auto;">
+                        <col style="width:60px;">
+                        <col style="width:60px;">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th>Имя (primary)</th>
+                            <th>Адрес</th>
+                            <th>Имя (secondary)</th>
+                            <th>Адрес</th>
+                            <th title="Значение от 0 до 1, показывающее, насколько две функции идентичны с точки зрения их внутренней структуры (но не адресов).">Схож.</th>
+                            <th title="Значение от 0 до 1, характеризующее надёжность найденного соответствия.">Увер.</th>
+                            <th title="Алгоритм матчинга, использованный BinDiff для этой пары.">Алгоритм</th>
+                            <th title="Количество базовых блоков.">Блоки</th>
+                            <th title="Количество инструкций.">Инстр.</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for f in matched_functions %}
+                        <tr>
+                            <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ f.name1 }}">{{ f.name1 }}</td>
+                            <td><code>{{ f.address1 }}</code></td>
+                            <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ f.name2 }}">{{ f.name2 }}</td>
+                            <td><code>{{ f.address2 }}</code></td>
+                            <td>{{ "%.1f"|format(f.similarity * 100) }}%</td>
+                            <td>{{ "%.1f"|format(f.confidence * 100) }}%</td>
+                            <td style="font-size:11px; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ f.algorithm_name }}">{{ f.algorithm_name }}</td>
+                            <td>{{ f.basicblocks }}</td>
+                            <td>{{ f.instructions }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <script>
+            (function(){
+                var acc = document.getElementById('match-table-accordion');
+                if (acc && {{ matched_functions|length }} > 20) {
+                    acc.classList.add('collapsed');
+                }
+            })();
+        </script>
+        {% else %}
+        <p class="empty-state">Нет совпавших функций.</p>
+        {% endif %}
+    </div>
+
+    <!-- ▸ Глобальный diff по типам инструкций (только с расхождениями) -->
+    {% if global_insn_diff %}
+    {% set diffs = global_insn_diff|selectattr('diff', 'ne', 0)|list %}
+    {% if diffs %}
+    <h2>Расхождения по типам инструкций <span class="badge badge--warning">{{ diffs|length }}</span></h2>
+    <div class="card" style="padding:0; overflow-x:auto;">
+        <table class="table" style="margin:0; font-size:12px;">
             <thead>
                 <tr>
-                    <th>Имя (primary)</th>
-                    <th>Адрес</th>
-                    <th>Имя (secondary)</th>
-                    <th>Адрес</th>
-                    <th title="Значение от 0 до 1, показывающее, насколько две функции идентичны с точки зрения их внутренней структуры (но не адресов). Оценка в 1.0 означает, что базовые блоки, связи между ними и мнемоники инструкций полностью совпадают. При расчёте не учитываются операнды инструкций и конкретные адреса переходов — это позволяет находить функциональные совпадения. Весовая формула: ~25% совпавших рёбер, ~15% совпавших базовых блоков, ~10% совпавших инструкций, ~50% разница индекса MD (структурного хэша) графа потоков управления.">Схожесть</th>
-                    <th title="Значение от 0 до 1, характеризующее надёжность найденного соответствия. Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией для сглаживания выбросов. Высокая схожесть при низкой уверенности означает, что слабый алгоритм (например, совпадение по адресам) дал хороший результат; низкая схожесть при высокой уверенности — что сильный алгоритм (например, хэш сырых байтов) не обнаружил значительного сходства.">Уверенность</th>
-                    <th title="Количество базовых блоков, которые были признаны идентичными в паре функций. Блоки могут сопоставляться по различным алгоритмам — от сравнения хэша сырых байтов (очень строго) до сопоставления по количеству инструкций или простого распространения (наименее строго).">Совп. блоков</th>
-                    <th title="Количество инструкций, которые совпали по мнемонике в сопоставленных базовых блоках. Важно: из-за игнорирования операндов возможна ситуация, когда инструкции формально считаются совпавшими, хотя их эффект изменился (например, mov eax, 0 vs mov eax, 1).">Совп. инструкций</th>
+                    <th>Мнемоника</th>
+                    <th title="Первичный файл">Primary</th>
+                    <th title="Вторичный файл">Secondary</th>
+                    <th title="Разница (Secondary − Primary)">Δ</th>
                 </tr>
             </thead>
             <tbody>
-                {% for f in matched_functions %}
+                {% for row in diffs %}
                 <tr>
-                    <td>{{ f.name1 }}</td>
-                    <td><code>{{ f.address1 }}</code></td>
-                    <td>{{ f.name2 }}</td>
-                    <td><code>{{ f.address2 }}</code></td>
-                    <td>{{ "%.1f"|format(f.similarity * 100) }}%</td>
-                    <td>{{ "%.1f"|format(f.confidence * 100) }}%</td>
-                    <td>{{ f.basicblocks }}</td>
-                    <td>{{ f.instructions }}</td>
+                    <td style="font-family:ui-monospace; font-weight:600;">{{ row.mnemonic }}</td>
+                    <td>{{ row.count1 }}</td>
+                    <td>{{ row.count2 }}</td>
+                    <td>
+                        {% if row.diff > 0 %}
+                        <span style="color:var(--success); font-weight:600;">+{{ row.diff }}</span>
+                        {% elif row.diff < 0 %}
+                        <span style="color:var(--danger); font-weight:600;">{{ row.diff }}</span>
+                        {% else %}
+                        <span style="color:var(--text-tertiary);">0</span>
+                        {% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
-        {% else %}
-        <p class="empty-state" style="padding:20px;">Нет совпавших функций.</p>
-        {% endif %}
     </div>
+    {% endif %}
+    {% endif %}
+
+    <!-- ▸ Пофункциональный разбор: side-by-side псевдокод + hexdump + граф вызовов + типы инструкций -->
+    <h2>Пофункциональный разбор</h2>
+    {% if matched_functions %}
+    <input type="text" id="funcSearch" class="search-field" placeholder="Поиск по имени функции…" style="margin-bottom:8px;">
+    <div id="funcList">
+    {% for f in matched_functions %}
+    {# Проверяем наличие псевдокода хотя бы с одной стороны #}
+    {% set has_pseudo = (f.pseudocode1 is defined and f.pseudocode1 and f.pseudocode1 != "") or (f.pseudocode2 is defined and f.pseudocode2 and f.pseudocode2 != "") %}
+    {% set has_hex    = f.hexdump1 or f.hexdump2 %}
+    {% set both_pseudo = (f.pseudocode1 is defined and f.pseudocode1 and f.pseudocode1 != "") and (f.pseudocode2 is defined and f.pseudocode2 and f.pseudocode2 != "") %}
+    <div class="card accordion" id="func-{{ loop.index }}">
+        <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
+            <span>
+                <span style="font-family:ui-monospace,'SF Mono','Consolas',monospace;font-size:14px;">{{ f.name1 }}</span>
+                <code style="margin:0 4px;">{{ f.address1 }}</code>
+                ↔
+                <span style="font-family:ui-monospace,'SF Mono','Consolas',monospace;font-size:14px;">{{ f.name2 }}</span>
+                <code style="margin:0 4px;">{{ f.address2 }}</code>
+            </span>
+            <span style="display:flex;align-items:center;gap:8px;">
+                <span class="badge">{{ "%.0f"|format(f.similarity * 100) }}%</span>
+                <span class="accordion-chevron">›</span>
+            </span>
+        </div>
+        <div class="accordion-body">
+            {% if both_pseudo %}
+            {# Обе стороны имеют псевдокод — показываем diff #}
+            <h4>Сравнение псевдокода</h4>
+            {% if f.pseudocode_diff %}
+            <div class="diff-sbs">
+                {% for row in f.pseudocode_diff %}
+                <div class="diff-cell diff-{{ row.type }}">{{ row.left if row.left else ' ' }}</div>
+                <div class="diff-cell diff-{{ row.type }}">{{ row.right if row.right else ' ' }}</div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="no-data">Псевдокод идентичен.</p>
+            {% endif %}
+            {% elif has_pseudo %}
+            {# Только одна сторона имеет псевдокод — показываем что есть #}
+            <h4>Псевдокод</h4>
+            <div class="pseudo-single">
+                {% if f.pseudocode1 and f.pseudocode1 != "" %}
+                <div>
+                    <p class="meta-text" style="margin-bottom:4px;">Первичный ({{ f.address1 }})</p>
+                    <div class="code-block">{{ f.pseudocode1 }}</div>
+                </div>
+                {% endif %}
+                {% if f.pseudocode2 and f.pseudocode2 != "" %}
+                <div>
+                    <p class="meta-text" style="margin-bottom:4px;">Вторичный ({{ f.address2 }})</p>
+                    <div class="code-block">{{ f.pseudocode2 }}</div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            {% if has_hex %}
+            <h4>Сравнение Hex‑дампа</h4>
+            <div class="hex-sbs">
+                <div>
+                    <p class="meta-text" style="margin-bottom:4px;">Первичный ({{ f.address1 }})</p>
+                    <div class="code-block">{{ f.hexdump1 if f.hexdump1 else '—' }}</div>
+                </div>
+                <div>
+                    <p class="meta-text" style="margin-bottom:4px;">Вторичный ({{ f.address2 }})</p>
+                    <div class="code-block">{{ f.hexdump2 if f.hexdump2 else '—' }}</div>
+                </div>
+            </div>
+            {% endif %}
+
+            {# Граф вызовов #}
+            {% if f.callees_only1 is defined or f.callees_only2 is defined %}
+            <h4>Различия в вызовах (call‑граф)</h4>
+            <div style="display:flex; gap:16px; flex-wrap:wrap;">
+                {% if f.callees_only1 %}
+                <div style="flex:1; min-width:160px;">
+                    <p class="meta-text" style="margin-bottom:4px; color:var(--danger);">Только в primary</p>
+                    <ul class="import-list" style="margin:0;">
+                        {% for cal in f.callees_only1[:20] %}
+                        <li>{{ cal }}</li>
+                        {% endfor %}
+                        {% if f.callees_only1|length > 20 %}
+                        <li class="meta-text" style="padding:4px 0;">… ещё {{ f.callees_only1|length - 20 }}</li>
+                        {% endif %}
+                    </ul>
+                </div>
+                {% endif %}
+                {% if f.callees_common %}
+                <div style="flex:1; min-width:160px;">
+                    <p class="meta-text" style="margin-bottom:4px; color:var(--success);">Общие вызовы</p>
+                    <ul class="import-list" style="margin:0;">
+                        {% for cal in f.callees_common[:15] %}
+                        <li>{{ cal }}</li>
+                        {% endfor %}
+                        {% if f.callees_common|length > 15 %}
+                        <li class="meta-text" style="padding:4px 0;">… ещё {{ f.callees_common|length - 15 }}</li>
+                        {% endif %}
+                    </ul>
+                </div>
+                {% endif %}
+                {% if f.callees_only2 %}
+                <div style="flex:1; min-width:160px;">
+                    <p class="meta-text" style="margin-bottom:4px; color:var(--warning);">Только в secondary</p>
+                    <ul class="import-list" style="margin:0;">
+                        {% for cal in f.callees_only2[:20] %}
+                        <li>{{ cal }}</li>
+                        {% endfor %}
+                        {% if f.callees_only2|length > 20 %}
+                        <li class="meta-text" style="padding:4px 0;">… ещё {{ f.callees_only2|length - 20 }}</li>
+                        {% endif %}
+                    </ul>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            {# Типы инструкций для пары #}
+            {% if f.insn_type_diff and f.insn_type_diff|length > 0 %}
+            <h4>Расхождения по типам инструкций</h4>
+            <table class="table" style="font-size:12px; table-layout:fixed; width:100%;">
+                <colgroup>
+                    <col style="width:auto;">
+                    <col style="width:65px;">
+                    <col style="width:65px;">
+                    <col style="width:60px;">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Мнемоника</th>
+                        <th>Primary</th>
+                        <th>Secondary</th>
+                        <th>Δ</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in f.insn_type_diff[:15] %}
+                    <tr>
+                        <td style="font-family:ui-monospace; font-weight:600;">{{ row.mnemonic }}</td>
+                        <td>{{ row.count1 }}</td>
+                        <td>{{ row.count2 }}</td>
+                        <td>
+                            {% if row.diff > 0 %}
+                            <span style="color:var(--success);">+{{ row.diff }}</span>
+                            {% elif row.diff < 0 %}
+                            <span style="color:var(--danger);">{{ row.diff }}</span>
+                            {% else %}
+                            <span style="color:var(--text-tertiary);">0</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if f.insn_type_diff|length > 15 %}
+                    <tr><td colspan="4" class="meta-text" style="text-align:center;">… ещё {{ f.insn_type_diff|length - 15 }} типов</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+    </div>
+    {% endif %}
+
+    <script>
+        /* live search for post-functional analysis */
+        const searchInput = document.getElementById('funcSearch');
+        if (searchInput) {
+            searchInput.addEventListener('input', function() {
+                const term = this.value.toLowerCase();
+                document.querySelectorAll('#funcList .accordion').forEach(function(el) {
+                    el.style.display = el.textContent.toLowerCase().includes(term) ? '' : 'none';
+                });
+            });
+        }
+    </script>
 
 </body>
 </html>
