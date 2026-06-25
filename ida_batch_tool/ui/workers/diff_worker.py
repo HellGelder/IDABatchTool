@@ -1,13 +1,16 @@
-"""Фоновый поток для параллельного сравнения BinDiff. Экспорт через -OBinExportAutoAction."""
+"""Фоновый поток для параллельного сравнения BinDiff + Diaphora."""
 from __future__ import annotations
 
 import difflib
+import hashlib
 import logging
+import os
 import sqlite3
 import json
 import shutil
 import subprocess
 import threading
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -16,26 +19,114 @@ from PySide6.QtCore import QThread, Signal
 
 from ida_batch_tool.ui.constants import SCRIPTS_DIR
 
-# Путь к IDAPython-скрипту экспорта (используется для извлечения импортов/псевдокода при diff)
 _EXPORT_DATA_SCRIPT = SCRIPTS_DIR / "export_data.py"
+_EXPORT_CFG_SCRIPT = SCRIPTS_DIR / "export_cfg.py"
+_DIAPHORA_DIR = SCRIPTS_DIR / "diaphora"
+_DIAPHORA_SCRIPT = _DIAPHORA_DIR / "diaphora.py"
 
 logger = logging.getLogger(__name__)
 
 
+def _safe_filename(key: str) -> str:
+    return key.replace("\\", "_").replace("/", "_").replace(" ", "_").replace(".", "_")
+
+
+def _compute_hex_similarity(file1: Path, file2: Path) -> float:
+    try:
+        data1 = file1.read_bytes()
+        data2 = file2.read_bytes()
+    except (OSError, PermissionError):
+        return 0.0
+    if not data1 or not data2:
+        return 0.0
+    block_size = 4096
+    blocks1 = set()
+    for offset in range(0, len(data1), block_size):
+        blocks1.add(hashlib.sha256(data1[offset:offset + block_size]).hexdigest())
+    blocks2 = set()
+    for offset in range(0, len(data2), block_size):
+        blocks2.add(hashlib.sha256(data2[offset:offset + block_size]).hexdigest())
+    if not blocks1 or not blocks2:
+        return 0.0
+    overlap = len(blocks1 & blocks2)
+    total = len(blocks1 | blocks2)
+    size_ratio = min(len(data1), len(data2)) / max(len(data1), len(data2), 1)
+    return round((overlap / total) * size_ratio, 4)
+
+
+def _parse_diaphora_results(sqlite_path: Path) -> dict:
+    """Читает результаты Diaphora из SQLite -> dict с matched_functions."""
+    result = {
+        "matched_functions": [],
+        "diaphora_algorithm_distribution": {},
+    }
+    if not sqlite_path.is_file():
+        return result
+    try:
+        conn = sqlite3.connect(str(sqlite_path))
+        cur = conn.cursor()
+        # Таблица results
+        try:
+            cur.execute("SELECT type, address, name, address2, name2, ratio, nodes1, nodes2, description FROM results ORDER BY ratio DESC")
+            col_names = [desc[0] for desc in cur.description]
+            for row in cur.fetchall():
+                r = dict(zip(col_names, row))
+                heuristic_name = (r.get("description") or "diaphora_auto").strip()
+                result["matched_functions"].append({
+                    "address1": f"0x{int(r['address']):X}" if r.get('address') else "?",
+                    "name1": r.get("name", ""),
+                    "address2": f"0x{int(r['address2']):X}" if r.get('address2') else "?",
+                    "name2": r.get("name2", ""),
+                    "similarity": round(float(r.get("ratio", 0)), 4),
+                    "confidence": round(float(r.get("ratio", 0)), 4),
+                    "algorithm_name": heuristic_name,
+                    "match_type": r.get("type", "partial"),
+                    "nodes1": int(r.get("nodes1", 0)),
+                    "nodes2": int(r.get("nodes2", 0)),
+                    "source": "diaphora",
+                })
+                result["diaphora_algorithm_distribution"][heuristic_name] = \
+                    result["diaphora_algorithm_distribution"].get(heuristic_name, 0) + 1
+        except sqlite3.OperationalError:
+            pass
+        # Таблица unmatched
+        try:
+            unmatched1 = []
+            unmatched2 = []
+            cur.execute("SELECT type, address, name FROM unmatched")
+            for row in cur.fetchall():
+                typ, addr, name = row[0], row[1], row[2]
+                entry = {"address": f"0x{int(addr):X}" if addr else "?", "name": name or ""}
+                if typ == 1:
+                    unmatched1.append(entry)
+                else:
+                    unmatched2.append(entry)
+            result["unmatched_functions1"] = unmatched1
+            result["unmatched_functions2"] = unmatched2
+        except sqlite3.OperationalError:
+            pass
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Ошибка парсинга Diaphora SQLite: {e}")
+    return result
+
+
 class DiffWorker(QThread):
     progress_updated = Signal(int, int, str)
-    finished = Signal(int, int)          # (success_count, total_pairs)
+    finished = Signal(int, int)
     error_occurred = Signal(str)
 
-    def __init__(self, file_pairs: List[Tuple[Path, Path]],
+    def __init__(self, file_pairs: List[Tuple[Path, Path, str]],
                  idat_path: str, bindiff_path: str,
                  output_dir: Path,
+                 engine: str = "bindiff",
                  max_workers: int = 2, parent=None):
         super().__init__(parent)
         self.file_pairs = file_pairs
         self.idat_path = idat_path
         self.bindiff_path = bindiff_path
         self.output_dir = output_dir
+        self.engine = engine
         self.max_workers = max_workers
         self._cancel_event = threading.Event()
         self._completed_count = 0
@@ -49,71 +140,100 @@ class DiffWorker(QThread):
         if total == 0:
             self.finished.emit(0, 0)
             return
-
-        logger.info(f"Сравнение {total} пар, параллельно до {self.max_workers}, результаты в {self.output_dir}")
+        logger.info(f"Сравнение {total} пар, engine={self.engine}, результаты в {self.output_dir}")
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_pair = {
-                executor.submit(self._process_pair, primary, secondary, idx): (primary, secondary, idx)
-                for idx, (primary, secondary) in enumerate(self.file_pairs)
+                executor.submit(self._process_pair, primary, secondary, rel_key, idx): (primary, secondary, rel_key, idx)
+                for idx, (primary, secondary, rel_key) in enumerate(self.file_pairs)
             }
-
             for future in as_completed(future_to_pair):
                 if self._cancel_event.is_set():
                     for f in future_to_pair:
                         f.cancel()
                     break
-                primary, secondary, idx = future_to_pair[future]
+                primary, secondary, rel_key, idx = future_to_pair[future]
                 try:
-                    success = future.result()
+                    ok = future.result()
                     with self._lock:
                         self._completed_count += 1
-                        if success:
-                            self.progress_updated.emit(self._completed_count, total, primary.stem)
+                        if ok:
+                            self.progress_updated.emit(self._completed_count, total, rel_key)
                 except Exception as e:
-                    logger.exception(f"Исключение в паре {primary.stem}")
-                    self.error_occurred.emit(f"Ошибка пары {primary.stem}: {e}")
+                    logger.exception(f"Ошибка пары {rel_key}")
+                    self.error_occurred.emit(f"Ошибка пары {rel_key}: {e}")
                     with self._lock:
                         self._completed_count += 1
 
         logger.info(f"Завершено. Всего обработано: {self._completed_count}")
         self.finished.emit(self._completed_count, total)
 
-    def _process_pair(self, primary_i64: Path, secondary_i64: Path, idx: int) -> bool:
-        stem = primary_i64.stem
+    def _process_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str, idx: int) -> bool:
+        stem = _safe_filename(rel_key)
         if self._cancel_event.is_set():
             return False
 
         try:
-            # 1. Экспорт первичной базы
-            primary_binexport = self.output_dir / f"{stem}_primary.BinExport"
-            if not self._export_binexport(primary_i64, primary_binexport):
-                return False
-
-            # 2. Экспорт вторичной базы
-            secondary_binexport = self.output_dir / f"{stem}_secondary.BinExport"
-            if not self._export_binexport(secondary_i64, secondary_binexport):
-                return False
-
-            # 3. Сравнение
-            diff_output = self.output_dir / f"{stem}.BinDiff"
-            if not self._run_bindiff(primary_binexport, secondary_binexport, diff_output):
-                self.error_occurred.emit(f"Ошибка сравнения {stem}")
-                return False
-
-            # 4. Парсинг
             json_output = self.output_dir / f"{stem}.diff.json"
-            self._parse_bindiff_result(diff_output, str(primary_i64), str(secondary_i64), json_output)
 
-            # 5. JSON-экспорт для импортов и псевдокода
+            # === BINDIFF PATH ===
+            if self.engine in ("bindiff", "both"):
+                primary_binexport = self.output_dir / f"{stem}_primary.BinExport"
+                secondary_binexport = self.output_dir / f"{stem}_secondary.BinExport"
+                if not self._export_binexport(primary_i64, primary_binexport):
+                    return False
+                if not self._export_binexport(secondary_i64, secondary_binexport):
+                    return False
+                diff_output = self.output_dir / f"{stem}.BinDiff"
+                if not self._run_bindiff(primary_binexport, secondary_binexport, diff_output):
+                    self.error_occurred.emit(f"BinDiff: {stem}")
+                    return False
+                self._parse_bindiff_result(diff_output, str(primary_i64), str(secondary_i64), json_output)
+
+            # === DIAPHORA PATH ===
+            if self.engine in ("diaphora", "both"):
+                if _DIAPHORA_SCRIPT.is_file():
+                    diaphora_db_pr = self.output_dir / f"{stem}_primary.diaphora.sqlite"
+                    diaphora_db_sc = self.output_dir / f"{stem}_secondary.diaphora.sqlite"
+                    diaphora_result = self.output_dir / f"{stem}_diaphora_result.sqlite"
+                    # Экспорт primary
+                    if not self._run_diaphora_export(primary_i64, diaphora_db_pr):
+                        self.error_occurred.emit(f"Diaphora экспорт primary {stem}")
+                    # Экспорт secondary
+                    if not self._run_diaphora_export(secondary_i64, diaphora_db_sc):
+                        self.error_occurred.emit(f"Diaphora экспорт secondary {stem}")
+                    # Diff
+                    if diaphora_db_pr.is_file() and diaphora_db_sc.is_file():
+                        if self._run_diaphora_diff(diaphora_db_pr, diaphora_db_sc, diaphora_result):
+                            self._merge_diaphora_into_json(json_output, diaphora_result, stem)
+                else:
+                    logger.warning(f"Diaphora не найден: {_DIAPHORA_SCRIPT}")
+
+            # === JSON EXPORT + CFG + HEX SIMILARITY ===
             primary_json = self.output_dir / f"{stem}_primary.export.json"
             secondary_json = self.output_dir / f"{stem}_secondary.export.json"
             exported = self._export_json(primary_i64, primary_json, secondary_i64, secondary_json)
-
-            # 6. Обогащаем .diff.json импортами, псевдокодом и hexdump
             self._enrich_diff_json(json_output, exported["primary"], exported["secondary"])
+            self._add_hex_similarity(json_output, primary_i64, secondary_i64)
 
-            # 7. Чистим временные .export.json, чтобы не мусорить
+            # CFG-экспорт и запись путей SVG в .diff.json
+            pr_cfg_idx, sc_cfg_idx = self._export_cfg_pair(primary_i64, secondary_i64, stem)
+            if pr_cfg_idx or sc_cfg_idx:
+                try:
+                    with open(json_output, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    for mf in data.get("matched_functions", []):
+                        a1 = mf.get("address1", "")
+                        a2 = mf.get("address2", "")
+                        if pr_cfg_idx and a1 in pr_cfg_idx:
+                            mf["cfg_svg1"] = pr_cfg_idx[a1]
+                        if sc_cfg_idx and a2 in sc_cfg_idx:
+                            mf["cfg_svg2"] = sc_cfg_idx[a2]
+                    with open(json_output, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                except (OSError, json.JSONDecodeError):
+                    pass
+
             for p in (primary_json, secondary_json):
                 try:
                     p.unlink(missing_ok=True)
@@ -121,96 +241,170 @@ class DiffWorker(QThread):
                     pass
             return True
         except Exception as e:
-            logger.exception(f"Ошибка при обработке {stem}: {e}")
+            logger.exception(f"Ошибка {stem}: {e}")
             self.error_occurred.emit(f"Ошибка {stem}: {e}")
             return False
 
-    def _export_binexport(self, i64_path: Path, output_file: Path) -> bool:
-        """Экспорт с немедленным оповещением при любом сбое."""
-        if self._cancel_event.is_set():
+    def _run_diaphora_export(self, i64_path: Path, out_sqlite: Path) -> bool:
+        """Запускает diaphora.py --export через IDA с переменными окружения."""
+        env = os.environ.copy()
+        env["DIAPHORA_AUTO"] = "1"
+        env["DIAPHORA_EXPORT_FILE"] = str(out_sqlite)
+        cmd = [
+            self.idat_path, "-A",
+            f"-S\"{_DIAPHORA_SCRIPT}\"",
+            str(i64_path),
+        ]
+        logger.info(f"Diaphora экспорт: {' '.join(str(c) for c in cmd)}")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                                  encoding="utf-8", errors="replace", timeout=300, env=env)
+            return proc.returncode == 0 and out_sqlite.is_file()
+        except subprocess.TimeoutExpired:
+            self.error_occurred.emit(f"Таймаут Diaphora экспорта {i64_path.name}")
+            return False
+        except Exception as e:
+            logger.warning(f"Ошибка Diaphora экспорта: {e}")
             return False
 
-        output_file.unlink(missing_ok=True)
+    def _run_diaphora_diff(self, db1: Path, db2: Path, out_sqlite: Path) -> bool:
+        """Запускает diaphora.py --diff (не требует IDA).
+        В standalone-режиме использует argparse: diaphora.py db1 db2 -o out"""
+        cmd = [sys.executable, str(_DIAPHORA_SCRIPT), str(db1), str(db2), "-o", str(out_sqlite)]
+        logger.info(f"Diaphora diff: {' '.join(cmd)}")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                                  encoding="utf-8", errors="replace", timeout=600)
+            return proc.returncode == 0 and out_sqlite.is_file()
+        except subprocess.TimeoutExpired:
+            self.error_occurred.emit("Таймаут Diaphora diff")
+            return False
+        except Exception as e:
+            logger.warning(f"Ошибка Diaphora diff: {e}")
+            return False
 
-        cmd = [
-            self.idat_path,
-            "-A",
-            f"-OBinExportAutoAction:BinExportBinary",
-            f"-OBinExportModule:{output_file}",
-            str(i64_path)
-        ]
-        logger.info(f"Экспорт BinExport: {' '.join(cmd)}")
+    def _merge_diaphora_into_json(self, json_path: Path, diaphora_sqlite: Path, stem: str) -> None:
+        """Сливает результаты Diaphora в .diff.json."""
+        if not json_path.is_file():
+            return
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        dres = _parse_diaphora_results(diaphora_sqlite)
+        existing_addr = {(m.get("address1", ""), m.get("address2", ""))
+                         for m in data.get("matched_functions", [])}
+        new_matches = []
+        for m in dres.get("matched_functions", []):
+            key = (m["address1"], m["address2"])
+            if key not in existing_addr:
+                new_matches.append(m)
+                existing_addr.add(key)
+        # Добавляем новые совпадения
+        data["matched_functions"].extend(new_matches)
+        data["total_matched"] = len(data["matched_functions"])
+        # Обновляем метаданные
+        data["engine"] = "bindiff+diaphora" if data.get("matched_functions") else "bindiff"
+        data["diaphora_matched_count"] = len(new_matches)
+        # Сливаем algorithm_distribution
+        ad = data.setdefault("algorithm_distribution", {})
+        for algo_name, cnt in dres.get("diaphora_algorithm_distribution", {}).items():
+            ad[algo_name] = ad.get(algo_name, 0) + cnt
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except OSError:
+            pass
+
+    def _export_cfg_pair(self, primary_i64: Path, secondary_i64: Path, stem: str) -> Tuple[Optional[dict], Optional[dict]]:
+        """Экспортирует SVG-графы. Возвращает (pr_index, sc_index) {hex_addr: rel_svg_path}."""
+        cfg_dir = self.output_dir / "cfg" / stem
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        out_pr = cfg_dir / "primary"
+        out_sc = cfg_dir / "secondary"
+        for i64, out_dir in [(primary_i64, out_pr), (secondary_i64, out_sc)]:
+            cmd = [
+                self.idat_path, "-A",
+                f"-S\"{_EXPORT_CFG_SCRIPT}\"",
+                f"output={out_dir}",
+                str(i64),
+            ]
+            try:
+                subprocess.run(cmd, capture_output=True, text=True, check=False,
+                               encoding="utf-8", errors="replace", timeout=120)
+            except Exception:
+                pass
+
+        def _load_cfg_index(base_dir: Path, side: str) -> Optional[dict]:
+            """Читает cfg_manifest.json и строит {hex_addr: rel_path}."""
+            mp = base_dir / "cfg_manifest.json"
+            if not mp.is_file():
+                return None
+            try:
+                with open(mp, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                return None
+            idx = {}
+            for func_name, rel in raw.items():
+                if not rel:
+                    continue
+                try:
+                    addr_hex = Path(rel).stem.split("_")[-1]
+                    idx[f"0x{addr_hex}"] = f"cfg/{stem}/{side}/{rel}"
+                except (IndexError, ValueError):
+                    continue
+            return idx
+
+        pr_idx = _load_cfg_index(out_pr, "primary")
+        sc_idx = _load_cfg_index(out_sc, "secondary")
+        return pr_idx, sc_idx
+
+    def _export_binexport(self, i64_path: Path, output_file: Path) -> bool:
+        if self._cancel_event.is_set():
+            return False
+        output_file.unlink(missing_ok=True)
+        cmd = [self.idat_path, "-A",
+               f"-OBinExportAutoAction:BinExportBinary",
+               f"-OBinExportModule:{output_file}",
+               str(i64_path)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
                                   encoding='utf-8', errors='replace')
-            stdout = (proc.stdout or "").strip()
-            stderr = (proc.stderr or "").strip()
-
-            if proc.returncode != 0:
-                if "BinExport" in stderr or "BinExport" in stdout:
-                    hint = "Плагин BinExport завершился с ошибкой."
-                elif "not found" in stderr.lower() or "not found" in stdout.lower():
-                    hint = "Плагин BinExport не найден или не загружен."
-                else:
-                    hint = f"IDA завершилась с кодом {proc.returncode}."
-                detail = f"stdout:\n{stdout[:500]}\nstderr:\n{stderr[:500]}"
-                logger.error(f"Экспорт {i64_path.name}: {hint}\n{detail}")
-                self.error_occurred.emit(f"Ошибка экспорта {i64_path.name}: {hint}\n{detail}")
+            if proc.returncode != 0 or not output_file.is_file():
+                detail = f"stdout:\n{(proc.stdout or '')[:500]}\nstderr:\n{(proc.stderr or '')[:500]}"
+                logger.error(f"BinExport {i64_path.name}: {detail}")
+                self.error_occurred.emit(f"Ошибка BinExport {i64_path.name}")
                 return False
-
-            if not output_file.is_file():
-                detail = f"stdout:\n{stdout[:1000]}\nstderr:\n{stderr[:1000]}"
-                logger.error(f"Файл {output_file} не создан после успешного выхода IDA. Вывод:\n{detail}")
-                self.error_occurred.emit(
-                    f"Файл BinExport не создан для {i64_path.name}, хотя IDA завершилась успешно.\n{detail}"
-                )
-                return False
-
-            logger.info(f"BinExport создан: {output_file}")
             return True
         except Exception as e:
-            logger.exception(f"Ошибка при экспорте BinExport: {e}")
-            self.error_occurred.emit(f"Системная ошибка при экспорте {i64_path.name}: {e}")
+            logger.exception(f"Ошибка BinExport: {e}")
             return False
 
     def _run_bindiff(self, primary: Path, secondary: Path, output: Path) -> bool:
-        """Запускает bindiff.exe во временной изолированной папке, затем переносит результат."""
         tmp_dir = output.parent / f"{output.stem}_tmp"
         shutil.rmtree(tmp_dir, ignore_errors=True)
         tmp_dir.mkdir(parents=True, exist_ok=True)
-
-        cmd = [
-            self.bindiff_path,
-            "--primary", str(primary),
-            "--secondary", str(secondary),
-            "--output_dir", str(tmp_dir)
-        ]
-        logger.info(f"BinDiff: {' '.join(cmd)}")
+        cmd = [self.bindiff_path, "--primary", str(primary), "--secondary", str(secondary), "--output_dir", str(tmp_dir)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if proc.returncode != 0:
-                logger.error(f"BinDiff ошибка: {proc.stderr.strip()}")
                 return False
-
             diff_files = list(tmp_dir.glob("*.BinDiff"))
             if not diff_files:
-                logger.error("Не найден .BinDiff файл после сравнения")
                 return False
-
-            result_file = diff_files[0]
             output.unlink(missing_ok=True)
-            shutil.move(str(result_file), str(output))
-            logger.info(f"Результат BinDiff сохранён как {output}")
+            shutil.move(str(diff_files[0]), str(output))
             return True
         except Exception as e:
-            logger.exception(f"Ошибка BinDiff: {e}")
+            logger.exception(f"BinDiff: {e}")
             return False
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     @staticmethod
     def _get_table_columns(conn: sqlite3.Connection, table: str) -> set:
-        """Возвращает множество имён столбцов таблицы через PRAGMA table_info."""
         try:
             cur = conn.execute(f"PRAGMA table_info(\"{table}\")")
             return {row[1] for row in cur.fetchall()}
@@ -219,33 +413,20 @@ class DiffWorker(QThread):
 
     def _parse_bindiff_result(self, db_path: Path, primary: str, secondary: str,
                               json_output: Path) -> None:
-        """Читает SQLite .BinDiff и сохраняет JSON с совпадениями.
-           Схема таблиц определяется динамически через PRAGMA table_info,
-           так что код устойчив к изменениям имён столбцов в разных версиях BinDiff.
-        """
         result = {
-            "primary": primary,
-            "secondary": secondary,
-            "similarity": 0.0,
-            "confidence": 0.0,
-            "description": "",
-            "version": "",
-            "created": "",
-            "modified": "",
-            "file1": {},
-            "file2": {},
+            "primary": primary, "secondary": secondary,
+            "similarity": 0.0, "confidence": 0.0,
+            "description": "", "version": "", "created": "", "modified": "",
+            "file1": {}, "file2": {},
             "matched_functions": [],
-            "total_functions1": 0,
-            "total_functions2": 0,
-            "error": None
+            "total_functions1": 0, "total_functions2": 0,
+            "error": None, "engine": "bindiff",
         }
-
         try:
             conn = sqlite3.connect(str(db_path))
             try:
                 cur = conn.cursor()
-
-                # --- Метаданные (SELECT *) ---
+                # metadata
                 cur.execute("SELECT * FROM metadata")
                 meta_row = cur.fetchone()
                 if meta_row:
@@ -257,15 +438,14 @@ class DiffWorker(QThread):
                     result["version"] = meta.get("version", "")
                     result["created"] = str(meta.get("created", ""))
                     result["modified"] = str(meta.get("modified", ""))
-
-                # --- Информация о файлах (SELECT *) ---
+                # file info
                 cur.execute("SELECT * FROM file ORDER BY id")
                 file_rows = cur.fetchall()
                 if len(file_rows) >= 2:
                     file_cols = [desc[0] for desc in cur.description]
-                    file1 = dict(zip(file_cols, file_rows[0]))
-                    file2 = dict(zip(file_cols, file_rows[1]))
-                    for f_dict, key in [(file1, "file1"), (file2, "file2")]:
+                    f1 = dict(zip(file_cols, file_rows[0]))
+                    f2 = dict(zip(file_cols, file_rows[1]))
+                    for f_dict, key in [(f1, "file1"), (f2, "file2")]:
                         result[key] = {
                             "filename": f_dict.get("filename", ""),
                             "exefilename": f_dict.get("exefilename", ""),
@@ -282,207 +462,110 @@ class DiffWorker(QThread):
                         }
                     result["total_functions1"] = result["file1"]["functions"] + result["file1"]["libfunctions"]
                     result["total_functions2"] = result["file2"]["functions"] + result["file2"]["libfunctions"]
-
-# --- Динамическое определение столбцов таблицы function ---
+                # function matches
                 func_columns = self._get_table_columns(conn, "function")
-
-                # Таблица алиасов: каноническое_имя -> список возможных имён в БД
                 COL_ALIASES = {
-                    "address1":      ["address1"],
-                    "name1":         ["name1"],
-                    "address2":      ["address2"],
-                    "name2":         ["name2"],
-                    "similarity":    ["similarity", "sim"],
-                    "confidence":    ["confidence", "conf"],
-                    "flags":         ["flags"],
-                    "algorithm":     ["algorithm", "algo"],
-                    "basicblocks":   ["basicblocks", "basic_blocks", "basicblocks_count"],
-                    "edges":         ["edges", "edgecount", "edge_count"],
-                    "instructions":  ["instructions", "instructioncount", "instruction_count"],
+                    "address1": ["address1"], "name1": ["name1"],
+                    "address2": ["address2"], "name2": ["name2"],
+                    "similarity": ["similarity", "sim"],
+                    "confidence": ["confidence", "conf"],
+                    "flags": ["flags"], "algorithm": ["algorithm", "algo"],
+                    "basicblocks": ["basicblocks", "basic_blocks", "basicblocks_count"],
+                    "edges": ["edges", "edgecount", "edge_count"],
+                    "instructions": ["instructions", "instructioncount", "instruction_count"],
                 }
-
-                # Строим reverse-маппинг: actual_column -> canonical_name
                 actual_to_canonical = {}
-                mandatory_ok = True
-                for canonical, aliases in COL_ALIASES.items():
-                    found = False
-                    for alias in aliases:
-                        if alias in func_columns:
-                            actual_to_canonical[alias] = canonical
-                            found = True
+                for cn, aliases in COL_ALIASES.items():
+                    for a in aliases:
+                        if a in func_columns:
+                            actual_to_canonical[a] = cn
                             break
-                    if not found and canonical in ("address1", "name1", "address2", "name2"):
-                        mandatory_ok = False
-                        logger.warning(
-                            "Обязательный столбец '%s' не найден в таблице function. "
-                            "Доступны: %s", canonical, sorted(func_columns)
-                        )
-
-                # --- Раскрываем имена алгоритмов матчинга ---
-                algo_names: dict = {}
-                try:
-                    algo_columns = self._get_table_columns(conn, "functionalgorithm")
-                    if {"id", "name"}.issubset(algo_columns):
-                        algo_rows = cur.execute("SELECT id, name FROM functionalgorithm").fetchall()
-                        algo_names = {r[0]: r[1] for r in algo_rows}
-                except sqlite3.Error:
-                    pass
-
-                # --- Чтение совпавших функций ---
-                if mandatory_ok and actual_to_canonical:
-                    # Определяем реальное имя столбца для ORDER BY (любой из алиасов similarity)
-                    sort_col_found = None
-                    for alias_chain in COL_ALIASES.values():
-                        for a in alias_chain:
-                            if a in actual_to_canonical:
-                                sort_col_found = a
-                                break
-                        if sort_col_found:
-                            break
-                    order_clause = f"ORDER BY {sort_col_found} DESC" if sort_col_found else ""
-
+                if actual_to_canonical:
+                    algo_names = {}
+                    try:
+                        ac = self._get_table_columns(conn, "functionalgorithm")
+                        if {"id", "name"}.issubset(ac):
+                            ar = cur.execute("SELECT id, name FROM functionalgorithm").fetchall()
+                            algo_names = {r[0]: r[1] for r in ar}
+                    except sqlite3.Error:
+                        pass
                     col_list = ", ".join(actual_to_canonical.keys())
-                    cur.execute(f"SELECT {col_list} FROM function {order_clause}")
-
-                    # Именованный доступ к row через список канонических имён
-                    canonical_names = list(actual_to_canonical.values())
+                    cur.execute(f"SELECT {col_list} FROM function ORDER BY similarity DESC")
                     for row in cur.fetchall():
                         entry = {}
-                        for idx, canonical in enumerate(canonical_names):
-                            row_val = row[idx]
-                            if canonical in ("address1", "address2") and row_val is not None:
-                                entry[canonical] = f"0x{int(row_val):X}"
-                            elif canonical in ("similarity", "confidence") and row_val is not None:
-                                entry[canonical] = round(float(row_val), 4)
-                            elif canonical in ("name1", "name2"):
-                                entry[canonical] = row_val if row_val else "<unnamed>"
+                        for idx, (act_col, cn) in enumerate(actual_to_canonical.items()):
+                            rv = row[idx]
+                            if cn in ("address1", "address2") and rv is not None:
+                                entry[cn] = f"0x{int(rv):X}"
+                            elif cn in ("similarity", "confidence") and rv is not None:
+                                entry[cn] = round(float(rv), 4)
+                            elif cn in ("name1", "name2"):
+                                entry[cn] = rv if rv else "<unnamed>"
                             else:
-                                entry[canonical] = row_val if row_val is not None else 0
+                                entry[cn] = rv if rv is not None else 0
                         entry.setdefault("similarity", 0.0)
                         entry.setdefault("confidence", 0.0)
-                        entry.setdefault("basicblocks", 0)
-                        entry.setdefault("edges", 0)
-                        entry.setdefault("instructions", 0)
-                        entry["algorithm_name"] = algo_names.get(
-                            entry.get("algorithm", 0), f"#{entry.get('algorithm', 0)}"
-                        )
+                        entry["algorithm_name"] = algo_names.get(entry.get("algorithm", 0), f"#{entry.get('algorithm', 0)}")
+                        entry["source"] = "bindiff"
                         result["matched_functions"].append(entry)
-                else:
-                    logger.warning(
-                        "Не удалось прочитать таблицу function: обязательные столбцы отсутствуют. "
-                        "Доступные столбцы: %s", func_columns
-                    )
-
-                # --- Чтение несовпавших функций не поддерживается в BinDiff v8 ---
-                # (таблица unmatchedfunction отсутствует в схеме SQLite)
-                result["unmatched_functions1"] = []
-                result["unmatched_functions2"] = []
-
-                # --- Распределение схожести ---
-                sim_buckets = {
-                    "1.0": 0, "0.95_0.99": 0, "0.80_0.94": 0, "0.50_0.79": 0, "below_0.50": 0,
-                }
+                # similarity distribution
+                sim_buckets = {"1.0": 0, "0.95_0.99": 0, "0.80_0.94": 0, "0.50_0.79": 0, "below_0.50": 0}
                 for mf in result.get("matched_functions", []):
                     s = mf.get("similarity", 0.0)
-                    if s >= 1.0:
-                        sim_buckets["1.0"] += 1
-                    elif s >= 0.95:
-                        sim_buckets["0.95_0.99"] += 1
-                    elif s >= 0.80:
-                        sim_buckets["0.80_0.94"] += 1
-                    elif s >= 0.50:
-                        sim_buckets["0.50_0.79"] += 1
-                    else:
-                        sim_buckets["below_0.50"] += 1
+                    if s >= 1.0: sim_buckets["1.0"] += 1
+                    elif s >= 0.95: sim_buckets["0.95_0.99"] += 1
+                    elif s >= 0.80: sim_buckets["0.80_0.94"] += 1
+                    elif s >= 0.50: sim_buckets["0.50_0.79"] += 1
+                    else: sim_buckets["below_0.50"] += 1
                 result["similarity_distribution"] = sim_buckets
-
-                # --- Распределение алгоритмов матчинга функций ---
+                # algorithm distribution
                 try:
-                    algo_dist = {}
+                    ad = {}
                     cur.execute("""
-                        SELECT f.algorithm, fa.name, COUNT(*)
-                        FROM function f
+                        SELECT fa.name, COUNT(*) FROM function f
                         LEFT JOIN functionalgorithm fa ON f.algorithm = fa.id
-                        GROUP BY f.algorithm
-                        ORDER BY COUNT(*) DESC
-                    """)
-                    for row in cur.fetchall():
-                        algo_id, algo_name, cnt = row[0], row[1] or f"#{row[0]}", row[2]
-                        algo_dist[algo_name] = cnt
-                    result["algorithm_distribution"] = algo_dist
+                        GROUP BY f.algorithm ORDER BY COUNT(*) DESC""")
+                    for r in cur.fetchall():
+                        ad[r[0] or f"#{r[0]}"] = r[1]
+                    result["algorithm_distribution"] = ad
                 except sqlite3.Error:
-                    result["algorithm_distribution"] = {}
-
-                # --- Переименованные функции (name1 != name2) ---
-                renamed = []
-                for mf in result.get("matched_functions", []):
-                    n1 = mf.get("name1", "")
-                    n2 = mf.get("name2", "")
-                    if n1 and n2 and n1 != n2:
-                        renamed.append(mf)
-                result["renamed_functions"] = renamed
-
-                # --- Статистика размеров совпавших функций ---
-                bb_counts = [mf.get("basicblocks", 0) for mf in result.get("matched_functions", [])]
-                insn_counts = [mf.get("instructions", 0) for mf in result.get("matched_functions", [])]
-                if bb_counts:
+                    pass
+                # renamed
+                result["renamed_functions"] = [mf for mf in result["matched_functions"]
+                                               if mf.get("name1") and mf.get("name2") and mf["name1"] != mf["name2"]]
+                # struct stats
+                bb = [mf.get("basicblocks", 0) for mf in result["matched_functions"]]
+                insn = [mf.get("instructions", 0) for mf in result["matched_functions"]]
+                if bb:
                     result["function_size_stats"] = {
-                        "avg_basicblocks": round(sum(bb_counts) / len(bb_counts), 1),
-                        "min_basicblocks": min(bb_counts),
-                        "max_basicblocks": max(bb_counts),
-                        "avg_instructions": round(sum(insn_counts) / len(insn_counts), 1),
-                        "min_instructions": min(insn_counts),
-                        "max_instructions": max(insn_counts),
+                        "avg_basicblocks": round(sum(bb) / len(bb), 1),
+                        "min_basicblocks": min(bb), "max_basicblocks": max(bb),
+                        "avg_instructions": round(sum(insn) / len(insn), 1),
+                        "min_instructions": min(insn), "max_instructions": max(insn),
                     }
-                else:
-                    result["function_size_stats"] = {}
-
-                # --- Агрегированные числа совпадений ---
-                total_bb = sum(bb_counts)
-                total_insn = sum(insn_counts)
-                total_edges = sum(mf.get("edges", 0) for mf in result.get("matched_functions", []))
-                result["total_matched_basicblocks"] = total_bb
-                result["total_matched_instructions"] = total_insn
-                result["total_matched_edges"] = total_edges
-
+                result["total_matched_basicblocks"] = sum(bb)
+                result["total_matched_instructions"] = sum(insn)
+                result["total_matched_edges"] = sum(mf.get("edges", 0) for mf in result["matched_functions"])
             finally:
                 conn.close()
         except Exception as e:
             result["error"] = str(e)
             logger.exception("Ошибка парсинга BinDiff")
-
         with open(json_output, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-    # ------------------------------------------------------------------
-    # JSON-экспорт через IDA (извлечение импортов / псевдокода)
-    # ------------------------------------------------------------------
     def _export_json(self, primary_i64: Path, primary_out: Path,
                      secondary_i64: Path, secondary_out: Path) -> dict:
-        """Запускает export_data.py для обоих .i64, возвращает {"primary": Path|None, "secondary": Path|None}."""
         result = {"primary": None, "secondary": None}
-        pairs = [(primary_i64, primary_out), (secondary_i64, secondary_out)]
-
-        for i64_path, json_path in pairs:
+        for i64_path, json_path in [(primary_i64, primary_out), (secondary_i64, secondary_out)]:
             if self._cancel_event.is_set():
                 break
-            if not _EXPORT_DATA_SCRIPT.is_file():
-                self.error_occurred.emit(f"Скрипт экспорта не найден: {_EXPORT_DATA_SCRIPT}")
-                continue
-            cmd = [
-                self.idat_path,
-                "-A",
-                f"-S\"{_EXPORT_DATA_SCRIPT}\" pseudocode=1",
-                str(i64_path),
-            ]
-            logger.info(f"JSON-экспорт: {' '.join(cmd)}")
+            cmd = [self.idat_path, "-A", f"-S\"{_EXPORT_DATA_SCRIPT}\" pseudocode=1", str(i64_path)]
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
-                                      encoding="utf-8", errors="replace")
+                                      encoding="utf-8", errors="replace", timeout=300)
                 if proc.returncode != 0:
-                    self.error_occurred.emit(f"Ошибка JSON-экспорта {i64_path.name}: код {proc.returncode}")
                     continue
-                # export_data.py пишет в <idb_path>.export.json, то есть в i64_path + ".export.json"
                 src = Path(str(i64_path) + ".export.json")
                 if src.is_file() and src != json_path:
                     shutil.move(str(src), str(json_path))
@@ -491,33 +574,21 @@ class DiffWorker(QThread):
                     result[key] = json_path
             except Exception as e:
                 logger.exception(f"Ошибка JSON-экспорта {i64_path.name}: {e}")
-                self.error_occurred.emit(f"Системная ошибка JSON-экспорта {i64_path.name}: {e}")
+                self.error_occurred.emit(f"Ошибка JSON-экспорта {i64_path.name}: {e}")
         return result
 
-    # ------------------------------------------------------------------
-    # Обогащение diff.json импортами, псевдокодом, hexdump и diff
-    # ------------------------------------------------------------------
     @staticmethod
     def _enrich_diff_json(diff_json: Path, primary_json: Optional[Path],
                           secondary_json: Optional[Path]) -> None:
-        """Добавляет в diff.json секции imports_only_*, pseudocode_diff и hexdump."""
         try:
             with open(diff_json, "r", encoding="utf-8") as f:
                 diff_data = json.load(f)
         except (OSError, json.JSONDecodeError):
             return
-
-        # --------------------------------------------------------------
-        # Импорты: только в primary / только в secondary
-        # --------------------------------------------------------------
         primary_imports = set()
         secondary_imports = set()
-        # Словари функций — индексируем ПО АДРЕСУ (start_ea), т.к. BinDiff
-        # хранит имена в формате sub_10001000, а export_data.py нормализует
-        # их в 10001000. Адрес — единственный надёжный идентификатор.
         primary_funcs: dict = {}
         secondary_funcs: dict = {}
-
         for label, json_path, out_set, out_dict in [
             ("primary", primary_json, primary_imports, primary_funcs),
             ("secondary", secondary_json, secondary_imports, secondary_funcs),
@@ -545,54 +616,39 @@ class DiffWorker(QThread):
                     "insn_types": func.get("insn_types", {}),
                     "callees": func.get("callees", []),
                 }
-
         diff_data["imports_only_in_primary"] = sorted(primary_imports - secondary_imports)
         diff_data["imports_only_in_secondary"] = sorted(secondary_imports - primary_imports)
-
-        # --------------------------------------------------------------
-        # Обогащение matched_functions: pseudocode + hexdump + diff
-        # --------------------------------------------------------------
         for mf in diff_data.get("matched_functions", []):
-            name1 = mf.get("name1", "")
-            name2 = mf.get("name2", "")
             addr1 = mf.get("address1", "")
             addr2 = mf.get("address2", "")
-
-            # Ищем ПО АДРЕСУ — это единственный надёжный ключ для stripped бинарников.
-            # Если не нашли по адресу — пытаемся по нормализованному имени (fallback).
             f1 = primary_funcs.get(addr1)
             f2 = secondary_funcs.get(addr2)
-            if f1 is None and name1:
-                norm1 = name1.replace("sub_", "") if name1.startswith("sub_") else name1
+            if f1 is None:
+                name1 = mf.get("name1", "")
+                n1 = name1.replace("sub_", "") if name1.startswith("sub_") else name1
                 for v in primary_funcs.values():
-                    if v.get("name") == norm1 or v.get("name") == name1:
+                    if v.get("name") == n1 or v.get("name") == name1:
                         f1 = v
                         break
-            if f2 is None and name2:
-                norm2 = name2.replace("sub_", "") if name2.startswith("sub_") else name2
+            if f2 is None:
+                name2 = mf.get("name2", "")
+                n2 = name2.replace("sub_", "") if name2.startswith("sub_") else name2
                 for v in secondary_funcs.values():
-                    if v.get("name") == norm2 or v.get("name") == name2:
+                    if v.get("name") == n2 or v.get("name") == name2:
                         f2 = v
                         break
-
             mf["pseudocode1"] = f1["pseudocode"] if f1 else ""
             mf["pseudocode2"] = f2["pseudocode"] if f2 else ""
             mf["hexdump1"] = f1["hexdump"] if f1 else ""
             mf["hexdump2"] = f2["hexdump"] if f2 else ""
-
-            # Строим side-by-side diff (только если оба псевдокода непусты)
             if f1 and f2 and f1["pseudocode"] and f2["pseudocode"]:
                 lines1 = f1["pseudocode"].splitlines()
                 lines2 = f2["pseudocode"].splitlines()
                 diff_rows = []
-                for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
-                    None, lines1, lines2
-                ).get_opcodes():
+                for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, lines1, lines2).get_opcodes():
                     if tag == "equal":
                         for k in range(i1, i2):
-                            diff_rows.append(
-                                {"type": "equal", "left": lines1[k], "right": lines2[j1 + k - i1]}
-                            )
+                            diff_rows.append({"type": "equal", "left": lines1[k], "right": lines2[j1 + k - i1]})
                     elif tag == "delete":
                         for k in range(i1, i2):
                             diff_rows.append({"type": "removed", "left": lines1[k], "right": ""})
@@ -607,85 +663,93 @@ class DiffWorker(QThread):
                 mf["pseudocode_diff"] = diff_rows
             else:
                 mf["pseudocode_diff"] = []
-
-            # Сравнение типов инструкций для пары функций
+            # insn types diff per pair
             if f1 and f2:
                 it1 = f1.get("insn_types", {})
                 it2 = f2.get("insn_types", {})
-                all_mnemonics = sorted(set(list(it1.keys()) + list(it2.keys())))
-                insn_type_diff = []
-                for mne in all_mnemonics:
+                all_mnes = sorted(set(list(it1.keys()) + list(it2.keys())))
+                insn_diff = []
+                for mne in all_mnes:
                     c1 = it1.get(mne, 0)
                     c2 = it2.get(mne, 0)
                     if c1 != c2:
-                        insn_type_diff.append({
-                            "mnemonic": mne,
-                            "count1": c1,
-                            "count2": c2,
-                            "diff": c2 - c1,
-                        })
-                mf["insn_type_diff"] = insn_type_diff
+                        insn_diff.append({"mnemonic": mne, "count1": c1, "count2": c2, "diff": c2 - c1})
+                mf["insn_type_diff"] = insn_diff
                 mf["insn_types1"] = it1
                 mf["insn_types2"] = it2
-            else:
-                mf["insn_type_diff"] = []
-                mf["insn_types1"] = {}
-                mf["insn_types2"] = {}
-
-            # Граф вызовов: callees
-            if f1 and f2:
+                # call graph
                 callees1 = set(f1.get("callees", []))
                 callees2 = set(f2.get("callees", []))
                 mf["callees_only1"] = sorted(callees1 - callees2)
                 mf["callees_only2"] = sorted(callees2 - callees1)
                 mf["callees_common"] = sorted(callees1 & callees2)
             else:
+                mf["insn_type_diff"] = []
+                mf["insn_types1"] = {}
+                mf["insn_types2"] = {}
                 mf["callees_only1"] = []
                 mf["callees_only2"] = []
                 mf["callees_common"] = []
-
-        # --- Глобальный сводный diff по типам инструкций ---
-        all_insn_types1 = {}
-        all_insn_types2 = {}
+        # global insn diff
+        all_types1 = {}
+        all_types2 = {}
         for mf in diff_data.get("matched_functions", []):
             addr1 = mf.get("address1", "")
             f1 = primary_funcs.get(addr1)
             if f1 is None:
                 name1 = mf.get("name1", "")
-                norm1 = name1.replace("sub_", "") if name1.startswith("sub_") else name1
+                n1 = name1.replace("sub_", "") if name1.startswith("sub_") else name1
                 for v in primary_funcs.values():
-                    if v.get("name") == norm1 or v.get("name") == name1:
+                    if v.get("name") == n1 or v.get("name") == name1:
                         f1 = v
                         break
             if f1:
                 for mne, cnt in f1.get("insn_types", {}).items():
-                    all_insn_types1[mne] = all_insn_types1.get(mne, 0) + cnt
-
+                    all_types1[mne] = all_types1.get(mne, 0) + cnt
             addr2 = mf.get("address2", "")
             f2 = secondary_funcs.get(addr2)
             if f2 is None:
                 name2 = mf.get("name2", "")
-                norm2 = name2.replace("sub_", "") if name2.startswith("sub_") else name2
+                n2 = name2.replace("sub_", "") if name2.startswith("sub_") else name2
                 for v in secondary_funcs.values():
-                    if v.get("name") == norm2 or v.get("name") == name2:
+                    if v.get("name") == n2 or v.get("name") == name2:
                         f2 = v
                         break
             if f2:
                 for mne, cnt in f2.get("insn_types", {}).items():
-                    all_insn_types2[mne] = all_insn_types2.get(mne, 0) + cnt
-
-        all_mnes = sorted(set(list(all_insn_types1.keys()) + list(all_insn_types2.keys())))
-        global_insn_diff = []
-        for mne in all_mnes:
-            c1 = all_insn_types1.get(mne, 0)
-            c2 = all_insn_types2.get(mne, 0)
-            global_insn_diff.append({
-                "mnemonic": mne,
-                "count1": c1,
-                "count2": c2,
-                "diff": c2 - c1,
-            })
-        diff_data["global_insn_diff"] = global_insn_diff
-
+                    all_types2[mne] = all_types2.get(mne, 0) + cnt
+        all_mnes = sorted(set(list(all_types1.keys()) + list(all_types2.keys())))
+        diff_data["global_insn_diff"] = [
+            {"mnemonic": mne, "count1": all_types1.get(mne, 0), "count2": all_types2.get(mne, 0), "diff": all_types2.get(mne, 0) - all_types1.get(mne, 0)}
+            for mne in all_mnes
+        ]
         with open(diff_json, "w", encoding="utf-8") as f:
             json.dump(diff_data, f, indent=2, ensure_ascii=False)
+
+    def _add_hex_similarity(self, json_output: Path, primary_i64: Path, secondary_i64: Path) -> None:
+        if not json_output.is_file():
+            return
+        try:
+            with open(json_output, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        hex_sim = _compute_hex_similarity(primary_i64, secondary_i64)
+        data["hex_similarity"] = hex_sim
+        bs = float(data.get("similarity", 0.0))
+        zf = (data.get("total_functions1", 0) == 0 and data.get("total_functions2", 0) == 0)
+        tm = len(data.get("matched_functions", []))
+        if zf or tm == 0:
+            data["blended_similarity"] = hex_sim
+            data["similarity_source"] = "hexdump"
+        elif bs > 0:
+            data["blended_similarity"] = round((bs + hex_sim) / 2, 4)
+            data["similarity_source"] = "blended"
+        else:
+            data["blended_similarity"] = hex_sim
+            data["similarity_source"] = "hexdump"
+        try:
+            with open(json_output, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except OSError:
+            pass

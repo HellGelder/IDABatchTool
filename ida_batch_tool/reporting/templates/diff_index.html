@@ -55,11 +55,13 @@
             <thead>
                 <tr>
                     <th>Файл</th>
-                    <th title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов. Рассчитывается по формуле: ~35% — доля совпавших рёбер потока управления, ~25% — доля совпавших базовых блоков, ~10% — доля совпавших функций, ~10% — доля совпавших инструкций, ~20% — разница индекса MD графа вызовов.">Схожесть</th>
-                    <th title="Значение от 0 до 1, характеризующее надёжность найденного соответствия. Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией для сглаживания выбросов.">Уверенность</th>
+                    <th title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов.">Blended схожесть</th>
+                    <th title="Значение от 0 до 1, характеризующее надёжность найденного соответствия.">Уверенность</th>
                     <th>Совпало функций</th>
                     <th>Всего функций</th>
                     <th title="Совпадают ли хэш-суммы (SHA-1) содержимого секций бинарных файлов. Совпадение означает побайтовую идентичность.">Хэши</th>
+                    <th>Движок</th>
+                    <th>Diaphora</th>
                     <th>Подробнее</th>
                 </tr>
             </thead>
@@ -68,10 +70,14 @@
                 <tr>
                     <td style="font-family:ui-monospace,'SF Mono','Consolas',monospace; font-size:12px;">{{ pair.stem }}</td>
                     <td>
-                        {% set pct = pair.similarity * 100 %}
+                        {% set display_sim = pair.blended_similarity if pair.blended_similarity and pair.blended_similarity > 0 else pair.similarity %}
+                        {% set pct = display_sim * 100 %}
                         {% if pct >= 80 %}<span class="similarity-high">{{ "%.1f"|format(pct) }}%</span>
                         {% elif pct >= 50 %}<span class="similarity-medium">{{ "%.1f"|format(pct) }}%</span>
                         {% else %}<span class="similarity-low">{{ "%.1f"|format(pct) }}%</span>
+                        {% endif %}
+                        {% if pair.similarity_source and pair.similarity_source == "hexdump" %}
+                        <span style="font-size:10px; color:var(--text-tertiary); display:block;">(hex)</span>
                         {% endif %}
                     </td>
                     <td>{{ "%.1f"|format(pair.confidence * 100) }}%</td>
@@ -84,6 +90,24 @@
                             {% else %}
                             <span class="tag tag--mismatch" title="Хэши различаются">✗ Различаются</span>
                             {% endif %}
+                        {% else %}
+                        <span class="tag tag--neutral">—</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if pair.engine == "bindiff" %}
+                        <span class="tag" style="background:var(--accent-tint);color:var(--accent);">BinDiff</span>
+                        {% elif pair.engine == "diaphora" %}
+                        <span class="tag" style="background:var(--warning-tint);color:var(--warning);">Diaphora</span>
+                        {% elif pair.engine == "bindiff+diaphora" %}
+                        <span class="tag" style="background:var(--accent-tint);color:var(--accent);">BinDiff</span>
+                        <span style="color:var(--text-tertiary);font-size:11px;">+</span>
+                        <span class="tag" style="background:var(--warning-tint);color:var(--warning);">Diaphora</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if pair.diaphora_matched_count and pair.diaphora_matched_count > 0 %}
+                        <span class="tag" style="background:var(--warning-tint);color:var(--warning);">+{{ pair.diaphora_matched_count }}</span>
                         {% else %}
                         <span class="tag tag--neutral">—</span>
                         {% endif %}

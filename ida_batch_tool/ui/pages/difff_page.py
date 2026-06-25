@@ -8,7 +8,7 @@ from typing import Optional, List, Tuple
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QProgressBar, QTextEdit, QGroupBox, QFileDialog,
-    QLineEdit, QMessageBox, QFrame, QSizePolicy
+    QLineEdit, QMessageBox, QCheckBox, QButtonGroup, QRadioButton
 )
 from PySide6.QtCore import Signal, Qt
 
@@ -92,6 +92,22 @@ class DiffPage(QWidget):
 
         main_layout.addWidget(map_group)
 
+        # --- Движок сравнения ---
+        engine_group = QGroupBox("Движок сравнения")
+        engine_layout = QVBoxLayout(engine_group)
+        self.engine_group = QButtonGroup(self)
+        self.rb_bindiff = QRadioButton("Только BinDiff (быстро, 19 эвристик)")
+        self.rb_bindiff.setChecked(True)
+        self.rb_diaphora = QRadioButton("Только Diaphora (глубоко, 45+ эвристик)")
+        self.rb_both = QRadioButton("Оба движка (максимальное покрытие)")
+        self.engine_group.addButton(self.rb_bindiff, 1)
+        self.engine_group.addButton(self.rb_diaphora, 2)
+        self.engine_group.addButton(self.rb_both, 3)
+        engine_layout.addWidget(self.rb_bindiff)
+        engine_layout.addWidget(self.rb_diaphora)
+        engine_layout.addWidget(self.rb_both)
+        main_layout.addWidget(engine_group)
+
         # --- Запуск и прогресс ---
         run_group = QGroupBox("Процесс сравнения")
         run_layout = QVBoxLayout(run_group)
@@ -159,7 +175,7 @@ class DiffPage(QWidget):
     # Анализ директорий и отображение статуса сопоставления
     # ----------------------------------------------------------------
     def _analyze_directories(self) -> None:
-        """Анализирует левую и правую папки, обновляет метки и кнопку запуска."""
+        """Анализирует левую и правую папки (рекурсивно), обновляет метки и кнопку запуска."""
         left_dir = self.left_edit.text().strip()
         right_dir = self.right_edit.text().strip()
 
@@ -169,33 +185,44 @@ class DiffPage(QWidget):
             self.start_btn.setEnabled(False)
             return
 
-        left_i64 = sorted(Path(left_dir).glob("*.i64"))
-        right_i64 = sorted(Path(right_dir).glob("*.i64"))
+        left_roots = list(Path(left_dir).rglob("*.i64"))
+        right_roots = list(Path(right_dir).rglob("*.i64"))
 
-        left_names = {p.stem for p in left_i64}
-        right_names = {p.stem for p in right_i64}
+        # Индексируем по относительному пути от корня каждой директории
+        left_map = {}
+        for p in left_roots:
+            rel = p.relative_to(Path(left_dir))
+            left_map[str(rel)] = p
 
-        common = left_names & right_names
-        only_left = left_names - right_names
-        only_right = right_names - left_names
+        right_map = {}
+        for p in right_roots:
+            rel = p.relative_to(Path(right_dir))
+            right_map[str(rel)] = p
+
+        left_rel_set = set(left_map.keys())
+        right_rel_set = set(right_map.keys())
+
+        common = left_rel_set & right_rel_set
+        only_left = left_rel_set - right_rel_set
+        only_right = right_rel_set - left_rel_set
 
         # Статусная строка
-        if len(common) == len(left_names) == len(right_names) and len(left_names) > 0:
+        if len(common) == len(left_rel_set) == len(right_rel_set) and len(left_rel_set) > 0:
             status_text = (
-                f"✅ <b>Зеркальные директории</b> — все файлы имеют пару "
-                f"({len(left_names)} .i64 в каждой папке, {len(common)} пар)."
+                f"✅ <b>Зеркальные структуры</b> — все файлы имеют пару "
+                f"({len(left_rel_set)} .i64 в каждой папке, {len(common)} пар)."
             )
             self.start_btn.setEnabled(True)
         elif common:
             status_text = (
                 f"⚠️ <b>Частичное совпадение</b>: {len(common)} пар из "
-                f"{len(left_names)} файлов слева и {len(right_names)} справа."
+                f"{len(left_rel_set)} файлов слева и {len(right_rel_set)} справа."
             )
             self.start_btn.setEnabled(True)
         else:
             status_text = (
-                f"❌ <b>Нет совпадений</b>: {len(left_names)} файлов слева, "
-                f"{len(right_names)} справа. Проверьте директории."
+                f"❌ <b>Нет совпадений</b>: {len(left_rel_set)} файлов слева, "
+                f"{len(right_rel_set)} справа. Проверьте директории."
             )
             self.start_btn.setEnabled(False)
 
@@ -263,22 +290,29 @@ class DiffPage(QWidget):
             )
             return
 
-        # Поиск .i64 в левой директории
-        left_i64 = sorted(Path(left_dir).glob("*.i64"))
+        # Поиск .i64 в левой директории (рекурсивно)
+        left_dir_path = Path(left_dir)
+        right_dir_path = Path(right_dir)
+
+        left_i64 = sorted(left_dir_path.rglob("*.i64"))
         if not left_i64:
             QMessageBox.warning(
                 self, "Нет баз данных",
-                "Не найдено файлов .i64 в левой директории."
+                "Не найдено файлов .i64 в левой директории (и вложенных папках)."
             )
             return
 
-        # Сопоставление с правой директорией по имени
-        right_i64_map = {p.stem: p for p in Path(right_dir).glob("*.i64")}
-        pairs: List[Tuple[Path, Path]] = []
+        # Сопоставление с правой директорией по относительному пути
+        right_map = {}
+        for p in right_dir_path.rglob("*.i64"):
+            rel = str(p.relative_to(right_dir_path))
+            right_map[rel] = p
+
+        pairs: List[Tuple[Path, Path, str]] = []
         for left_path in left_i64:
-            stem = left_path.stem
-            if stem in right_i64_map:
-                pairs.append((left_path, right_i64_map[stem]))
+            rel = str(left_path.relative_to(left_dir_path))
+            if rel in right_map:
+                pairs.append((left_path, right_map[rel], rel))
 
         if not pairs:
             QMessageBox.warning(self, "Нет совпадений", "Ни один файл из левой директории не имеет пары в правой.")
@@ -294,11 +328,19 @@ class DiffPage(QWidget):
         self.process_progress.setValue(0)
         self.error_text.clear()
 
-        self._worker = DiffWorker(pairs, idat_path, bindiff_path, output_path, max_workers=2)
+        self._worker = DiffWorker(pairs, idat_path, bindiff_path, output_path, engine=self._get_engine(), max_workers=2)
         self._worker.progress_updated.connect(self._on_diff_progress)
         self._worker.error_occurred.connect(self._on_error)
         self._worker.finished.connect(self._on_diff_finished)
         self._worker.start()
+
+    def _get_engine(self) -> str:
+        """Возвращает выбранный движок сравнения."""
+        if self.rb_diaphora.isChecked():
+            return "diaphora"
+        elif self.rb_both.isChecked():
+            return "both"
+        return "bindiff"
 
     def _cancel_comparison(self) -> None:
         if self._worker:
