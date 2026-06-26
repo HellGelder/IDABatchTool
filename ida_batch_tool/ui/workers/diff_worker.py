@@ -54,6 +54,80 @@ def _compute_hex_similarity(file1: Path, file2: Path) -> float:
     return round((overlap / total) * size_ratio, 4)
 
 
+def _find_original_binary(i64_path: Path) -> Optional[Path]:
+    """Находит исходный исполняемый файл по .i64 базе.
+    
+    Для uprngctl64.exe.i64:
+      - stem = 'uprngctl64.exe' (Path.stem снимает только .i64)
+      - сначала проверяем stem как есть — это сам оригин��льный файл
+      - если нет — пробуем по расширениям
+    """
+    stem = i64_path.stem  # uprngctl64.exe.uprngctl64.exe -> uprngctl64.exe
+    parent = i64_path.parent
+    # 1) Сначала сам stem — он уже содержит расширение, если исходник был .exe
+    candidate = parent / stem
+    if candidate.is_file():
+        return candidate
+    # 2) Если .i64 создан из файла без расширения в имени — пробуем расширения
+    for ext in ('.exe', '.dll', '.bin', '.sys', '.elf', '.so', '.o', '.out', '.wasm', '.pyc', '.class', '.jar', '.apk', '.dex'):
+        candidate = parent / f"{stem}{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _compute_hexdump_diff(orig1: Path, orig2: Path) -> list:
+    """Сравнивает два исполняемых файла поблочно (16 байт) как hexdump, пропуская идентичное."""
+    try:
+        data1 = orig1.read_bytes()
+        data2 = orig2.read_bytes()
+    except (OSError, PermissionError):
+        return []
+    if not data1 or not data2:
+        return []
+
+    def _format_hex_block(data: bytes, addr: int) -> str:
+        hex_part = ' '.join(f'{b:02x}' for b in data)
+        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data)
+        return f'{addr:08x}  {hex_part:<48}  |{ascii_part}|'
+
+    block_size = 16
+    lines1 = []
+    for offset in range(0, len(data1), block_size):
+        chunk = data1[offset:offset + block_size]
+        lines1.append(_format_hex_block(chunk, offset))
+
+    lines2 = []
+    for offset in range(0, len(data2), block_size):
+        chunk = data2[offset:offset + block_size]
+        lines2.append(_format_hex_block(chunk, offset))
+
+    import difflib
+    matcher = difflib.SequenceMatcher(None, lines1, lines2)
+    hex_rows = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            if hex_rows and hex_rows[-1].get("type") != "skip":
+                hex_rows.append({"type": "skip", "count": 0})
+            if hex_rows and hex_rows[-1]["type"] == "skip":
+                hex_rows[-1]["count"] += (i2 - i1)
+            else:
+                hex_rows.append({"type": "skip", "count": i2 - i1})
+        elif tag == "delete":
+            for k in range(i1, i2):
+                hex_rows.append({"type": "removed", "left": lines1[k], "right": ""})
+        elif tag == "insert":
+            for k in range(j1, j2):
+                hex_rows.append({"type": "added", "left": "", "right": lines2[k]})
+        elif tag == "replace":
+            for k in range(i1, i2):
+                hex_rows.append({"type": "removed", "left": lines1[k], "right": ""})
+            for k in range(j1, j2):
+                hex_rows.append({"type": "added", "left": "", "right": lines2[k]})
+
+    return hex_rows
+
+
 def _parse_diaphora_results(sqlite_path: Path) -> dict:
     """Читает результаты Diaphora из SQLite -> dict с matched_functions."""
     result = {
@@ -72,17 +146,36 @@ def _parse_diaphora_results(sqlite_path: Path) -> dict:
             for row in cur.fetchall():
                 r = dict(zip(col_names, row))
                 heuristic_name = (r.get("description") or "diaphora_auto").strip()
+
+                # Безопасный парсинг hex-адреса (Diaphora хранит без префикса 0x)
+                def _parse_addr(val: str) -> str:
+                    if not val:
+                        return "?"
+                    try:
+                        return f"0x{int(val, 16):X}"
+                    except (ValueError, TypeError):
+                        return f"0x{val}"
+
+                # Безопасный парсинг числа
+                def _safe_int(val) -> int:
+                    if val is None:
+                        return 0
+                    try:
+                        return int(val)
+                    except (ValueError, TypeError):
+                        return 0
+
                 result["matched_functions"].append({
-                    "address1": f"0x{int(r['address']):X}" if r.get('address') else "?",
+                    "address1": _parse_addr(r.get("address")),
                     "name1": r.get("name", ""),
-                    "address2": f"0x{int(r['address2']):X}" if r.get('address2') else "?",
+                    "address2": _parse_addr(r.get("address2")),
                     "name2": r.get("name2", ""),
-                    "similarity": round(float(r.get("ratio", 0)), 4),
-                    "confidence": round(float(r.get("ratio", 0)), 4),
+                    "similarity": round(float(r.get("ratio", 0) or 0), 4),
+                    "confidence": round(float(r.get("ratio", 0) or 0), 4),
                     "algorithm_name": heuristic_name,
                     "match_type": r.get("type", "partial"),
-                    "nodes1": int(r.get("nodes1", 0)),
-                    "nodes2": int(r.get("nodes2", 0)),
+                    "nodes1": _safe_int(r.get("nodes1")),
+                    "nodes2": _safe_int(r.get("nodes2")),
                     "source": "diaphora",
                 })
                 result["diaphora_algorithm_distribution"][heuristic_name] = \
@@ -96,7 +189,7 @@ def _parse_diaphora_results(sqlite_path: Path) -> dict:
             cur.execute("SELECT type, address, name FROM unmatched")
             for row in cur.fetchall():
                 typ, addr, name = row[0], row[1], row[2]
-                entry = {"address": f"0x{int(addr):X}" if addr else "?", "name": name or ""}
+                entry = {"address": f"0x{int(addr, 16):X}" if addr else "?", "name": name or ""}
                 if typ == 1:
                     unmatched1.append(entry)
                 else:
@@ -216,6 +309,26 @@ class DiffWorker(QThread):
             self._enrich_diff_json(json_output, exported["primary"], exported["secondary"])
             self._add_hex_similarity(json_output, primary_i64, secondary_i64)
 
+            # === HEXDUMP DIFF оригинальных исполняемых файлов ===
+            orig1 = _find_original_binary(primary_i64)
+            orig2 = _find_original_binary(secondary_i64)
+            if orig1 and orig2:
+                try:
+                    with open(json_output, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    hex_rows = _compute_hexdump_diff(orig1, orig2)
+                    data["global_hex_diff"] = [{
+                        "name1": orig1.name,
+                        "address1": "0x0",
+                        "name2": orig2.name,
+                        "address2": "0x0",
+                        "hex_rows": hex_rows,
+                    }]
+                    with open(json_output, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                except (OSError, json.JSONDecodeError):
+                    pass
+
             # CFG-экспорт и запись путей SVG в .diff.json
             pr_cfg_idx, sc_cfg_idx = self._export_cfg_pair(primary_i64, secondary_i64, stem)
             if pr_cfg_idx or sc_cfg_idx:
@@ -233,6 +346,47 @@ class DiffWorker(QThread):
                         json.dump(data, f, indent=2, ensure_ascii=False)
                 except (OSError, json.JSONDecodeError):
                     pass
+
+            # === Вычисляем полный список несопоставленных функций из IDA-экспорта ===
+            try:
+                with open(json_output, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                # Собираем адреса сопоставленных функций (primary)
+                matched_addrs = set()
+                for mf in data.get("matched_functions", []):
+                    addr = mf.get("address1", "")
+                    if addr:
+                        matched_addrs.add(addr)
+
+                # Читаем primary-экспорт, находим реальные несопоставленные функции
+                unmatched_funcs = []
+                for pj_path in (exported.get("primary"), exported.get("secondary")):
+                    if pj_path and pj_path.is_file():
+                        try:
+                            with open(pj_path, "r", encoding="utf-8") as pf:
+                                pdata = json.load(pf)
+                            for func in pdata.get("functions", []):
+                                addr = func.get("start_ea", "")
+                                if addr and addr not in matched_addrs:
+                                    unmatched_funcs.append({
+                                        "address": addr,
+                                        "name": func.get("name", "<unnamed>")
+                                    })
+                        except (OSError, json.JSONDecodeError):
+                            pass
+                    break  # только primary, secondary через unmatched_functions2
+
+                if unmatched_funcs:
+                    data.setdefault("unmatched_functions1", unmatched_funcs)
+                total1 = data.get("total_functions1", 0)
+                matched_cnt = len(data.get("matched_functions", []))
+                data["total_unmatched"] = total1 - matched_cnt
+
+                with open(json_output, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+            except (OSError, json.JSONDecodeError):
+                pass
 
             for p in (primary_json, secondary_json):
                 try:
@@ -284,7 +438,7 @@ class DiffWorker(QThread):
             return False
 
     def _merge_diaphora_into_json(self, json_path: Path, diaphora_sqlite: Path, stem: str) -> None:
-        """Сливает результаты Diaphora в .diff.json."""
+        """Сливает результаты Diaphora в .diff.json с разделением по source."""
         if not json_path.is_file():
             return
         try:
@@ -293,21 +447,75 @@ class DiffWorker(QThread):
         except (OSError, json.JSONDecodeError):
             return
         dres = _parse_diaphora_results(diaphora_sqlite)
-        existing_addr = {(m.get("address1", ""), m.get("address2", ""))
-                         for m in data.get("matched_functions", [])}
+
+        # Уже существующие (от BinDiff) помечаем source="bindiff"
+        for m in data.get("matched_functions", []):
+            if "source" not in m:
+                m["source"] = "bindiff"
+
+        # Строим индекс существующих (addr1, addr2)
+        existing = {}
+        for m in data.get("matched_functions", []):
+            key = (m.get("address1", ""), m.get("address2", ""))
+            existing[key] = m
+
         new_matches = []
+        both_matches = []   # пары, которые уже были в BinDiff
         for m in dres.get("matched_functions", []):
             key = (m["address1"], m["address2"])
-            if key not in existing_addr:
+            if key in existing:
+                # Есть в обоих — ставим source="both", сохраняем оба similarity
+                existing[key]["source"] = "both"
+                existing[key]["bindiff_similarity"] = existing[key].get("similarity", 0.0)
+                existing[key]["diaphora_similarity"] = m.get("similarity", 0.0)
+                both_matches.append(m)
+            else:
                 new_matches.append(m)
-                existing_addr.add(key)
-        # Добавляем новые совпадения
+                existing[key] = m
+
+        # Добавляем новые совпадения (только Diaphora)
         data["matched_functions"].extend(new_matches)
-        data["total_matched"] = len(data["matched_functions"])
-        # Обновляем метаданные
+
+        # Собираем matched_summary
+        bindiff_only = [m for m in data["matched_functions"] if m.get("source") == "bindiff"]
+        diaphora_only = [m for m in data["matched_functions"] if m.get("source") == "diaphora"]
+        both_src = [m for m in data["matched_functions"] if m.get("source") == "both"]
+
+        data["matched_summary"] = {
+            "total": len(data["matched_functions"]),
+            "bindiff_only": len(bindiff_only),
+            "diaphora_only": len(diaphora_only),
+            "both": len(both_src),
+        }
+        # Данные по источникам для шаблона
+        data["matched_bindiff_only"] = bindiff_only
+        data["matched_diaphora_only"] = diaphora_only
+        data["matched_both"] = both_src
+
+        # Метаданные
+        data["diaphora_matched_count"] = len(new_matches) + len(both_matches)
         data["engine"] = "bindiff+diaphora" if data.get("matched_functions") else "bindiff"
-        data["diaphora_matched_count"] = len(new_matches)
-        # Сливаем algorithm_distribution
+        # Пересчитываем total_matched с учётом обоих движков
+        data["total_matched"] = len(data["matched_functions"])
+
+        # Пробрасываем unmatched из Diaphora
+        if "unmatched_functions1" in dres:
+            data.setdefault("unmatched_functions1", [])
+            # Объединяем существующие (от BinDiff) с Diaphora
+            existing_un1 = {u.get("address", "") for u in data["unmatched_functions1"]}
+            for u in dres["unmatched_functions1"]:
+                if u.get("address", "") not in existing_un1:
+                    data["unmatched_functions1"].append(u)
+                    existing_un1.add(u.get("address", ""))
+        if "unmatched_functions2" in dres:
+            data.setdefault("unmatched_functions2", [])
+            existing_un2 = {u.get("address", "") for u in data["unmatched_functions2"]}
+            for u in dres["unmatched_functions2"]:
+                if u.get("address", "") not in existing_un2:
+                    data["unmatched_functions2"].append(u)
+                    existing_un2.add(u.get("address", ""))
+
+        # Распределение алгоритмов Diaphora
         ad = data.setdefault("algorithm_distribution", {})
         for algo_name, cnt in dres.get("diaphora_algorithm_distribution", {}).items():
             ad[algo_name] = ad.get(algo_name, 0) + cnt
@@ -723,6 +931,50 @@ class DiffWorker(QThread):
             {"mnemonic": mne, "count1": all_types1.get(mne, 0), "count2": all_types2.get(mne, 0), "diff": all_types2.get(mne, 0) - all_types1.get(mne, 0)}
             for mne in all_mnes
         ]
+
+        # Глобальный hex diff — только различающиеся блоки
+        global_hex_diff = []
+        for mf in diff_data.get("matched_functions", []):
+            s = float(mf.get("similarity", 0.0))
+            if s >= 1.0:
+                continue  # 100% — пропускаем
+            h1 = mf.get("hexdump1", "")
+            h2 = mf.get("hexdump2", "")
+            if not h1 or not h2:
+                continue
+            lines1 = h1.splitlines()
+            lines2 = h2.splitlines()
+            matcher = difflib.SequenceMatcher(None, lines1, lines2)
+            hex_rows = []
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if tag == "equal":
+                    # Пропускаем идентичные блоки — как в Linux hexdump
+                    if hex_rows and hex_rows[-1].get("type") != "skip":
+                        hex_rows.append({"type": "skip", "count": 0})
+                    if hex_rows and hex_rows[-1]["type"] == "skip":
+                        hex_rows[-1]["count"] += (i2 - i1)
+                    else:
+                        hex_rows.append({"type": "skip", "count": i2 - i1})
+                elif tag == "delete":
+                    for k in range(i1, i2):
+                        hex_rows.append({"type": "removed", "left": lines1[k], "right": ""})
+                elif tag == "insert":
+                    for k in range(j1, j2):
+                        hex_rows.append({"type": "added", "left": "", "right": lines2[k]})
+                elif tag == "replace":
+                    for k in range(i1, i2):
+                        hex_rows.append({"type": "removed", "left": lines1[k], "right": ""})
+                    for k in range(j1, j2):
+                        hex_rows.append({"type": "added", "left": "", "right": lines2[k]})
+            global_hex_diff.append({
+                "name1": mf.get("name1", ""),
+                "address1": mf.get("address1", ""),
+                "name2": mf.get("name2", ""),
+                "address2": mf.get("address2", ""),
+                "hex_rows": hex_rows,
+            })
+        diff_data["global_hex_diff"] = global_hex_diff
+
         with open(diff_json, "w", encoding="utf-8") as f:
             json.dump(diff_data, f, indent=2, ensure_ascii=False)
 

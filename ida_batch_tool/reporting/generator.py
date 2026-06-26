@@ -436,6 +436,10 @@ class DiffReportGenerator(BaseReportGenerator):
                             internal_set: Optional[Set[str]] = None) -> Dict[str, Any]:
         """Дополняет данные для шаблона, сохраняя все поля из JSON."""
         data.setdefault("matched_functions", [])
+        data.setdefault("matched_bindiff_only", [])
+        data.setdefault("matched_diaphora_only", [])
+        data.setdefault("matched_both", [])
+        data.setdefault("matched_summary", {})
         data.setdefault("file1", {})
         data.setdefault("file2", {})
         data.setdefault("total_functions1", 0)
@@ -444,10 +448,18 @@ class DiffReportGenerator(BaseReportGenerator):
         data.setdefault("similarity_distribution", {})
         data.setdefault("algorithm_distribution", {})
         data.setdefault("renamed_functions", [])
+        data.setdefault("engine", "bindiff")
+        data.setdefault("diaphora_matched_count", 0)
+        data.setdefault("blended_similarity", 0.0)
+        data.setdefault("hex_similarity", 0.0)
+        data.setdefault("similarity_source", "")
+        data.setdefault("unmatched_functions1", [])
+        data.setdefault("unmatched_functions2", [])
+        data.setdefault("total_unmatched", 0)
         data["total_matched"] = len(data["matched_functions"])
         data["has_error"] = bool(data.get("error"))
         return data
-    
+
     def generate_diff_index(self, reports_dir: Path, json_files: List[Path],
                             left_dir: Path, right_dir: Path,
                             generation_time: str = "",
@@ -471,9 +483,6 @@ class DiffReportGenerator(BaseReportGenerator):
             total1 = data.get("total_functions1", 0)
             hash1 = data.get("file1", {}).get("hash", "")
             hash2 = data.get("file2", {}).get("hash", "")
-            hex_sim = float(data.get("hex_similarity", 0.0))
-            blended = float(data.get("blended_similarity", 0.0))
-            similarity_source = data.get("similarity_source", "")
             pairs.append({
                 "stem": stem,
                 "similarity": sim,
@@ -483,13 +492,10 @@ class DiffReportGenerator(BaseReportGenerator):
                 "report_filename": html_filename,
                 "hash1": hash1,
                 "hash2": hash2,
-                "hex_similarity": hex_sim,
-                "blended_similarity": blended,
-                "similarity_source": similarity_source,
                 "engine": data.get("engine", "bindiff"),
                 "diaphora_matched_count": data.get("diaphora_matched_count", 0),
             })
-            total_similarity += blended if blended > 0 else sim
+            total_similarity += sim
             total_confidence += conf
             count += 1
 
