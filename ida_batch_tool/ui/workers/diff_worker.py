@@ -31,29 +31,6 @@ def _safe_filename(key: str) -> str:
     return key.replace("\\", "_").replace("/", "_").replace(" ", "_").replace(".", "_")
 
 
-def _compute_hex_similarity(file1: Path, file2: Path) -> float:
-    try:
-        data1 = file1.read_bytes()
-        data2 = file2.read_bytes()
-    except (OSError, PermissionError):
-        return 0.0
-    if not data1 or not data2:
-        return 0.0
-    block_size = 4096
-    blocks1 = set()
-    for offset in range(0, len(data1), block_size):
-        blocks1.add(hashlib.sha256(data1[offset:offset + block_size]).hexdigest())
-    blocks2 = set()
-    for offset in range(0, len(data2), block_size):
-        blocks2.add(hashlib.sha256(data2[offset:offset + block_size]).hexdigest())
-    if not blocks1 or not blocks2:
-        return 0.0
-    overlap = len(blocks1 & blocks2)
-    total = len(blocks1 | blocks2)
-    size_ratio = min(len(data1), len(data2)) / max(len(data1), len(data2), 1)
-    return round((overlap / total) * size_ratio, 4)
-
-
 def _find_original_binary(i64_path: Path) -> Optional[Path]:
     """Находит исходный исполняемый файл по .i64 базе.
     
@@ -76,15 +53,16 @@ def _find_original_binary(i64_path: Path) -> Optional[Path]:
     return None
 
 
-def _compute_hexdump_diff(orig1: Path, orig2: Path) -> list:
-    """Сравнивает два исполняемых файла поблочно (16 байт) как hexdump, пропуская идентичное."""
+def _compute_hexdump_diff(orig1: Path, orig2: Path) -> Tuple[list, float]:
+    """Сравнивает два исполняемых файла поблочно (16 байт).
+    Возвращает (hex_rows, hexdump_similarity), где similarity = совпавшие байты / макс. длина (0..1) с учётом alignment."""
     try:
         data1 = orig1.read_bytes()
         data2 = orig2.read_bytes()
     except (OSError, PermissionError):
-        return []
+        return [], 0.0
     if not data1 or not data2:
-        return []
+        return [], 0.0
 
     def _format_hex_block(data: bytes, addr: int) -> str:
         hex_part = ' '.join(f'{b:02x}' for b in data)
@@ -92,40 +70,33 @@ def _compute_hexdump_diff(orig1: Path, orig2: Path) -> list:
         return f'{addr:08x}  {hex_part:<48}  |{ascii_part}|'
 
     block_size = 16
-    lines1 = []
-    for offset in range(0, len(data1), block_size):
-        chunk = data1[offset:offset + block_size]
-        lines1.append(_format_hex_block(chunk, offset))
-
-    lines2 = []
-    for offset in range(0, len(data2), block_size):
-        chunk = data2[offset:offset + block_size]
-        lines2.append(_format_hex_block(chunk, offset))
-
-    import difflib
-    matcher = difflib.SequenceMatcher(None, lines1, lines2)
+    max_len = max(len(data1), len(data2))
     hex_rows = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            if hex_rows and hex_rows[-1].get("type") != "skip":
-                hex_rows.append({"type": "skip", "count": 0})
-            if hex_rows and hex_rows[-1]["type"] == "skip":
-                hex_rows[-1]["count"] += (i2 - i1)
-            else:
-                hex_rows.append({"type": "skip", "count": i2 - i1})
-        elif tag == "delete":
-            for k in range(i1, i2):
-                hex_rows.append({"type": "removed", "left": lines1[k], "right": ""})
-        elif tag == "insert":
-            for k in range(j1, j2):
-                hex_rows.append({"type": "added", "left": "", "right": lines2[k]})
-        elif tag == "replace":
-            for k in range(i1, i2):
-                hex_rows.append({"type": "removed", "left": lines1[k], "right": ""})
-            for k in range(j1, j2):
-                hex_rows.append({"type": "added", "left": "", "right": lines2[k]})
+    matching_bytes = 0
+    total_bytes = 0
+    offset = 0
+    while offset < max_len:
+        chunk1 = data1[offset:offset + block_size]
+        chunk2 = data2[offset:offset + block_size]
+        line1 = _format_hex_block(chunk1, offset) if chunk1 else ''
+        line2 = _format_hex_block(chunk2, offset) if chunk2 else ''
+        if chunk1 == chunk2:
+            hex_rows.append({"type": "equal", "left": line1, "right": line2})
+            matching_bytes += min(len(chunk1), len(chunk2))
+        else:
+            # Побайтовое сравнение внутри блока
+            for b_idx in range(max(len(chunk1), len(chunk2))):
+                b1 = chunk1[b_idx] if b_idx < len(chunk1) else 0
+                b2 = chunk2[b_idx] if b_idx < len(chunk2) else 0
+                if b1 == b2:
+                    matching_bytes += 1
+            hex_rows.append({"type": "removed", "left": line1, "right": line2})
+        total_bytes += max(len(chunk1), len(chunk2))
+        offset += block_size
 
-    return hex_rows
+    hex_rows.append({"type": "_meta", "total_lines": len(hex_rows) - 1})
+    similarity = round(matching_bytes / total_bytes, 6) if total_bytes > 0 else 0.0
+    return hex_rows, similarity
 
 
 def _parse_diaphora_results(sqlite_path: Path) -> dict:
@@ -307,7 +278,6 @@ class DiffWorker(QThread):
             secondary_json = self.output_dir / f"{stem}_secondary.export.json"
             exported = self._export_json(primary_i64, primary_json, secondary_i64, secondary_json)
             self._enrich_diff_json(json_output, exported["primary"], exported["secondary"])
-            self._add_hex_similarity(json_output, primary_i64, secondary_i64)
 
             # === HEXDUMP DIFF оригинальных исполняемых файлов ===
             orig1 = _find_original_binary(primary_i64)
@@ -316,14 +286,19 @@ class DiffWorker(QThread):
                 try:
                     with open(json_output, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    hex_rows = _compute_hexdump_diff(orig1, orig2)
+                    hex_rows, hex_sim = _compute_hexdump_diff(orig1, orig2)
                     data["global_hex_diff"] = [{
                         "name1": orig1.name,
-                        "address1": "0x0",
+                        "path1": str(orig1),
                         "name2": orig2.name,
-                        "address2": "0x0",
+                        "path2": str(orig2),
                         "hex_rows": hex_rows,
+                        "hexdump_similarity": hex_sim,
                     }]
+                    data["hexdump_similarity"] = hex_sim
+                    # Сохраняем реальные пути к бинарникам
+                    data["real_primary"] = str(orig1)
+                    data["real_secondary"] = str(orig2)
                     with open(json_output, "w", encoding="utf-8") as f:
                         json.dump(data, f, indent=2, ensure_ascii=False)
                 except (OSError, json.JSONDecodeError):
@@ -367,8 +342,16 @@ class DiffWorker(QThread):
                             with open(pj_path, "r", encoding="utf-8") as pf:
                                 pdata = json.load(pf)
                             for func in pdata.get("functions", []):
-                                addr = func.get("start_ea", "")
-                                if addr and addr not in matched_addrs:
+                                raw_addr = func.get("start_ea", "")
+                                if not raw_addr:
+                                    continue
+                                # start_ea может быть decimal или hex строкой — нормализуем
+                                try:
+                                    addr_int = int(raw_addr, 16) if raw_addr.startswith("0x") else int(raw_addr)
+                                    addr_norm = f"0x{addr_int:X}"
+                                except (ValueError, TypeError):
+                                    addr_norm = raw_addr
+                                if addr_norm not in matched_addrs:
                                     unmatched_funcs.append({
                                         "address": addr,
                                         "name": func.get("name", "<unnamed>")
@@ -488,20 +471,16 @@ class DiffWorker(QThread):
             "both": len(both_src),
         }
         # Данные по источникам для шаблона
-        data["matched_bindiff_only"] = bindiff_only
         data["matched_diaphora_only"] = diaphora_only
-        data["matched_both"] = both_src
 
         # Метаданные
         data["diaphora_matched_count"] = len(new_matches) + len(both_matches)
         data["engine"] = "bindiff+diaphora" if data.get("matched_functions") else "bindiff"
-        # Пересчитываем total_matched с учётом обоих движков
         data["total_matched"] = len(data["matched_functions"])
 
         # Пробрасываем unmatched из Diaphora
         if "unmatched_functions1" in dres:
             data.setdefault("unmatched_functions1", [])
-            # Объединяем существующие (от BinDiff) с Diaphora
             existing_un1 = {u.get("address", "") for u in data["unmatched_functions1"]}
             for u in dres["unmatched_functions1"]:
                 if u.get("address", "") not in existing_un1:
@@ -728,32 +707,20 @@ class DiffWorker(QThread):
                 result["similarity_distribution"] = sim_buckets
                 # algorithm distribution
                 try:
-                    ad = {}
+                    ad_bd = {}
                     cur.execute("""
                         SELECT fa.name, COUNT(*) FROM function f
                         LEFT JOIN functionalgorithm fa ON f.algorithm = fa.id
                         GROUP BY f.algorithm ORDER BY COUNT(*) DESC""")
                     for r in cur.fetchall():
-                        ad[r[0] or f"#{r[0]}"] = r[1]
-                    result["algorithm_distribution"] = ad
+                        ad_bd[r[0] or f"#{r[0]}"] = r[1]
+                    result["algorithm_distribution"] = ad_bd
                 except sqlite3.Error:
                     pass
-                # renamed
-                result["renamed_functions"] = [mf for mf in result["matched_functions"]
-                                               if mf.get("name1") and mf.get("name2") and mf["name1"] != mf["name2"]]
-                # struct stats
-                bb = [mf.get("basicblocks", 0) for mf in result["matched_functions"]]
-                insn = [mf.get("instructions", 0) for mf in result["matched_functions"]]
-                if bb:
-                    result["function_size_stats"] = {
-                        "avg_basicblocks": round(sum(bb) / len(bb), 1),
-                        "min_basicblocks": min(bb), "max_basicblocks": max(bb),
-                        "avg_instructions": round(sum(insn) / len(insn), 1),
-                        "min_instructions": min(insn), "max_instructions": max(insn),
-                    }
-                result["total_matched_basicblocks"] = sum(bb)
-                result["total_matched_instructions"] = sum(insn)
-                result["total_matched_edges"] = sum(mf.get("edges", 0) for mf in result["matched_functions"])
+                # struct stats — всё мёртвое, убираем присвоения кроме basicblocks/instructions для matched_functions
+                for mf in result["matched_functions"]:
+                    mf["basicblocks"] = mf.get("basicblocks", 0)
+                    mf["instructions"] = mf.get("instructions", 0)
             finally:
                 conn.close()
         except Exception as e:
@@ -932,76 +899,5 @@ class DiffWorker(QThread):
             for mne in all_mnes
         ]
 
-        # Глобальный hex diff — только различающиеся блоки
-        global_hex_diff = []
-        for mf in diff_data.get("matched_functions", []):
-            s = float(mf.get("similarity", 0.0))
-            if s >= 1.0:
-                continue  # 100% — пропускаем
-            h1 = mf.get("hexdump1", "")
-            h2 = mf.get("hexdump2", "")
-            if not h1 or not h2:
-                continue
-            lines1 = h1.splitlines()
-            lines2 = h2.splitlines()
-            matcher = difflib.SequenceMatcher(None, lines1, lines2)
-            hex_rows = []
-            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                if tag == "equal":
-                    # Пропускаем идентичные блоки — как в Linux hexdump
-                    if hex_rows and hex_rows[-1].get("type") != "skip":
-                        hex_rows.append({"type": "skip", "count": 0})
-                    if hex_rows and hex_rows[-1]["type"] == "skip":
-                        hex_rows[-1]["count"] += (i2 - i1)
-                    else:
-                        hex_rows.append({"type": "skip", "count": i2 - i1})
-                elif tag == "delete":
-                    for k in range(i1, i2):
-                        hex_rows.append({"type": "removed", "left": lines1[k], "right": ""})
-                elif tag == "insert":
-                    for k in range(j1, j2):
-                        hex_rows.append({"type": "added", "left": "", "right": lines2[k]})
-                elif tag == "replace":
-                    for k in range(i1, i2):
-                        hex_rows.append({"type": "removed", "left": lines1[k], "right": ""})
-                    for k in range(j1, j2):
-                        hex_rows.append({"type": "added", "left": "", "right": lines2[k]})
-            global_hex_diff.append({
-                "name1": mf.get("name1", ""),
-                "address1": mf.get("address1", ""),
-                "name2": mf.get("name2", ""),
-                "address2": mf.get("address2", ""),
-                "hex_rows": hex_rows,
-            })
-        diff_data["global_hex_diff"] = global_hex_diff
-
         with open(diff_json, "w", encoding="utf-8") as f:
             json.dump(diff_data, f, indent=2, ensure_ascii=False)
-
-    def _add_hex_similarity(self, json_output: Path, primary_i64: Path, secondary_i64: Path) -> None:
-        if not json_output.is_file():
-            return
-        try:
-            with open(json_output, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return
-        hex_sim = _compute_hex_similarity(primary_i64, secondary_i64)
-        data["hex_similarity"] = hex_sim
-        bs = float(data.get("similarity", 0.0))
-        zf = (data.get("total_functions1", 0) == 0 and data.get("total_functions2", 0) == 0)
-        tm = len(data.get("matched_functions", []))
-        if zf or tm == 0:
-            data["blended_similarity"] = hex_sim
-            data["similarity_source"] = "hexdump"
-        elif bs > 0:
-            data["blended_similarity"] = round((bs + hex_sim) / 2, 4)
-            data["similarity_source"] = "blended"
-        else:
-            data["blended_similarity"] = hex_sim
-            data["similarity_source"] = "hexdump"
-        try:
-            with open(json_output, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-        except OSError:
-            pass

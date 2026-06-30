@@ -95,12 +95,12 @@
     <div class="card">
         <ul class="grouped-list">
             <li class="grouped-row">
-                <span class="grouped-row-label">Первичный</span>
-                <span class="grouped-row-value" style="font-family:ui-monospace,'SF Mono','Consolas',monospace;">{{ primary }}</span>
+                <span class="grouped-row-label">Эталонный</span>
+                <span class="grouped-row-value" style="font-family:ui-monospace,'SF Mono','Consolas',monospace;">{{ real_primary if real_primary else primary }}</span>
             </li>
             <li class="grouped-row">
-                <span class="grouped-row-label">Вторичный</span>
-                <span class="grouped-row-value" style="font-family:ui-monospace,'SF Mono','Consolas',monospace;">{{ secondary }}</span>
+                <span class="grouped-row-label">Контрольный</span>
+                <span class="grouped-row-value" style="font-family:ui-monospace,'SF Mono','Consolas',monospace;">{{ real_secondary if real_secondary else secondary }}</span>
             </li>
         </ul>
         {% if error %}
@@ -108,8 +108,8 @@
         {% endif %}
     </div>
 
-    <!-- Общая схожесть -->
-    <h2>Общая схожесть</h2>
+    <!-- Общая оценка схожести BinDiff -->
+    <h2>Общая оценка схожести BinDiff</h2>
     <div class="card">
         <div class="flex-row">
             <div>
@@ -195,9 +195,9 @@
     <div class="card">
         <div class="flex-row">
             <div>
-                <h3>Первичный файл</h3>
+                <h3>Эталонный файл</h3>
                 <ul class="grouped-list">
-                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ file1.filename }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ real_primary.split('\\')[-1].split('/')[-1] if real_primary else file1.filename }}</span></li>
                     <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file1.hash }}</code></span></li>
                     <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions1 }}</span></li>
                     <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file1.basicblocks + file1.libbasicblocks }}</span></li>
@@ -206,9 +206,9 @@
                 </ul>
             </div>
             <div>
-                <h3>Вторичный файл</h3>
+                <h3>Контрольный файл</h3>
                 <ul class="grouped-list">
-                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ file2.filename }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ real_secondary.split('\\')[-1].split('/')[-1] if real_secondary else file2.filename }}</span></li>
                     <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file2.hash }}</code></span></li>
                     <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions2 }}</span></li>
                     <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file2.basicblocks + file2.libbasicblocks }}</span></li>
@@ -408,8 +408,8 @@
             <thead>
                 <tr>
                     <th>Мнемоника</th>
-                    <th title="Первичный файл">Primary</th>
-                    <th title="Вторичный файл">Secondary</th>
+                    <th title="Эталонный файл">Primary</th>
+                    <th title="Контрольный файл">Secondary</th>
                     <th title="Разница (Secondary − Primary)">Δ</th>
                 </tr>
             </thead>
@@ -436,12 +436,12 @@
     {% endif %}
     {% endif %}
 
-    <!-- ▸ Пофункциональный разбор: side-by-side псевдокод + hexdump + CFG + типы инструкций -->
+    <!-- ▸ Пофункциональный разбор -->
     <h2>Пофункциональный разбор</h2>
     {% if matched_functions %}
     {% set non_100 = matched_functions|selectattr('similarity', 'lt', 1.0)|list %}
     {% if non_100|length == 0 %}
-    <div class="card"><p class="empty-state">Все функции идентичны (100% схожесть).</p></div>
+    <div class="card"><p class="empty-state">В результате анализа сравнения функций из перечня совпадающих различий не найдено, функции идентичны.</p></div>
     {% else %}
     <input type="text" id="funcSearch" class="search-field" placeholder="Поиск по имени функции…" style="margin-bottom:8px;">
     <div id="funcList">
@@ -485,13 +485,13 @@
             <div class="pseudo-single">
                 {% if f.pseudocode1 and f.pseudocode1 != "" %}
                 <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Первичный ({{ f.address1 }})</p>
+                    <p class="meta-text" style="margin-bottom:4px;">Эталонный ({{ f.address1 }})</p>
                     <div class="code-block">{{ f.pseudocode1 }}</div>
                 </div>
                 {% endif %}
                 {% if f.pseudocode2 and f.pseudocode2 != "" %}
                 <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Вторичный ({{ f.address2 }})</p>
+                    <p class="meta-text" style="margin-bottom:4px;">Контрольный ({{ f.address2 }})</p>
                     <div class="code-block">{{ f.pseudocode2 }}</div>
                 </div>
                 {% endif %}
@@ -502,11 +502,11 @@
             <h4>Сравнение Hex‑дампа</h4>
             <div class="hex-sbs">
                 <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Первичный ({{ f.address1 }})</p>
+                    <p class="meta-text" style="margin-bottom:4px;">Эталонный ({{ f.address1 }})</p>
                     <div class="code-block">{{ f.hexdump1 if f.hexdump1 else '—' }}</div>
                 </div>
                 <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Вторичный ({{ f.address2 }})</p>
+                    <p class="meta-text" style="margin-bottom:4px;">Контрольный ({{ f.address2 }})</p>
                     <div class="code-block">{{ f.hexdump2 if f.hexdump2 else '—' }}</div>
                 </div>
             </div>
@@ -517,7 +517,7 @@
             <h4>Граф потока управления (CFG)</h4>
             <div class="cfg-sbs">
                 <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Первичный ({{ f.address1 }})</p>
+                    <p class="meta-text" style="margin-bottom:4px;">Эталонный ({{ f.address1 }})</p>
                     {% if f.cfg_svg1 %}
                     <img src="{{ f.cfg_svg1 }}" alt="CFG {{ f.name1 }}" style="width:100%; height:auto; border:1px solid var(--separator); border-radius:var(--radius-sm);">
                     {% else %}
@@ -525,7 +525,7 @@
                     {% endif %}
                 </div>
                 <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Вторичный ({{ f.address2 }})</p>
+                    <p class="meta-text" style="margin-bottom:4px;">Контрольный ({{ f.address2 }})</p>
                     {% if f.cfg_svg2 %}
                     <img src="{{ f.cfg_svg2 }}" alt="CFG {{ f.name2 }}" style="width:100%; height:auto; border:1px solid var(--separator); border-radius:var(--radius-sm);">
                     {% else %}
@@ -584,58 +584,59 @@
     {% endif %}
     {% endif %}
 
-    <!-- ▸ Глобальное сравнение hex-дампов (только расхождения) -->
+<!-- ▸ Глобальное сравнение hex-дампов -->
     <h2>Сравнение hex-дампов</h2>
     <div class="card">
-        {% if not global_hex_diff or global_hex_diff|length == 0 %}
-        <p class="empty-state">Сравнение hex-дампов не выполнено (нет данных).</p>
-        {% else %}
-            {% set hdns = namespace(has_any=false) %}
-            {% for hd in global_hex_diff %}
-                {% if hd.hex_rows and hd.hex_rows|selectattr('type', 'ne', 'skip')|list|length > 0 %}
-                    {% set hdns.has_any = true %}
-                {% endif %}
+	        {% if not global_hex_diff or global_hex_diff|length == 0 or not global_hex_diff[0].hex_rows %}
+	        <p class="empty-state">Сравнение hex-дампов не выполнено (нет данных).</p>
+{% else %}
+            {% set hd = global_hex_diff[0] %}
+            {% set hdrows = hd.hex_rows %}
+            {% set meta = hdrows[-1] if hdrows and hdrows[-1].type == "_meta" else none %}
+            {% set total = meta.total_lines if meta else '?' %}
+            {% set has_diff = namespace(found=false) %}
+            {% for row in hdrows %}
+                {% if row.type == "removed" and row.left != row.right %}{% set has_diff.found = true %}{% endif %}
             {% endfor %}
-            {% if not hdns.has_any %}
-            <p class="empty-state">Дампы целиком идентичны.</p>
-            {% else %}
-            <div style="padding:0;">
-                {% for hd in global_hex_diff %}
-                {% if hd.hex_rows and hd.hex_rows|selectattr('type', 'ne', 'skip')|list|length > 0 %}
-                <div class="accordion" style="padding:0;">
-                    <div class="accordion-header" style="padding:8px 16px; border-bottom:1px solid var(--separator);" onclick="this.closest('.accordion').classList.toggle('open')">
-                        <span style="font-family:ui-monospace;font-size:13px;">
-                            {{ hd.name1 }} <code>{{ hd.address1 }}</code> ↔ {{ hd.name2 }} <code>{{ hd.address2 }}</code>
-                        </span>
-                        <span class="accordion-chevron">›</span>
-                    </div>
-                    <div class="accordion-body" style="padding:8px 16px;">
-                        <div class="diff-sbs">
-                            {% for row in hd.hex_rows %}
-                                {% if row.type == "skip" %}
-                                <div class="diff-cell diff-empty" style="text-align:center; color:var(--text-tertiary); font-style:italic; grid-column:1/-1;">
-                                    … {{ row.count }} идентичных строк пропущено …
-                                </div>
-                                {% elif row.type == "removed" %}
-                                <div class="diff-cell diff-removed">{{ row.left if row.left else ' ' }}</div>
-                                <div class="diff-cell diff-empty"> </div>
-                                {% elif row.type == "added" %}
-                                <div class="diff-cell diff-empty"> </div>
-                                <div class="diff-cell diff-added">{{ row.right if row.right else ' ' }}</div>
-                                {% else %}
-                                <div class="diff-cell diff-{{ row.type }}">{{ row.left if row.left else ' ' }}</div>
-                                <div class="diff-cell diff-{{ row.type }}">{{ row.right if row.right else ' ' }}</div>
-                                {% endif %}
-                            {% endfor %}
-                        </div>
-                    </div>
-                </div>
-                {% endif %}
+            {% set hd_sim = hd.hexdump_similarity if hd.hexdump_similarity is defined else 0.0 %}
+            <p class="meta-text" style="margin-bottom:4px;">
+                Схожесть hex-дампов: <strong>{{ "%.2f"|format(hd_sim * 100) }}%</strong>
+                {% if hd_sim >= 1.0 %}<span class="badge badge--success" style="font-size:10px;">идентичны</span>{% endif %}
+            </p>
+            <p class="meta-text" style="margin-bottom:8px;">
+                Эталонный файл: <code>{{ hd.name1 }}</code><br>
+                Контрольный файл: <code>{{ hd.name2 }}</code>
+            </p>
+            <div class="diff-sbs" style="max-height:600px; overflow-y:auto;">
+                <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Эталонный файл</div>
+                <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Контрольный файл</div>
+                {% if not has_diff.found %}
+                {% set eq_rows = hdrows|selectattr('type', 'ne', '_meta')|list %}
+                {% for line in eq_rows[:4] %}
+                <div class="diff-cell diff-equal">{{ line.left if line.left else '&nbsp;' }}</div>
+                <div class="diff-cell diff-equal">{{ line.right if line.right else '&nbsp;' }}</div>
                 {% endfor %}
+                <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… (всего {{ total }} строк) …</div>
+                {% for line in eq_rows[-4:] %}
+                <div class="diff-cell diff-equal">{{ line.left if line.left else '&nbsp;' }}</div>
+                <div class="diff-cell diff-equal">{{ line.right if line.right else '&nbsp;' }}</div>
+                {% endfor %}
+                {% else %}
+                {% for row in hdrows %}
+                    {% if row.type != "_meta" %}
+                    {% if row.type == "equal" %}
+                    <div class="diff-cell diff-equal">{{ row.left if row.left else '&nbsp;' }}</div>
+                    <div class="diff-cell diff-equal">{{ row.right if row.right else '&nbsp;' }}</div>
+                    {% elif row.type == "removed" %}
+                    <div class="diff-cell diff-removed">{{ row.left if row.left else '&nbsp;' }}</div>
+                    <div class="diff-cell diff-added">{{ row.right if row.right else '&nbsp;' }}</div>
+                    {% endif %}
+                    {% endif %}
+                {% endfor %}
+                {% endif %}
             </div>
-            {% endif %}
-        {% endif %}
-    </div>
+{% endif %}
+	    </div>
 
     <script>
         /* live search for post-functional analysis */

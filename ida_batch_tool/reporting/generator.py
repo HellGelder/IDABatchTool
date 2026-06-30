@@ -436,28 +436,18 @@ class DiffReportGenerator(BaseReportGenerator):
                             internal_set: Optional[Set[str]] = None) -> Dict[str, Any]:
         """Дополняет данные для шаблона, сохраняя все поля из JSON."""
         data.setdefault("matched_functions", [])
-        data.setdefault("matched_bindiff_only", [])
         data.setdefault("matched_diaphora_only", [])
-        data.setdefault("matched_both", [])
         data.setdefault("matched_summary", {})
         data.setdefault("file1", {})
         data.setdefault("file2", {})
         data.setdefault("total_functions1", 0)
         data.setdefault("total_functions2", 0)
-        data.setdefault("function_size_stats", {})
-        data.setdefault("similarity_distribution", {})
-        data.setdefault("algorithm_distribution", {})
-        data.setdefault("renamed_functions", [])
         data.setdefault("engine", "bindiff")
         data.setdefault("diaphora_matched_count", 0)
-        data.setdefault("blended_similarity", 0.0)
-        data.setdefault("hex_similarity", 0.0)
-        data.setdefault("similarity_source", "")
         data.setdefault("unmatched_functions1", [])
         data.setdefault("unmatched_functions2", [])
         data.setdefault("total_unmatched", 0)
         data["total_matched"] = len(data["matched_functions"])
-        data["has_error"] = bool(data.get("error"))
         return data
 
     def generate_diff_index(self, reports_dir: Path, json_files: List[Path],
@@ -483,9 +473,21 @@ class DiffReportGenerator(BaseReportGenerator):
             total1 = data.get("total_functions1", 0)
             hash1 = data.get("file1", {}).get("hash", "")
             hash2 = data.get("file2", {}).get("hash", "")
+            real_prim = data.get("real_primary", "")
+            real_sec = data.get("real_secondary", "")
+            # Имя реального исполняемого файла (без .i64)
+            if real_prim:
+                real_name = Path(real_prim).name
+            else:
+                real_name = stem.replace("_i64", "")
+            hexdump_sim = float(data.get("hexdump_similarity", 0.0))
+            # Если hexdump 100% — используем его как основную схожесть
+            display_sim = hexdump_sim if hexdump_sim >= 1.0 else sim
             pairs.append({
-                "stem": stem,
+                "stem": real_name,
                 "similarity": sim,
+                "display_similarity": display_sim,
+                "hexdump_similarity": hexdump_sim,
                 "confidence": conf,
                 "matched_count": matched,
                 "total_funcs1": total1,
@@ -495,7 +497,7 @@ class DiffReportGenerator(BaseReportGenerator):
                 "engine": data.get("engine", "bindiff"),
                 "diaphora_matched_count": data.get("diaphora_matched_count", 0),
             })
-            total_similarity += sim
+            total_similarity += display_sim
             total_confidence += conf
             count += 1
 
