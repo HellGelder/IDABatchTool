@@ -1,4 +1,5 @@
-"""Загрузка и сохранение конфигурации из config.yaml."""
+"""Загрузка и сохранение конфигурации из config.yaml.
+Поиск IDA и BinDiff в системе (только Windows)."""
 from __future__ import annotations
 
 import os
@@ -14,9 +15,8 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
-# Единое имя исполняемого файла IDA 9.0+
-_IDA_EXECUTABLE_NAME = "idat"
-_BINDIFF_EXECUTABLE_NAME = "bindiff"
+_IDA_EXECUTABLE_NAME = "idat.exe"
+_BINDIFF_EXECUTABLE_NAME = "bindiff.exe"
 
 
 def _default_config() -> Dict[str, Any]:
@@ -41,15 +41,15 @@ def _merge_with_defaults(user_cfg: Dict[str, Any]) -> Dict[str, Any]:
         if key not in user_cfg:
             user_cfg[key] = value
         elif isinstance(value, dict):
-            # рекурсивно объединяем подсловари
             for subkey, subval in value.items():
                 if subkey not in user_cfg[key]:
                     user_cfg[key][subkey] = subval
     return user_cfg
 
+
 def get_sf_db_path() -> str:
-    """Возвращает путь к папке для хранения БД системных функций."""
     return load_config().get("sf_db_path", "databases")
+
 
 def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if config_path is None:
@@ -69,109 +69,6 @@ def save_config(config_dict: Dict[str, Any], config_path: Optional[Path] = None)
         yaml.safe_dump(config_dict, f, default_flow_style=False, allow_unicode=True)
 
 
-def _contains_path_traversal(name: str) -> bool:
-    """Проверяет, содержит ли имя переходы по каталогам (../ или ..\\)."""
-    return bool(re.search(r'(?:(^|[/\\])\.\.(?:[/\\]|$))', name))
-
-
-def _find_in_path(executable: str) -> Optional[Path]:
-    """Ищет исполняемый файл в системном PATH (для Windows добавляет .exe при необходимости)."""
-    if sys.platform == "win32" and not executable.endswith(".exe"):
-        exe_path = shutil.which(executable + ".exe")
-        if exe_path:
-            return Path(exe_path)
-    exe_path = shutil.which(executable)
-    return Path(exe_path) if exe_path else None
-
-
-def _find_ida_manually(name: str) -> Optional[Path]:
-    """Поиск IDA 9.0+ в типичных директориях установки."""
-    # Защита от path traversal: при ручном поиске используем только простое имя файла
-    if _contains_path_traversal(name) or os.sep in name or '/' in name:
-        return None
-
-    possible_dirs = []
-
-    if sys.platform == "win32":
-        program_files = Path("C:/Program Files")
-        if program_files.exists():
-            for d in program_files.iterdir():
-                if d.is_dir() and d.name.startswith("IDA Professional 9."):
-                    possible_dirs.append(d)
-    elif sys.platform == "linux":
-        possible_dirs = [
-            Path.home() / "ida-pro-9.0",
-            Path.home() / "ida",
-            Path("/opt/ida-pro-9.0"),
-            Path("/opt/ida"),
-        ]
-    elif sys.platform == "darwin":
-        applications = Path("/Applications")
-        if applications.exists():
-            for d in applications.iterdir():
-                if d.is_dir() and d.name.startswith("IDA Professional 9."):
-                    possible_dirs.append(d / "Contents/MacOS")
-    else:
-        return None
-
-    for base in possible_dirs:
-        if not base.exists():
-            continue
-        # Проверяем, что финальный путь остаётся внутри base
-        exe = (base / name).resolve()
-        try:
-            exe.relative_to(base.resolve())
-        except ValueError:
-            continue
-        if exe.is_file():
-            return exe
-        if sys.platform == "win32":
-            exe_win = exe.with_suffix(".exe")
-            try:
-                exe_win.relative_to(base.resolve())
-            except ValueError:
-                continue
-            if exe_win.is_file():
-                return exe_win
-    return None
-
-
-def get_ida_executable() -> str:
-    """
-    Возвращает полный путь к idat (IDA 9.0+).
-    Порядок поиска:
-    1. Значение из config.yaml.
-    2. Поиск в системном PATH (idat или idat.exe).
-    3. Поиск в типичных папках установки.
-    Если ничего не найдено, возвращает значение из конфига.
-    """
-    cfg = load_config()
-    name = cfg.get("ida", {}).get("executable", _IDA_EXECUTABLE_NAME)
-
-    # 1. Полный путь из конфига?
-    if os.path.isabs(name):
-        p = Path(name)
-        if p.is_file():
-            return str(p)
-        return name  # не файл, но возвращаем как есть
-
-    # Защита от path traversal в относительном имени (для поиска)
-    if _contains_path_traversal(name):
-        return name
-
-    # 2. Поиск в PATH
-    found = _find_in_path(name)
-    if found:
-        return str(found)
-
-    # 3. Типичные папки установки
-    found_man = _find_ida_manually(name)
-    if found_man:
-        return str(found_man)
-
-    return name
-
-
 def get_max_ida() -> int:
     return load_config().get("max_ida", 4)
 
@@ -180,34 +77,235 @@ def get_default_inputdir() -> str:
     return load_config().get("default_inputdir", ".")
 
 
+# ──────────────────────────────────────────────
+#  Поиск исполняемых файлов (только Windows)
+# ──────────────────────────────────────────────
+
+def _read_registry(key_path: str, value_name: str) -> Optional[str]:
+    """Читает строковое значение из реестра Windows (HKLM или HKCU)."""
+    try:
+        import winreg
+        for hive, hive_name in [(winreg.HKEY_LOCAL_MACHINE, "HKLM"),
+                                 (winreg.HKEY_CURRENT_USER, "HKCU")]:
+            try:
+                with winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                    value, _ = winreg.QueryValueEx(key, value_name)
+                    if value:
+                        return value
+            except OSError:
+                pass
+            # Попробовать 32-битное представление (WOW6432Node)
+            try:
+                with winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY) as key:
+                    value, _ = winreg.QueryValueEx(key, value_name)
+                    if value:
+                        return value
+            except OSError:
+                pass
+    except ImportError:
+        pass
+    return None
+
+
+def _find_in_path(exe_name: str) -> Optional[Path]:
+    """Ищет исполняемый файл в системном PATH (добавляет .exe при необходимости)."""
+    if sys.platform == "win32" and not exe_name.lower().endswith(".exe"):
+        exe_name += ".exe"
+    found = shutil.which(exe_name)
+    return Path(found).resolve() if found else None
+
+
+def _find_in_program_files(*patterns: str) -> Optional[Path]:
+    r"""Ищет исполняемый файл в C:\Program Files и C:\Program Files (x86) по шаблонам.
+    patterns — список фрагментов пути для glob-поиска, например:
+      "IDA*/idat.exe", "IDA Professional */idat.exe", "IDA Pro */idat.exe"
+    """
+    for pf in ("C:\\Program Files", "C:\\Program Files (x86)"):
+        base = Path(pf)
+        if not base.is_dir():
+            continue
+        for pattern in patterns:
+            matches = list(base.glob(pattern))
+            if matches:
+                return matches[0].resolve()
+            # Поиск без учёта регистра первой буквы (для "ida"/"IDA")
+            matches = list(base.glob(pattern[0].lower() + pattern[1:]))
+            if matches:
+                return matches[0].resolve()
+    return None
+
+
+def _find_ida_in_common_locations() -> Optional[Path]:
+    """Поиск idat.exe в типичных Windows-каталогах."""
+    # 1) Реестр Hex-Rays
+    reg_path = _read_registry(r"SOFTWARE\Hex-Rays\IDA", "InstallDir")
+    if reg_path:
+        candidate = Path(reg_path) / "idat.exe"
+        if candidate.is_file():
+            return candidate.resolve()
+        candidate = Path(reg_path) / "idat64.exe"
+        if candidate.is_file():
+            return candidate.resolve()
+
+    # 2) Реестр IDA Pro (альтернативный ключ)
+    reg_path = _read_registry(r"SOFTWARE\IDA Pro", "InstallDir")
+    if reg_path:
+        candidate = Path(reg_path) / "idat.exe"
+        if candidate.is_file():
+            return candidate.resolve()
+        candidate = Path(reg_path) / "idat64.exe"
+        if candidate.is_file():
+            return candidate.resolve()
+
+    # 3) Program Files — основные варианты
+    candidates = [
+        "IDA*/idat.exe",
+        "IDA*/idat64.exe",
+        "IDA Professional */idat.exe",
+        "IDA Professional */idat64.exe",
+        "IDA Pro */idat.exe",
+        "IDA Pro */idat64.exe",
+        "Hex-Rays/IDA*/idat.exe",
+        "Hex-Rays/IDA*/idat64.exe",
+    ]
+    found = _find_in_program_files(*candidates)
+    if found:
+        return found
+
+    # 4) PATH (на случай если idat добавлен туда вручную)
+    found = _find_in_path("idat.exe")
+    if found:
+        return found
+    found = _find_in_path("idat64.exe")
+    if found:
+        return found
+
+    return None
+
+
+def _find_bindiff_in_common_locations() -> Optional[Path]:
+    """Поиск bindiff.exe в типичных Windows-каталогах."""
+    # 1) Реестр Zynamics / Google BinDiff
+    reg_path = _read_registry(r"SOFTWARE\Zynamics\BinDiff", "InstallDir")
+    if reg_path:
+        candidate = Path(reg_path) / "bindiff.exe"
+        if candidate.is_file():
+            return candidate.resolve()
+
+    reg_path = _read_registry(r"SOFTWARE\Google\BinDiff", "InstallDir")
+    if reg_path:
+        candidate = Path(reg_path) / "bindiff.exe"
+        if candidate.is_file():
+            return candidate.resolve()
+
+    # 2) Реестр BinDiff (альтернативный ключ)
+    reg_path = _read_registry(r"SOFTWARE\BinDiff", "InstallDir")
+    if reg_path:
+        candidate = Path(reg_path) / "bindiff.exe"
+        if candidate.is_file():
+            return candidate.resolve()
+
+    # 3) Program Files
+    candidates = [
+        "BinDiff*/bindiff.exe",
+        "BinDiff */bindiff.exe",
+        "zynamics/BinDiff*/bindiff.exe",
+        "Google/BinDiff*/bindiff.exe",
+    ]
+    found = _find_in_program_files(*candidates)
+    if found:
+        return found
+
+    # 4) PATH
+    found = _find_in_path("bindiff.exe")
+    if found:
+        return found
+    found = _find_in_path("BinDiff.exe")
+    if found:
+        return found
+
+    return None
+
+
+def _find_in_project_root(basename: str) -> Optional[Path]:
+    """Ищет файл в корне проекта (рядом с config.yaml)."""
+    candidate = PROJECT_ROOT / basename
+    return candidate.resolve() if candidate.is_file() else None
+
+
+# ──────────────────────────────────────────────
+#  Публичные функции
+# ──────────────────────────────────────────────
+
+def get_ida_executable() -> str:
+    r"""
+    Возвращает полный путь к idat.exe (Windows).
+
+    Порядок поиска:
+      1. Значение из config.yaml (ключ 'ida.executable').
+      2. Реестр Windows (HKLM\SOFTWARE\Hex-Rays\IDA\InstallDir и др.).
+      3. Поиск в C:\Program Files и C:\Program Files (x86)
+         (IDA Professional 9.*, IDA Pro 9.*, IDA*).
+      4. Системный PATH.
+    Если ничего не найдено, возвращает просто 'idat.exe'.
+    """
+    cfg = load_config()
+    name = cfg.get("ida", {}).get("executable", _IDA_EXECUTABLE_NAME)
+
+    # 1. Если это уже полный путь и файл существует — используем его
+    if os.path.isabs(name):
+        p = Path(name)
+        if p.is_file():
+            return str(p.resolve())
+        # Путь задан, но не существует — не ищем дальше, возвращаем как есть
+        return name
+
+    # 2. Поиск в системе
+    found = _find_ida_in_common_locations()
+    if found:
+        return str(found)
+
+    # 3. Поиск рядом с config.yaml (на случай ручного размещения)
+    found = _find_in_project_root("idat.exe")
+    if found:
+        return str(found)
+
+    return name
+
 
 def get_bindiff_executable() -> str:
-    """
-    Возвращает полный путь к bindiff.exe.
+    r"""
+    Возвращает полный путь к bindiff.exe (Windows).
+
     Порядок поиска:
-    1. Значение из config.yaml (ключ 'bindiff.executable').
-    2. Поиск в корне проекта (рядом с config.yaml).
-    3. Поиск в системном PATH.
-    Если ничего не найдено, возвращает имя по умолчанию.
+      1. Значение из config.yaml (ключ 'bindiff.executable').
+      2. Корень проекта (рядом с config.yaml).
+      3. Реестр Windows (Zynamics\BinDiff, Google\BinDiff).
+      4. C:\Program Files\BinDiff*.
+      5. Системный PATH.
+    Если ничего не найдено, возвращает просто 'bindiff.exe'.
     """
     cfg = load_config()
     name = cfg.get("bindiff", {}).get("executable", _BINDIFF_EXECUTABLE_NAME)
 
-    if sys.platform == "win32" and not name.endswith(".exe"):
-        name += ".exe"
-
-    # 1. Абсолютный путь из конфига
+    # 1. Полный путь из конфига
     if os.path.isabs(name):
         p = Path(name)
         if p.is_file():
-            return str(p)
+            return str(p.resolve())
         return name
 
-    # 2. Поиск в корне проекта
-    local_path = PROJECT_ROOT / name
-    if local_path.is_file():
-        return str(local_path)
+    # 2. Корень проекта (пользователь сказал, что bindiff всегда лежит рядом)
+    found = _find_in_project_root(name)
+    if found:
+        return str(found)
+    found = _find_in_project_root("bindiff.exe")
+    if found:
+        return str(found)
 
-    # 3. Поиск в PATH
-    found = shutil.which(name)
-    return found if found else name
+    # 3. Поиск в системе
+    found = _find_bindiff_in_common_locations()
+    if found:
+        return str(found)
+
+    return name
