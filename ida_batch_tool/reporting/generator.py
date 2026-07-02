@@ -437,7 +437,6 @@ class DiffReportGenerator(BaseReportGenerator):
         """Дополняет данные для шаблона, сохраняя все поля из JSON."""
         data.setdefault("matched_functions", [])
         data.setdefault("matched_diaphora_only", [])
-        data.setdefault("matched_summary", {})
         data.setdefault("file1", {})
         data.setdefault("file2", {})
         data.setdefault("total_functions1", 0)
@@ -448,6 +447,20 @@ class DiffReportGenerator(BaseReportGenerator):
         data.setdefault("unmatched_functions2", [])
         data.setdefault("total_unmatched", 0)
         data["total_matched"] = len(data["matched_functions"])
+
+        # Вычисляем matched_summary, если его нет (BinDiff-only или Diaphora-only)
+        if "matched_summary" not in data or not data["matched_summary"]:
+            mf = data.get("matched_functions", [])
+            bindiff_only = sum(1 for m in mf if m.get("source") == "bindiff")
+            diaphora_only = sum(1 for m in mf if m.get("source") == "diaphora")
+            both = sum(1 for m in mf if m.get("source") == "both")
+            data["matched_summary"] = {
+                "total": len(mf),
+                "bindiff_only": bindiff_only,
+                "diaphora_only": diaphora_only,
+                "both": both,
+            }
+
         return data
 
     def generate_diff_index(self, reports_dir: Path, json_files: List[Path],

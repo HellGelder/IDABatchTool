@@ -231,7 +231,7 @@
                 <div class="stat-label">Общие</div>
             </div>
             <div class="stat-tile">
-                <div class="stat-value" style="font-size:20px; color:var(--danger);">{{ total_functions1 - total_found }}</div>
+                <div class="stat-value" style="font-size:20px; color:var(--danger);">{{ (total_functions1 - total_found) if total_functions1 > 0 else "—" }}</div>
                 <div class="stat-label">Не сопоставлено</div>
             </div>
         </div>
@@ -255,6 +255,7 @@
     </div>
 
     <!-- Статистика по файлам -->
+    {% if engine in ("bindiff", "bindiff+diaphora") %}
     <h2>Общая оценка схожести BinDiff</h2>
     <div class="card">
         <div class="flex-row">
@@ -272,6 +273,7 @@
         {% if description %}<p class="meta-text" style="margin-top:8px"><em>{{ description }}</em></p>{% endif %}
         {% if version %}<p class="meta-text">Версия BinDiff: {{ version }}</p>{% endif %}
     </div>
+    {% endif %}
 
     <h2>Различия в импортах</h2>
     <div class="card">
