@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Qt
 
 from ida_batch_tool.config.loader import get_ida_executable, get_bindiff_executable
-from ida_batch_tool.ui.workers.diff_worker import DiffWorker
+from ida_batch_tool.ui.workers.diff_worker import DiffWorker, _safe_filename
 
 import logging
 logger = logging.getLogger(__name__)
@@ -92,7 +92,11 @@ class DiffPage(QWidget):
 
         main_layout.addWidget(map_group)
 
-        # --- Движок сравнения ---
+        # --- Горизонтальный сплит: движок (слева) + этапы (справа) ---
+        split_layout = QHBoxLayout()
+
+        # Левая панель: Движок сравнения
+        left_panel = QVBoxLayout()
         engine_group = QGroupBox("Движок сравнения")
         engine_layout = QVBoxLayout(engine_group)
         self.engine_group = QButtonGroup(self)
@@ -106,16 +110,59 @@ class DiffPage(QWidget):
         engine_layout.addWidget(self.rb_bindiff)
         engine_layout.addWidget(self.rb_diaphora)
         engine_layout.addWidget(self.rb_both)
-        main_layout.addWidget(engine_group)
+        left_panel.addWidget(engine_group)
+        left_panel.addStretch()
 
-        # --- Запуск и прогресс ---
-        run_group = QGroupBox("Процесс сравнения")
-        run_layout = QVBoxLayout(run_group)
+        # Правая панель: Этапы работы с прогресс-барами
+        right_panel = QVBoxLayout()
+        stages_group = QGroupBox("Этапы работы")
+        stages_layout = QVBoxLayout(stages_group)
 
-        self.process_label = QLabel("Готов к запуску")
-        self.process_progress = QProgressBar()
-        self.process_progress.setRange(0, 100)
+        # BinDiff этап
+        self.stage_bindiff_widget = QWidget()
+        self.stage_bindiff_layout = QVBoxLayout(self.stage_bindiff_widget)
+        self.stage_bindiff_layout.setContentsMargins(0, 0, 0, 0)
+        self.stage_bindiff_label = QLabel("BinDiff: ожидание...")
+        self.stage_bindiff_bar = QProgressBar()
+        self.stage_bindiff_bar.setRange(0, 100)
+        self.stage_bindiff_layout.addWidget(self.stage_bindiff_label)
+        self.stage_bindiff_layout.addWidget(self.stage_bindiff_bar)
+        stages_layout.addWidget(self.stage_bindiff_widget)
 
+        # Diaphora этап
+        self.stage_diaphora_widget = QWidget()
+        self.stage_diaphora_layout = QVBoxLayout(self.stage_diaphora_widget)
+        self.stage_diaphora_layout.setContentsMargins(0, 0, 0, 0)
+        self.stage_diaphora_label = QLabel("Diaphora: ожидание...")
+        self.stage_diaphora_bar = QProgressBar()
+        self.stage_diaphora_bar.setRange(0, 100)
+        self.stage_diaphora_layout.addWidget(self.stage_diaphora_label)
+        self.stage_diaphora_layout.addWidget(self.stage_diaphora_bar)
+        stages_layout.addWidget(self.stage_diaphora_widget)
+
+        # Пост-анализ этап
+        self.stage_post_widget = QWidget()
+        self.stage_post_layout = QVBoxLayout(self.stage_post_widget)
+        self.stage_post_layout.setContentsMargins(0, 0, 0, 0)
+        self.stage_post_label = QLabel("Пост-анализ: ожидание...")
+        self.stage_post_bar = QProgressBar()
+        self.stage_post_bar.setRange(0, 100)
+        self.stage_post_layout.addWidget(self.stage_post_label)
+        self.stage_post_layout.addWidget(self.stage_post_bar)
+        stages_layout.addWidget(self.stage_post_widget)
+
+        stages_layout.addStretch()
+        right_panel.addWidget(stages_group)
+
+        # По умолчанию скрываем Diaphora
+        self.stage_diaphora_widget.setVisible(False)
+
+        # Добавляем левую и правую панели в сплит
+        split_layout.addLayout(left_panel, 1)
+        split_layout.addLayout(right_panel, 2)
+        main_layout.addLayout(split_layout)
+
+        # --- Кнопки управления ---
         btn_layout = QHBoxLayout()
         self.start_btn = QPushButton("Запустить сравнение")
         self.start_btn.setFixedHeight(40)
@@ -132,10 +179,7 @@ class DiffPage(QWidget):
         btn_layout.addStretch()
         btn_layout.addWidget(self.generate_report_btn)
 
-        run_layout.addWidget(self.process_label)
-        run_layout.addWidget(self.process_progress)
-        run_layout.addLayout(btn_layout)
-        main_layout.addWidget(run_group)
+        main_layout.addLayout(btn_layout)
 
         # --- Ошибки ---
         self.error_text = QTextEdit()
@@ -318,20 +362,66 @@ class DiffPage(QWidget):
             QMessageBox.warning(self, "Нет совпадений", "Ни один файл из левой директории не имеет пары в правой.")
             return
 
+        # Сортируем пары по размеру .i64 (убывание) — жадный алгоритм: сначала самые большие
+        pairs.sort(key=lambda p: (p[0].stat().st_size if p[0].is_file() else 0), reverse=True)
+
+        # Проверка: есть ли уже результаты сравнения
+        existing_stems = set()
+        new_pairs = []
+        for primary, secondary, rel in pairs:
+            stem = _safe_filename(rel)
+            diff_json = output_path / f"{stem}.diff.json"
+            if diff_json.is_file():
+                existing_stems.add(stem)
+            else:
+                new_pairs.append((primary, secondary, rel))
+
+        proceed_with_new = True
+        if existing_stems:
+            msg = (f"В выходной папке уже найдены результаты сравнения для {len(existing_stems)} пар.\n\n"
+                   "Нажмите «Да», чтобы досравнять только новые пары.\n"
+                   "Нажмите «Нет», чтобы выполнить полное сравнение заново (существующие результаты будут перезаписаны).\n"
+                   "Нажмите «Отмена» для отмены операции.")
+            reply = QMessageBox.question(self, "Обнаружены существующие результаты", msg,
+                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel)
+            if reply == QMessageBox.StandardButton.Yes:
+                pairs = new_pairs if new_pairs else []
+                if not pairs:
+                    QMessageBox.information(self, "Готово", "Все пары уже обработаны. Сравнение не требуется.")
+                    return
+                proceed_with_new = True
+            elif reply == QMessageBox.StandardButton.No:
+                # Удаляем существующие .diff.json для полного пересчёта
+                for p in output_path.glob("*.diff.json"):
+                    p.unlink(missing_ok=True)
+                proceed_with_new = True
+            else:
+                return  # Отмена
+
         self._diff_in_progress = True
         self._output_dir = output_path
         self.diff_started.emit()
         self.start_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
-        self.generate_report_btn.setEnabled(False)
-        self.process_label.setText("Подготовка к сравнению...")
-        self.process_progress.setValue(0)
+        engine = self._get_engine()
+        # Показываем/скрываем виджеты этапов
+        self.stage_bindiff_widget.setVisible(engine in ("bindiff", "both"))
+        self.stage_diaphora_widget.setVisible(engine in ("diaphora", "both"))
+        self.stage_post_widget.setVisible(True)
+
+        # Сбрасываем прогресс-бары
+        for bar in (self.stage_bindiff_bar, self.stage_diaphora_bar, self.stage_post_bar):
+            bar.setValue(0)
+        self.stage_bindiff_label.setText("BinDiff: ожидание начала...")
+        self.stage_diaphora_label.setText("Diaphora: ожидание начала...")
+        self.stage_post_label.setText("Пост-анализ: ожидание начала...")
+
         self.error_text.clear()
 
-        self._worker = DiffWorker(pairs, idat_path, bindiff_path, output_path, engine=self._get_engine(), max_workers=2)
-        self._worker.progress_updated.connect(self._on_diff_progress)
+        self._worker = DiffWorker(pairs, idat_path, bindiff_path, output_path, engine=engine)
+        self._worker.stage_updated.connect(self._on_stage_updated)
         self._worker.error_occurred.connect(self._on_error)
         self._worker.finished.connect(self._on_diff_finished)
+        self.cancel_btn.setEnabled(True)
         self._worker.start()
 
     def _get_engine(self) -> str:
@@ -345,12 +435,24 @@ class DiffPage(QWidget):
     def _cancel_comparison(self) -> None:
         if self._worker:
             self._worker.cancel()
-            self.process_label.setText("Отмена...")
+            self.stage_bindiff_label.setText("BinDiff: отменён")
+            self.stage_diaphora_label.setText("Diaphora: отменён")
+            self.stage_post_label.setText("Пост-анализ: отменён")
             self.cancel_btn.setEnabled(False)
 
-    def _on_diff_progress(self, current: int, total: int, message: str) -> None:
-        self.process_label.setText(f"Сравнение: {current}/{total} {message}")
-        self.process_progress.setValue(int(100 * current / total))
+    def _on_stage_updated(self, stage_name: str, current: int, total: int, file_stem: str, substage: str) -> None:
+        """Обновляет прогресс-бар для соответствующего этапа."""
+        counter = f"[{current}/{total}]" if total else ""
+        suffix = f" — {file_stem}" if file_stem else ""
+        if stage_name == "BinDiff":
+            self.stage_bindiff_label.setText(f"BinDiff {counter}: {substage}{suffix}")
+            self.stage_bindiff_bar.setValue(int(100 * current / total) if total else 0)
+        elif stage_name == "Diaphora":
+            self.stage_diaphora_label.setText(f"Diaphora {counter}: {substage}{suffix}")
+            self.stage_diaphora_bar.setValue(int(100 * current / total) if total else 0)
+        elif stage_name == "Post":
+            self.stage_post_label.setText(f"Пост-анализ {counter}: {substage}{suffix}")
+            self.stage_post_bar.setValue(int(100 * current / total) if total else 0)
 
     def _on_error(self, message: str) -> None:
         self.error_text.append(message)
@@ -360,8 +462,13 @@ class DiffPage(QWidget):
         self.diff_finished.emit()
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        self.process_label.setText(f"Завершено. Успешно: {success_count}/{total}")
-        self.process_progress.setValue(100)
+
+        # Финальные статусы
+        self.stage_bindiff_label.setText(f"BinDiff: завершён ({success_count}/{total})" if self.stage_bindiff_widget.isVisible() else "")
+        self.stage_diaphora_label.setText(f"Diaphora: завершён ({success_count}/{total})" if self.stage_diaphora_widget.isVisible() else "")
+        self.stage_post_label.setText(f"Пост-анализ: завершён ({success_count}/{total})")
+        for bar in (self.stage_bindiff_bar, self.stage_diaphora_bar, self.stage_post_bar):
+            bar.setValue(100)
 
         # Проверяем наличие .diff.json в выходной папке
         any_json = bool(list(self._output_dir.glob("*.diff.json"))) if self._output_dir else False

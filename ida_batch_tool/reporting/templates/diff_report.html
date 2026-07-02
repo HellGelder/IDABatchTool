@@ -109,23 +109,87 @@
     </div>
 
     <!-- Общая оценка схожести BinDiff -->
-    <h2>Общая оценка схожести BinDiff</h2>
+    <h2>Статистика по файлам</h2>
     <div class="card">
         <div class="flex-row">
             <div>
-                <div class="stat-value">{{ "%.2f"|format(similarity * 100) }}%</div>
-                <div class="stat-label" style="margin-bottom:4px;" title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов. Рассчитывается по формуле: ~35% — доля совпавших рёбер потока управления, ~25% — доля совпавших базовых блоков, ~10% — доля совпавших функций, ~10% — доля совпавших инструкций, ~20% — разница индекса MD графа вызовов. Чем ближе к 1.0, тем больше общих структурных элементов в файлах.">Схожесть</div>
-                <div class="progress-bar"><div class="progress-fill" style="width:{{ similarity * 100 }}%;"></div></div>
+                <h3>Эталонный файл</h3>
+                <ul class="grouped-list">
+                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ real_primary.split('\\')[-1].split('/')[-1] if real_primary else file1.filename }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file1.hash }}</code></span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions1 }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file1.basicblocks + file1.libbasicblocks }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</span><span class="grouped-row-value">{{ file1.instructions + file1.libinstructions }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</span><span class="grouped-row-value">{{ file1.edges + file1.libedges }}</span></li>
+                </ul>
             </div>
             <div>
-                <div class="stat-value">{{ "%.2f"|format(confidence * 100) }}%</div>
-                <div class="stat-label" style="margin-bottom:4px;" title="Значение от 0 до 1, характеризующее надёжность найденного соответствия. Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией для сглаживания выбросов. Высокая схожесть при низкой уверенности означает, что слабый алгоритм (например, совпадение по адресам) дал хороший результат; низкая схожесть при высокой уверенности — что сильный алгоритм (например, хэш сырых байтов) не обнаружил значительного сходства.">Уверенность</div>
-                <div class="progress-bar"><div class="progress-fill" style="width:{{ confidence * 100 }}%;"></div></div>
+                <h3>Контрольный файл</h3>
+                <ul class="grouped-list">
+                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ real_secondary.split('\\')[-1].split('/')[-1] if real_secondary else file2.filename }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file2.hash }}</code></span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions2 }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file2.basicblocks + file2.libbasicblocks }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</span><span class="grouped-row-value">{{ file2.instructions + file2.libinstructions }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label" title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</span><span class="grouped-row-value">{{ file2.edges + file2.libedges }}</span></li>
+                </ul>
             </div>
         </div>
-        {% if description %}<p class="meta-text" style="margin-top:8px"><em>{{ description }}</em></p>{% endif %}
-        {% if version %}<p class="meta-text">Версия BinDiff: {{ version }}</p>{% endif %}
     </div>
+
+    <!-- ▸ Импорты: только в одном из файлов -->
+    <h2>Сравнение hex-дампов</h2>
+    <div class="card">
+	        {% if not global_hex_diff or global_hex_diff|length == 0 or not global_hex_diff[0].hex_rows %}
+	        <p class="empty-state">Сравнение hex-дампов не выполнено (нет данных).</p>
+{% else %}
+            {% set hd = global_hex_diff[0] %}
+            {% set hdrows = hd.hex_rows %}
+            {% set meta = hdrows[-1] if hdrows and hdrows[-1].type == "_meta" else none %}
+            {% set total = meta.total_lines if meta else '?' %}
+            {% set has_diff = namespace(found=false) %}
+            {% for row in hdrows %}
+                {% if row.type == "removed" and row.left != row.right %}{% set has_diff.found = true %}{% endif %}
+            {% endfor %}
+            {% set hd_sim = hd.hexdump_similarity if hd.hexdump_similarity is defined else 0.0 %}
+            <p class="meta-text" style="margin-bottom:4px;">
+                Схожесть hex-дампов: <strong>{{ "%.2f"|format(hd_sim * 100) }}%</strong>
+                {% if hd_sim >= 1.0 %}<span class="badge badge--success" style="font-size:10px;">идентичны</span>{% endif %}
+            </p>
+            <p class="meta-text" style="margin-bottom:8px;">
+                Эталонный файл: <code>{{ hd.name1 }}</code><br>
+                Контрольный файл: <code>{{ hd.name2 }}</code>
+            </p>
+            <div class="diff-sbs" style="max-height:600px; overflow-y:auto;">
+                <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Эталонный файл</div>
+                <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Контрольный файл</div>
+                {% if not has_diff.found %}
+                {% set eq_rows = hdrows|selectattr('type', 'ne', '_meta')|list %}
+                {% for line in eq_rows[:4] %}
+                <div class="diff-cell diff-equal">{{ line.left if line.left else '&nbsp;' }}</div>
+                <div class="diff-cell diff-equal">{{ line.right if line.right else '&nbsp;' }}</div>
+                {% endfor %}
+                <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… (всего {{ total }} строк) …</div>
+                {% for line in eq_rows[-4:] %}
+                <div class="diff-cell diff-equal">{{ line.left if line.left else '&nbsp;' }}</div>
+                <div class="diff-cell diff-equal">{{ line.right if line.right else '&nbsp;' }}</div>
+                {% endfor %}
+                {% else %}
+                {% for row in hdrows %}
+                    {% if row.type != "_meta" %}
+                    {% if row.type == "equal" %}
+                    <div class="diff-cell diff-equal">{{ row.left if row.left else '&nbsp;' }}</div>
+                    <div class="diff-cell diff-equal">{{ row.right if row.right else '&nbsp;' }}</div>
+                    {% elif row.type == "removed" %}
+                    <div class="diff-cell diff-removed">{{ row.left if row.left else '&nbsp;' }}</div>
+                    <div class="diff-cell diff-added">{{ row.right if row.right else '&nbsp;' }}</div>
+                    {% endif %}
+                    {% endif %}
+                {% endfor %}
+                {% endif %}
+            </div>
+{% endif %}
+	    </div>
 
     <!-- Движок сравнения -->
     <h2>Движок сравнения</h2>
@@ -191,35 +255,24 @@
     </div>
 
     <!-- Статистика по файлам -->
-    <h2>Статистика по файлам</h2>
+    <h2>Общая оценка схожести BinDiff</h2>
     <div class="card">
         <div class="flex-row">
             <div>
-                <h3>Эталонный файл</h3>
-                <ul class="grouped-list">
-                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ real_primary.split('\\')[-1].split('/')[-1] if real_primary else file1.filename }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file1.hash }}</code></span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions1 }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file1.basicblocks + file1.libbasicblocks }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</span><span class="grouped-row-value">{{ file1.instructions + file1.libinstructions }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</span><span class="grouped-row-value">{{ file1.edges + file1.libedges }}</span></li>
-                </ul>
+                <div class="stat-value">{{ "%.2f"|format(similarity * 100) }}%</div>
+                <div class="stat-label" style="margin-bottom:4px;" title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов. Рассчитывается по формуле: ~35% — доля совпавших рёбер потока управления, ~25% — доля совпавших базовых блоков, ~10% — доля совпавших функций, ~10% — доля совпавших инструкций, ~20% — разница индекса MD графа вызовов. Чем ближе к 1.0, тем больше общих структурных элементов в файлах.">Схожесть</div>
+                <div class="progress-bar"><div class="progress-fill" style="width:{{ similarity * 100 }}%;"></div></div>
             </div>
             <div>
-                <h3>Контрольный файл</h3>
-                <ul class="grouped-list">
-                    <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ real_secondary.split('\\')[-1].split('/')[-1] if real_secondary else file2.filename }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file2.hash }}</code></span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions2 }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file2.basicblocks + file2.libbasicblocks }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</span><span class="grouped-row-value">{{ file2.instructions + file2.libinstructions }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</span><span class="grouped-row-value">{{ file2.edges + file2.libedges }}</span></li>
-                </ul>
+                <div class="stat-value">{{ "%.2f"|format(confidence * 100) }}%</div>
+                <div class="stat-label" style="margin-bottom:4px;" title="Значение от 0 до 1, характеризующее надёжность найденного соответствия. Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией для сглаживания выбросов. Высокая схожесть при низкой уверенности означает, что слабый алгоритм (например, совпадение по адресам) дал хороший результат; низкая схожесть при высокой уверенности — что сильный алгоритм (например, хэш сырых байтов) не обнаружил значительного сходства.">Уверенность</div>
+                <div class="progress-bar"><div class="progress-fill" style="width:{{ confidence * 100 }}%;"></div></div>
             </div>
         </div>
+        {% if description %}<p class="meta-text" style="margin-top:8px"><em>{{ description }}</em></p>{% endif %}
+        {% if version %}<p class="meta-text">Версия BinDiff: {{ version }}</p>{% endif %}
     </div>
 
-    <!-- ▸ Импорты: только в одном из файлов -->
     <h2>Различия в импортах</h2>
     <div class="card">
         <div class="flex-row">
@@ -399,44 +452,6 @@
     </div>
 
     <!-- ▸ Глобальный diff по типам инструкций (только с расхождениями) -->
-    {% if global_insn_diff %}
-    {% set diffs = global_insn_diff|selectattr('diff', 'ne', 0)|list %}
-    {% if diffs %}
-    <h2>Расхождения по типам инструкций <span class="badge badge--warning">{{ diffs|length }}</span></h2>
-    <div class="card" style="padding:0; overflow-x:auto;">
-        <table class="table" style="margin:0; font-size:12px;">
-            <thead>
-                <tr>
-                    <th>Мнемоника</th>
-                    <th title="Эталонный файл">Primary</th>
-                    <th title="Контрольный файл">Secondary</th>
-                    <th title="Разница (Secondary − Primary)">Δ</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in diffs %}
-                <tr>
-                    <td style="font-family:ui-monospace; font-weight:600;">{{ row.mnemonic }}</td>
-                    <td>{{ row.count1 }}</td>
-                    <td>{{ row.count2 }}</td>
-                    <td>
-                        {% if row.diff > 0 %}
-                        <span style="color:var(--success); font-weight:600;">+{{ row.diff }}</span>
-                        {% elif row.diff < 0 %}
-                        <span style="color:var(--danger); font-weight:600;">{{ row.diff }}</span>
-                        {% else %}
-                        <span style="color:var(--text-tertiary);">0</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
-    {% endif %}
-
-    <!-- ▸ Пофункциональный разбор -->
     <h2>Пофункциональный разбор</h2>
     {% if matched_functions %}
     {% set non_100 = matched_functions|selectattr('similarity', 'lt', 1.0)|list %}
@@ -530,6 +545,44 @@
                     <img src="{{ f.cfg_svg2 }}" alt="CFG {{ f.name2 }}" style="width:100%; height:auto; border:1px solid var(--separator); border-radius:var(--radius-sm);">
                     {% else %}
                     <p class="no-data">—</p>
+    {% if global_insn_diff %}
+    {% set diffs = global_insn_diff|selectattr('diff', 'ne', 0)|list %}
+    {% if diffs %}
+    <h2>Расхождения по типам инструкций <span class="badge badge--warning">{{ diffs|length }}</span></h2>
+    <div class="card" style="padding:0; overflow-x:auto;">
+        <table class="table" style="margin:0; font-size:12px;">
+            <thead>
+                <tr>
+                    <th>Мнемоника</th>
+                    <th title="Эталонный файл">Primary</th>
+                    <th title="Контрольный файл">Secondary</th>
+                    <th title="Разница (Secondary − Primary)">Δ</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in diffs %}
+                <tr>
+                    <td style="font-family:ui-monospace; font-weight:600;">{{ row.mnemonic }}</td>
+                    <td>{{ row.count1 }}</td>
+                    <td>{{ row.count2 }}</td>
+                    <td>
+                        {% if row.diff > 0 %}
+                        <span style="color:var(--success); font-weight:600;">+{{ row.diff }}</span>
+                        {% elif row.diff < 0 %}
+                        <span style="color:var(--danger); font-weight:600;">{{ row.diff }}</span>
+                        {% else %}
+                        <span style="color:var(--text-tertiary);">0</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    <!-- ▸ Пофункциональный разбор -->
                     {% endif %}
                 </div>
             </div>
@@ -583,60 +636,6 @@
     </div>
     {% endif %}
     {% endif %}
-
-<!-- ▸ Глобальное сравнение hex-дампов -->
-    <h2>Сравнение hex-дампов</h2>
-    <div class="card">
-	        {% if not global_hex_diff or global_hex_diff|length == 0 or not global_hex_diff[0].hex_rows %}
-	        <p class="empty-state">Сравнение hex-дампов не выполнено (нет данных).</p>
-{% else %}
-            {% set hd = global_hex_diff[0] %}
-            {% set hdrows = hd.hex_rows %}
-            {% set meta = hdrows[-1] if hdrows and hdrows[-1].type == "_meta" else none %}
-            {% set total = meta.total_lines if meta else '?' %}
-            {% set has_diff = namespace(found=false) %}
-            {% for row in hdrows %}
-                {% if row.type == "removed" and row.left != row.right %}{% set has_diff.found = true %}{% endif %}
-            {% endfor %}
-            {% set hd_sim = hd.hexdump_similarity if hd.hexdump_similarity is defined else 0.0 %}
-            <p class="meta-text" style="margin-bottom:4px;">
-                Схожесть hex-дампов: <strong>{{ "%.2f"|format(hd_sim * 100) }}%</strong>
-                {% if hd_sim >= 1.0 %}<span class="badge badge--success" style="font-size:10px;">идентичны</span>{% endif %}
-            </p>
-            <p class="meta-text" style="margin-bottom:8px;">
-                Эталонный файл: <code>{{ hd.name1 }}</code><br>
-                Контрольный файл: <code>{{ hd.name2 }}</code>
-            </p>
-            <div class="diff-sbs" style="max-height:600px; overflow-y:auto;">
-                <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Эталонный файл</div>
-                <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Контрольный файл</div>
-                {% if not has_diff.found %}
-                {% set eq_rows = hdrows|selectattr('type', 'ne', '_meta')|list %}
-                {% for line in eq_rows[:4] %}
-                <div class="diff-cell diff-equal">{{ line.left if line.left else '&nbsp;' }}</div>
-                <div class="diff-cell diff-equal">{{ line.right if line.right else '&nbsp;' }}</div>
-                {% endfor %}
-                <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… (всего {{ total }} строк) …</div>
-                {% for line in eq_rows[-4:] %}
-                <div class="diff-cell diff-equal">{{ line.left if line.left else '&nbsp;' }}</div>
-                <div class="diff-cell diff-equal">{{ line.right if line.right else '&nbsp;' }}</div>
-                {% endfor %}
-                {% else %}
-                {% for row in hdrows %}
-                    {% if row.type != "_meta" %}
-                    {% if row.type == "equal" %}
-                    <div class="diff-cell diff-equal">{{ row.left if row.left else '&nbsp;' }}</div>
-                    <div class="diff-cell diff-equal">{{ row.right if row.right else '&nbsp;' }}</div>
-                    {% elif row.type == "removed" %}
-                    <div class="diff-cell diff-removed">{{ row.left if row.left else '&nbsp;' }}</div>
-                    <div class="diff-cell diff-added">{{ row.right if row.right else '&nbsp;' }}</div>
-                    {% endif %}
-                    {% endif %}
-                {% endfor %}
-                {% endif %}
-            </div>
-{% endif %}
-	    </div>
 
     <script>
         /* live search for post-functional analysis */

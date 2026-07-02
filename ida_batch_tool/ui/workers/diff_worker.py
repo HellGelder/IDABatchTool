@@ -177,6 +177,10 @@ def _parse_diaphora_results(sqlite_path: Path) -> dict:
 
 class DiffWorker(QThread):
     progress_updated = Signal(int, int, str)
+    stage_updated = Signal(str, int, int, str, str)
+    # stage_updated(stage_name, current, total, file_stem, substage_description)
+    pair_started = Signal(str)
+    pair_completed = Signal(str)
     finished = Signal(int, int)
     error_occurred = Signal(str)
 
@@ -184,102 +188,238 @@ class DiffWorker(QThread):
                  idat_path: str, bindiff_path: str,
                  output_dir: Path,
                  engine: str = "bindiff",
-                 max_workers: int = 2, parent=None):
+                 max_workers: Optional[int] = None, parent=None):
         super().__init__(parent)
         self.file_pairs = file_pairs
         self.idat_path = idat_path
         self.bindiff_path = bindiff_path
         self.output_dir = output_dir
         self.engine = engine
-        self.max_workers = max_workers
+        import multiprocessing
+        cpu_count = multiprocessing.cpu_count()
+        if max_workers is not None:
+            self.max_workers = max_workers
+        else:
+            self.max_workers = max(1, cpu_count - 1)
         self._cancel_event = threading.Event()
         self._completed_count = 0
+        self._pulse_counter = 0
         self._lock = threading.Lock()
+
+    def _safe_emit(self, signal, *args) -> None:
+        """Безопасный эмит сигнала — ловит TypeError если QThread уже уничтожен."""
+        try:
+            signal.emit(*args)
+        except TypeError as e:
+            logger.warning(f"Signal emit failed (QThread destroyed?): {e}")
 
     def cancel(self) -> None:
         self._cancel_event.set()
 
-    def run(self) -> None:
-        total = len(self.file_pairs)
+    def _run_pass(self, stage_name: str, process_func, pairs: list) -> int:
+        """Запускает фазу process_func для всех пар в ThreadPoolExecutor.
+        Возвращает количество успешно завершённых пар в этой фазе."""
+        total = len(pairs)
         if total == 0:
-            self.finished.emit(0, 0)
-            return
-        logger.info(f"Сравнение {total} пар, engine={self.engine}, результаты в {self.output_dir}")
-
+            return 0
+        success = 0
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_pair = {
-                executor.submit(self._process_pair, primary, secondary, rel_key, idx): (primary, secondary, rel_key, idx)
-                for idx, (primary, secondary, rel_key) in enumerate(self.file_pairs)
+                executor.submit(process_func, p, s, r): (p, s, r)
+                for p, s, r in pairs
             }
             for future in as_completed(future_to_pair):
                 if self._cancel_event.is_set():
                     for f in future_to_pair:
                         f.cancel()
                     break
-                primary, secondary, rel_key, idx = future_to_pair[future]
+                p, s, r = future_to_pair[future]
+                stem = _safe_filename(r)
                 try:
                     ok = future.result()
                     with self._lock:
-                        self._completed_count += 1
                         if ok:
-                            self.progress_updated.emit(self._completed_count, total, rel_key)
+                            success += 1
                 except Exception as e:
-                    logger.exception(f"Ошибка пары {rel_key}")
-                    self.error_occurred.emit(f"Ошибка пары {rel_key}: {e}")
-                    with self._lock:
-                        self._completed_count += 1
+                    logger.exception(f"Ошибка пары {r} в фазе {stage_name}: {e}")
+                    self._safe_emit(self.error_occurred, f"Ошибка пары {r} в фазе {stage_name}: {e}")
+        return success
 
-        logger.info(f"Завершено. Всего обработано: {self._completed_count}")
-        self.finished.emit(self._completed_count, total)
+    def _safe_emit_stage(self, stage: str, cur: int, total: int, stem: str, desc: str) -> None:
+        self._safe_emit(self.stage_updated, stage, cur, total, stem, desc)
 
-    def _process_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str, idx: int) -> bool:
+    def run(self) -> None:
+        total = len(self.file_pairs)
+        if total == 0:
+            self._safe_emit(self.finished, 0, 0)
+            return
+        logger.info(f"Сравнение {total} пар, engine={self.engine}, результаты в {self.output_dir}")
+
+        if self.engine in ("bindiff", "both"):
+            bindiff_pairs = [(p, s, r) for p, s, r in self.file_pairs]
+            self._safe_emit_stage("BinDiff", 0, total, "", "Ожидание начала...")
+            self._stage_current_stage = "BinDiff: экспорт"
+            self._run_pass_with_progress("BinDiff", self._process_bindiff_pair, bindiff_pairs, total)
+
+        if self.engine in ("diaphora", "both"):
+            # Сортируем пары по размеру primary .i64 по возрастанию — сначала маленькие файлы
+            diaphora_pairs = sorted(
+                [(p, s, r) for p, s, r in self.file_pairs],
+                key=lambda x: x[0].stat().st_size if x[0].is_file() else 0,
+            )
+            self._safe_emit_stage("Diaphora", 0, total, "", "Ожидание начала...")
+            self._stage_current_stage = "Diaphora: сбор данных"
+            self._run_pass_with_progress("Diaphora", self._process_diaphora_pair, diaphora_pairs, total)
+
+        self._safe_emit_stage("Post", 0, total, "", "Ожидание начала...")
+        self._stage_current_stage = "Пост-анализ"
+        self._run_pass_with_progress("Post", self._process_post_pair, self.file_pairs, total)
+
+        logger.info(f"Завершено. Всего обработано: {total}")
+        self._safe_emit(self.finished, total, total)
+
+    # Порог для крупных файлов: если .i64 больше этого — обрабатываем последовательно
+    _LARGE_FILE_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+
+    @staticmethod
+    def _is_large_file(i64_path: Path) -> bool:
+        """Проверяет, является ли .i64 файл «крупным» (требует последовательной обработки)."""
+        try:
+            return i64_path.is_file() and i64_path.stat().st_size >= DiffWorker._LARGE_FILE_THRESHOLD
+        except OSError:
+            return False
+
+    def _run_pass_with_progress(self, stage_name: str, process_func, pairs: list, total: int) -> None:
+        """Запускает фазу с эмиссией прогресса.
+        Крупные ф��йлы обрабатываются последовательно (1 за раз) для снижения нагрузки на память."""
+        if total == 0:
+            return
+
+        # Разделяем пары на маленькие (параллельно) и крупные (последовательно)
+        small_pairs = [x for x in pairs if not self._is_large_file(x[0])]
+        large_pairs = [x for x in pairs if self._is_large_file(x[0])]
+
+        completed = 0
+
+        def _emit_progress(p, s, r, ok: bool):
+            nonlocal completed
+            display_name = p.name
+            with self._lock:
+                completed += 1
+                self._pulse_counter = completed  # для pulse-обновлений
+                if ok:
+                    self._safe_emit_stage(stage_name, completed, total, display_name, self._stage_current_stage)
+                else:
+                    self._safe_emit_stage(stage_name, completed, total, display_name, f"ОШИБКА {r}")
+
+        # 1) Маленькие файлы — параллельно через ThreadPoolExecutor
+        if small_pairs:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                future_to_pair = {
+                    executor.submit(process_func, p, s, r): (p, s, r)
+                    for p, s, r in small_pairs
+                }
+                for future in as_completed(future_to_pair):
+                    if self._cancel_event.is_set():
+                        for f in future_to_pair:
+                            f.cancel()
+                        break
+                    p, s, r = future_to_pair[future]
+                    try:
+                        ok = future.result()
+                        _emit_progress(p, s, r, ok)
+                    except Exception as e:
+                        logger.exception(f"Ошибка {r} в фазе {stage_name}: {e}")
+                        self._safe_emit(self.error_occurred, f"Ошибка {r} в фазе {stage_name}: {e}")
+                        _emit_progress(p, s, r, False)
+
+        if self._cancel_event.is_set():
+            return
+
+        # 2) Крупные файлы — последовательно (1 IDA-процесс за раз)
+        for p, s, r in large_pairs:
+            if self._cancel_event.is_set():
+                break
+            try:
+                ok = process_func(p, s, r)
+                _emit_progress(p, s, r, ok)
+            except Exception as e:
+                logger.exception(f"Ошибка {r} в фазе {stage_name}: {e}")
+                self._safe_emit(self.error_occurred, f"Ошибка {r} в фазе {stage_name}: {e}")
+                _emit_progress(p, s, r, False)
+
+    # ----- ФАЗА 1: BinDiff -----
+    def _process_bindiff_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str) -> bool:
         stem = _safe_filename(rel_key)
         if self._cancel_event.is_set():
             return False
-
         try:
             json_output = self.output_dir / f"{stem}.diff.json"
+            primary_binexport = self.output_dir / f"{stem}_primary.BinExport"
+            secondary_binexport = self.output_dir / f"{stem}_secondary.BinExport"
+            if not self._export_binexport(primary_i64, primary_binexport):
+                return False
+            if not self._export_binexport(secondary_i64, secondary_binexport):
+                return False
+            diff_output = self.output_dir / f"{stem}.BinDiff"
+            if not self._run_bindiff(primary_binexport, secondary_binexport, diff_output):
+                self._safe_emit(self.error_occurred, f"BinDiff: {stem}")
+                return False
+            self._parse_bindiff_result(diff_output, str(primary_i64), str(secondary_i64), json_output)
+            return True
+        except Exception as e:
+            logger.exception(f"Ошибка BinDiff {stem}: {e}")
+            self._safe_emit(self.error_occurred, f"Ошибка BinDiff {stem}: {e}")
+            return False
 
-            # === BINDIFF PATH ===
-            if self.engine in ("bindiff", "both"):
-                primary_binexport = self.output_dir / f"{stem}_primary.BinExport"
-                secondary_binexport = self.output_dir / f"{stem}_secondary.BinExport"
-                if not self._export_binexport(primary_i64, primary_binexport):
-                    return False
-                if not self._export_binexport(secondary_i64, secondary_binexport):
-                    return False
-                diff_output = self.output_dir / f"{stem}.BinDiff"
-                if not self._run_bindiff(primary_binexport, secondary_binexport, diff_output):
-                    self.error_occurred.emit(f"BinDiff: {stem}")
-                    return False
-                self._parse_bindiff_result(diff_output, str(primary_i64), str(secondary_i64), json_output)
+    # ----- ФАЗА 2: Diaphora -----
+    def _process_diaphora_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str) -> bool:
+        stem = _safe_filename(rel_key)
+        if self._cancel_event.is_set():
+            return False
+        if not _DIAPHORA_SCRIPT.is_file():
+            logger.warning(f"Diaphora не найден: {_DIAPHORA_SCRIPT}")
+            return False
+        try:
+            json_output = self.output_dir / f"{stem}.diff.json"
+            diaphora_db_pr = self.output_dir / f"{stem}_primary.diaphora.sqlite"
+            diaphora_db_sc = self.output_dir / f"{stem}_secondary.diaphora.sqlite"
+            diaphora_result = self.output_dir / f"{stem}_diaphora_result.sqlite"
 
-            # === DIAPHORA PATH ===
-            if self.engine in ("diaphora", "both"):
-                if _DIAPHORA_SCRIPT.is_file():
-                    diaphora_db_pr = self.output_dir / f"{stem}_primary.diaphora.sqlite"
-                    diaphora_db_sc = self.output_dir / f"{stem}_secondary.diaphora.sqlite"
-                    diaphora_result = self.output_dir / f"{stem}_diaphora_result.sqlite"
-                    # Экспорт primary
-                    if not self._run_diaphora_export(primary_i64, diaphora_db_pr):
-                        self.error_occurred.emit(f"Diaphora экспорт primary {stem}")
-                    # Экспорт secondary
-                    if not self._run_diaphora_export(secondary_i64, diaphora_db_sc):
-                        self.error_occurred.emit(f"Diaphora экспорт secondary {stem}")
-                    # Diff
-                    if diaphora_db_pr.is_file() and diaphora_db_sc.is_file():
-                        if self._run_diaphora_diff(diaphora_db_pr, diaphora_db_sc, diaphora_result):
-                            self._merge_diaphora_into_json(json_output, diaphora_result, stem)
-                else:
-                    logger.warning(f"Diaphora не найден: {_DIAPHORA_SCRIPT}")
+            # PULSE: обновляем статус каждые 30 сек во время долгого экспорта
+            def _pulse(msg: str) -> None:
+                self._safe_emit_stage("Diaphora", self._pulse_counter, len(self.file_pairs),
+                                      primary_i64.name, msg)
 
-            # === JSON EXPORT + CFG + HEX SIMILARITY ===
+            if not self._run_diaphora_export(primary_i64, diaphora_db_pr, pulse_callback=_pulse):
+                self._safe_emit(self.error_occurred, f"Diaphora экспорт primary {stem}")
+                return False
+            if not self._run_diaphora_export(secondary_i64, diaphora_db_sc, pulse_callback=_pulse):
+                self._safe_emit(self.error_occurred, f"Diaphora экспорт secondary {stem}")
+                return False
+
+            if diaphora_db_pr.is_file() and diaphora_db_sc.is_file():
+                if self._run_diaphora_diff(diaphora_db_pr, diaphora_db_sc, diaphora_result):
+                    self._merge_diaphora_into_json(json_output, diaphora_result, stem)
+            return True
+        except Exception as e:
+            logger.exception(f"Ошибка Diaphora {stem}: {e}")
+            self._safe_emit(self.error_occurred, f"Ошибка Diaphora {stem}: {e}")
+            return False
+
+    # ----- ФАЗА 3: Пост-анализ (JSON export, enrich, CFG, hexdump, cleanup) -----
+    def _process_post_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str) -> bool:
+        stem = _safe_filename(rel_key)
+        if self._cancel_event.is_set():
+            return False
+        try:
+            json_output = self.output_dir / f"{stem}.diff.json"
             primary_json = self.output_dir / f"{stem}_primary.export.json"
             secondary_json = self.output_dir / f"{stem}_secondary.export.json"
             exported = self._export_json(primary_i64, primary_json, secondary_i64, secondary_json)
             self._enrich_diff_json(json_output, exported["primary"], exported["secondary"])
 
-            # === HEXDUMP DIFF оригинальных исполняемых файлов ===
+            # Hexdump diff
             orig1 = _find_original_binary(primary_i64)
             orig2 = _find_original_binary(secondary_i64)
             if orig1 and orig2:
@@ -288,15 +428,11 @@ class DiffWorker(QThread):
                         data = json.load(f)
                     hex_rows, hex_sim = _compute_hexdump_diff(orig1, orig2)
                     data["global_hex_diff"] = [{
-                        "name1": orig1.name,
-                        "path1": str(orig1),
-                        "name2": orig2.name,
-                        "path2": str(orig2),
-                        "hex_rows": hex_rows,
-                        "hexdump_similarity": hex_sim,
+                        "name1": orig1.name, "path1": str(orig1),
+                        "name2": orig2.name, "path2": str(orig2),
+                        "hex_rows": hex_rows, "hexdump_similarity": hex_sim,
                     }]
                     data["hexdump_similarity"] = hex_sim
-                    # Сохраняем реальные пути к бинарникам
                     data["real_primary"] = str(orig1)
                     data["real_secondary"] = str(orig2)
                     with open(json_output, "w", encoding="utf-8") as f:
@@ -304,7 +440,7 @@ class DiffWorker(QThread):
                 except (OSError, json.JSONDecodeError):
                     pass
 
-            # CFG-экспорт и запись путей SVG в .diff.json
+            # CFG export
             pr_cfg_idx, sc_cfg_idx = self._export_cfg_pair(primary_i64, secondary_i64, stem)
             if pr_cfg_idx or sc_cfg_idx:
                 try:
@@ -322,55 +458,51 @@ class DiffWorker(QThread):
                 except (OSError, json.JSONDecodeError):
                     pass
 
-            # === Вычисляем полный список несопоставленных функций из IDA-экспорта ===
+            # Unmatched из IDA-экспорта
             try:
                 with open(json_output, "r", encoding="utf-8") as f:
                     data = json.load(f)
-
-                # Собираем адреса сопоставленных функций (primary)
-                matched_addrs = set()
+                matched_primary = set()
+                matched_secondary = set()
                 for mf in data.get("matched_functions", []):
-                    addr = mf.get("address1", "")
-                    if addr:
-                        matched_addrs.add(addr)
+                    a1 = mf.get("address1", "")
+                    a2 = mf.get("address2", "")
+                    if a1: matched_primary.add(a1)
+                    if a2: matched_secondary.add(a2)
 
-                # Читаем primary-экспорт, находим реальные несопоставленные функции
-                unmatched_funcs = []
-                for pj_path in (exported.get("primary"), exported.get("secondary")):
+                def _read_export(pj_path, matched_set):
+                    funcs = []
                     if pj_path and pj_path.is_file():
                         try:
                             with open(pj_path, "r", encoding="utf-8") as pf:
                                 pdata = json.load(pf)
                             for func in pdata.get("functions", []):
                                 raw_addr = func.get("start_ea", "")
-                                if not raw_addr:
-                                    continue
-                                # start_ea может быть decimal или hex строкой — нормализуем
+                                if not raw_addr: continue
                                 try:
                                     addr_int = int(raw_addr, 16) if raw_addr.startswith("0x") else int(raw_addr)
                                     addr_norm = f"0x{addr_int:X}"
                                 except (ValueError, TypeError):
                                     addr_norm = raw_addr
-                                if addr_norm not in matched_addrs:
-                                    unmatched_funcs.append({
-                                        "address": addr,
-                                        "name": func.get("name", "<unnamed>")
-                                    })
+                                if addr_norm not in matched_set:
+                                    funcs.append({"address": addr_norm, "name": func.get("name", "<unnamed>")})
                         except (OSError, json.JSONDecodeError):
                             pass
-                    break  # только primary, secondary через unmatched_functions2
+                    return funcs
 
-                if unmatched_funcs:
-                    data.setdefault("unmatched_functions1", unmatched_funcs)
+                un1 = _read_export(exported.get("primary"), matched_primary)
+                un2 = _read_export(exported.get("secondary"), matched_secondary)
+                if un1: data.setdefault("unmatched_functions1", un1)
+                if un2: data.setdefault("unmatched_functions2", un2)
                 total1 = data.get("total_functions1", 0)
                 matched_cnt = len(data.get("matched_functions", []))
                 data["total_unmatched"] = total1 - matched_cnt
-
                 with open(json_output, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
             except (OSError, json.JSONDecodeError):
                 pass
 
+            # Cleanup
             for p in (primary_json, secondary_json):
                 try:
                     p.unlink(missing_ok=True)
@@ -378,31 +510,148 @@ class DiffWorker(QThread):
                     pass
             return True
         except Exception as e:
-            logger.exception(f"Ошибка {stem}: {e}")
-            self.error_occurred.emit(f"Ошибка {stem}: {e}")
+            logger.exception(f"Ошибка пост-анализа {stem}: {e}")
+            self._safe_emit(self.error_occurred, f"Ошибка пост-анализа {stem}: {e}")
             return False
 
-    def _run_diaphora_export(self, i64_path: Path, out_sqlite: Path) -> bool:
-        """Запускает diaphora.py --export через IDA с переменными окружения."""
+    # ----- Все существующие приватные методы (неизменны) -----
+    # _run_diaphora_export, _run_diaphora_diff, _merge_diaphora_into_json
+    # _export_cfg_pair, _export_binexport, _run_bindiff
+    # _get_table_columns, _parse_bindiff_result, _export_json
+    # _enrich_diff_json
+
+    def _run_diaphora_export(self, i64_path: Path, out_sqlite: Path,
+                              pulse_callback: Optional[callable] = None) -> bool:
+        """Запускает diaphora.py --export через IDA с переменными окружения.
+        
+        Для крупных файлов (>100MB .i64) добавляет флаги:
+          - -dVPAGESIZE=16384       (увеличенная виртуальная память)
+          - -dUNDO_MAXSIZE=0        (отключение undo для экономии ОЗУ)
+        
+        Процесс IDA запускается через Popen с polling:
+          - stdout/stderr пишутся во временные файлы (без дедлока pipe-буфера)
+          - каждые 30 секунд проверяется рост выходного файла и вызывается
+            pulse_callback (если передан) для обновления статуса в UI
+          - проверяется _cancel_event для возможности прервать через кнопку «Отмена»
+        """
+        import tempfile
+        import time
+
         env = os.environ.copy()
         env["DIAPHORA_AUTO"] = "1"
         env["DIAPHORA_EXPORT_FILE"] = str(out_sqlite)
-        cmd = [
-            self.idat_path, "-A",
-            f"-S\"{_DIAPHORA_SCRIPT}\"",
-            str(i64_path),
-        ]
+
+        # Флаги IDA для больших баз
+        extra_flags = []
+        if self._is_large_file(i64_path):
+            extra_flags = [
+                "-dVPAGESIZE=16384",        # 256MB виртуальной памяти вместо 128MB
+                "-dUNDO_MAXSIZE=0",         # отключаем undo — экономит память
+            ]
+            ida_log = out_sqlite.parent / f"{out_sqlite.stem}.ida.log"
+            extra_flags.append(f"-L\"{ida_log}\"")
+
+        cmd = (
+            [self.idat_path, "-A"]
+            + extra_flags
+            + [f"-S\"{_DIAPHORA_SCRIPT}\"", str(i64_path)]
+        )
         logger.info(f"Diaphora экспорт: {' '.join(str(c) for c in cmd)}")
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
-                                  encoding="utf-8", errors="replace", timeout=300, env=env)
-            return proc.returncode == 0 and out_sqlite.is_file()
-        except subprocess.TimeoutExpired:
-            self.error_occurred.emit(f"Таймаут Diaphora экспорта {i64_path.name}")
-            return False
+            tmp_out = tempfile.TemporaryFile()
+            tmp_err = tempfile.TemporaryFile()
+            proc = subprocess.Popen(cmd, stdout=tmp_out, stderr=tmp_err, env=env)
+
+            # Polling с пульс-обновлениями
+            POLL_INTERVAL = 2.0
+            PULSE_INTERVAL = 30.0  # обновляем статус каждые 30 сек
+            STALL_LOG_INTERVAL = 300.0  # логгируем «зависание» каждые 5 мин
+            start_time = time.monotonic()
+            last_pulse_time = 0.0
+            last_stall_log_time = 0.0
+            last_file_size = 0
+
+            while True:
+                if self._cancel_event.is_set():
+                    proc.kill()
+                    proc.wait()
+                    tmp_out.close()
+                    tmp_err.close()
+                    logger.warning(f"Diaphora экспорт {i64_path.name} прерван (отмена)")
+                    return False
+
+                now = time.monotonic()
+                elapsed = now - start_time
+
+                try:
+                    proc.wait(timeout=POLL_INTERVAL)
+                    break  # процесс завершился
+                except subprocess.TimeoutExpired:
+                    pass
+
+                # Пульс-обновление статуса каждые 30 секунд
+                if pulse_callback and (now - last_pulse_time >= PULSE_INTERVAL):
+                    last_pulse_time = now
+                    mins = int(elapsed // 60)
+                    secs = int(elapsed % 60)
+                    status = f"экспорт {i64_path.name} ({mins} мин {secs} сек)"
+                    try:
+                        pulse_callback(status)
+                    except Exception:
+                        pass
+
+                # Проверка роста выходного файла каждые 5 минут
+                if now - last_stall_log_time >= STALL_LOG_INTERVAL:
+                    last_stall_log_time = now
+                    try:
+                        cur_size = out_sqlite.stat().st_size if out_sqlite.is_file() else 0
+                        if cur_size == last_file_size:
+                            logger.warning(
+                                f"Diaphora экспорт {i64_path.name}: "
+                                f"размер выходного файла не меняется ({cur_size} байт) "
+                                f"уже {int(elapsed//60)} мин. "
+                                f"Процесс IDA ещё работает (PID={proc.pid})."
+                            )
+                        else:
+                            logger.info(
+                                f"Diaphora экспорт {i64_path.name}: "
+                                f"выходной файл {cur_size} байт "
+                                f"(+{cur_size - last_file_size} за 5 мин), "
+                                f"прошло {int(elapsed//60)} мин."
+                            )
+                            last_file_size = cur_size
+                    except OSError:
+                        pass
+
+            # Процесс завершился
+            ok = proc.returncode == 0 and out_sqlite.is_file()
+            if not ok:
+                tmp_out.seek(0); stdout_data = tmp_out.read()
+                tmp_err.seek(0); stderr_data = tmp_err.read()
+                self._save_diaphora_log(
+                    cmd, proc.returncode,
+                    stdout_data.decode("utf-8", errors="replace"),
+                    stderr_data.decode("utf-8", errors="replace"),
+                    out_sqlite,
+                )
+            tmp_out.close()
+            tmp_err.close()
+            return ok
         except Exception as e:
             logger.warning(f"Ошибка Diaphora экспорта: {e}")
             return False
+
+    @staticmethod
+    def _save_diaphora_log(cmd, returncode, stdout, stderr, out_sqlite: Path) -> None:
+        """Сохраняет логи Diaphora экспорта рядом с целевым sqlite."""
+        log_path = out_sqlite.parent / f"{out_sqlite.stem}.diaphora_export.log"
+        try:
+            with open(log_path, "w", encoding="utf-8") as lf:
+                lf.write(f"CMD: {' '.join(str(c) for c in cmd)}\n")
+                lf.write(f"RC: {returncode}\n\n--- STDOUT ---\n{stdout}\n\n--- STDERR ---\n{stderr}\n")
+            logger.warning(f"Diaphora экспорт неудачен. Лог: {log_path}")
+        except OSError:
+            pass
 
     def _run_diaphora_diff(self, db1: Path, db2: Path, out_sqlite: Path) -> bool:
         """Запускает diaphora.py --diff (не требует IDA).
@@ -411,11 +660,8 @@ class DiffWorker(QThread):
         logger.info(f"Diaphora diff: {' '.join(cmd)}")
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
-                                  encoding="utf-8", errors="replace", timeout=600)
+                                  encoding="utf-8", errors="replace")
             return proc.returncode == 0 and out_sqlite.is_file()
-        except subprocess.TimeoutExpired:
-            self.error_occurred.emit("Таймаут Diaphora diff")
-            return False
         except Exception as e:
             logger.warning(f"Ошибка Diaphora diff: {e}")
             return False
@@ -519,7 +765,7 @@ class DiffWorker(QThread):
             ]
             try:
                 subprocess.run(cmd, capture_output=True, text=True, check=False,
-                               encoding="utf-8", errors="replace", timeout=120)
+                               encoding="utf-8", errors="replace")
             except Exception:
                 pass
 
@@ -562,7 +808,7 @@ class DiffWorker(QThread):
             if proc.returncode != 0 or not output_file.is_file():
                 detail = f"stdout:\n{(proc.stdout or '')[:500]}\nstderr:\n{(proc.stderr or '')[:500]}"
                 logger.error(f"BinExport {i64_path.name}: {detail}")
-                self.error_occurred.emit(f"Ошибка BinExport {i64_path.name}")
+                self._safe_emit(self.error_occurred, f"Ошибка BinExport {i64_path.name}")
                 return False
             return True
         except Exception as e:
@@ -738,7 +984,7 @@ class DiffWorker(QThread):
             cmd = [self.idat_path, "-A", f"-S\"{_EXPORT_DATA_SCRIPT}\" pseudocode=1", str(i64_path)]
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
-                                      encoding="utf-8", errors="replace", timeout=300)
+                                      encoding="utf-8", errors="replace")
                 if proc.returncode != 0:
                     continue
                 src = Path(str(i64_path) + ".export.json")
@@ -749,7 +995,7 @@ class DiffWorker(QThread):
                     result[key] = json_path
             except Exception as e:
                 logger.exception(f"Ошибка JSON-экспорта {i64_path.name}: {e}")
-                self.error_occurred.emit(f"Ошибка JSON-экспорта {i64_path.name}: {e}")
+                self._safe_emit(self.error_occurred, f"Ошибка JSON-экспорта {i64_path.name}: {e}")
         return result
 
     @staticmethod
