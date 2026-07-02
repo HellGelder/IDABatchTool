@@ -219,10 +219,10 @@
                 <div class="stat-label">Только BinDiff</div>
                 <div class="stat-label" style="font-size:10px; color:var(--text-tertiary);">(уникальных: {{ bd_only }})</div>
             </div>
-            {% if engine == "bindiff+diaphora" %}
+            {% if engine in ("diaphora", "bindiff+diaphora") %}
             <div class="stat-tile">
                 <div class="stat-value" style="font-size:20px; color:var(--warning);">{{ dp_only + both_cnt }}</div>
-                <div class="stat-label">Только Diaphora</div>
+                <div class="stat-label">{{ "Diaphora" if engine == "diaphora" else "Только Diaphora" }}</div>
                 <div class="stat-label" style="font-size:10px; color:var(--text-tertiary);">(уникальных: {{ dp_only }})</div>
             </div>
             {% endif %}
@@ -235,7 +235,7 @@
                 <div class="stat-label">Не сопоставлено</div>
             </div>
         </div>
-        {% if engine == "bindiff+diaphora" and matched_diaphora_only and matched_diaphora_only|length > 0 %}
+        {% if engine in ("diaphora", "bindiff+diaphora") and matched_diaphora_only and matched_diaphora_only|length > 0 %}
         <div style="margin-top:12px;">
             <div class="stat-label" style="margin-bottom:4px;">Качество совпадений Diaphora</div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">

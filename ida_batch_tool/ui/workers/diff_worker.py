@@ -667,15 +667,36 @@ class DiffWorker(QThread):
             return False
 
     def _merge_diaphora_into_json(self, json_path: Path, diaphora_sqlite: Path, stem: str) -> None:
-        """Сливает результаты Diaphora в .diff.json с разделением по source."""
-        if not json_path.is_file():
-            return
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return
+        """Сливает результаты Diaphora в .diff.json с разделением по source.
+        
+        Если .diff.json ещё не существует (Diaphora-only режим), создаёт его
+        с нуля с engine="diaphora".
+        """
         dres = _parse_diaphora_results(diaphora_sqlite)
+
+        if json_path.is_file():
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                data = {}
+        else:
+            # Diaphora-only — создаём структуру с нуля
+            data = {
+                "primary": "", "secondary": "",
+                "similarity": 0.0, "confidence": 0.0,
+                "description": "", "version": "", "created": "", "modified": "",
+                "file1": {}, "file2": {},
+                "matched_functions": [],
+                "total_functions1": 0, "total_functions2": 0,
+                "error": None,
+            }
+
+        # Если Diaphora-only — помечаем все существующие как diaphora
+        if "engine" not in data or not data.get("matched_functions"):
+            for m in data.get("matched_functions", []):
+                if "source" not in m:
+                    m["source"] = "diaphora"
 
         # Уже существующие (от BinDiff) помечаем source="bindiff"
         for m in data.get("matched_functions", []):
@@ -721,7 +742,15 @@ class DiffWorker(QThread):
 
         # Метаданные
         data["diaphora_matched_count"] = len(new_matches) + len(both_matches)
-        data["engine"] = "bindiff+diaphora" if data.get("matched_functions") else "bindiff"
+        # Определяем engine на основе источни��ов
+        has_bindiff = any(m.get("source") in ("bindiff", "both") for m in data.get("matched_functions", []))
+        has_diaphora = any(m.get("source") in ("diaphora", "both") for m in data.get("matched_functions", []))
+        if has_bindiff and has_diaphora:
+            data["engine"] = "bindiff+diaphora"
+        elif has_diaphora:
+            data["engine"] = "diaphora"
+        elif has_bindiff:
+            data["engine"] = "bindiff"
         data["total_matched"] = len(data["matched_functions"])
 
         # Пробрасываем unmatched из Diaphora
