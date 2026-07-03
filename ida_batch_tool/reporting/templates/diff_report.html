@@ -13,13 +13,11 @@
         }
         .matched-summary { margin-bottom: 12px; font-size: 14px; }
 
-        /* Import columns */
         .import-col { flex: 1; min-width: 280px; }
         .import-list { max-height: 300px; overflow-y: auto; background: var(--surface-secondary); border-radius: var(--radius-sm); padding: 8px 12px; }
         .import-list li { font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-size: 13px; padding: 3px 0; list-style: none; }
         .import-ok { color: var(--success); font-weight: 600; }
 
-        /* side-by-side diff */
         .diff-sbs {
             display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
             background: var(--separator-opaque); border-radius: var(--radius-sm); overflow: hidden;
@@ -35,15 +33,12 @@
         .diff-added   { background: var(--success-tint); }
         .diff-empty   { background: var(--surface-secondary); color: var(--text-tertiary); }
 
-        /* hex side-by-side */
         .hex-sbs { display: flex; gap: 12px; margin: 8px 0; }
         .hex-sbs > .code-block { flex: 1; min-width: 0; }
 
-        /* accordion overrides */
         .accordion-body > h4 { margin-top: 12px; }
         .no-data { color: var(--text-tertiary); font-style: italic; padding: 8px 0; }
 
-        /* Missing functions */
         .missing-list {
             max-height: 200px; overflow-y: auto;
             background: var(--surface-secondary); border-radius: var(--radius-sm);
@@ -60,7 +55,6 @@
             font-size: 11px; font-weight: 600; margin-left: 4px;
         }
 
-        /* Collapsible table wrapper */
         .table-accordion { cursor: pointer; }
         .table-accordion .accordion-header {
             display: flex; justify-content: space-between; align-items: center;
@@ -76,13 +70,9 @@
         }
         .table-accordion.collapsed .accordion-chevron { transform: rotate(-90deg); }
 
-        /* Pseudocode single blocks */
-        .pseudo-single {
-            display: flex; gap: 12px; margin: 8px 0;
-        }
+        .pseudo-single { display: flex; gap: 12px; margin: 8px 0; }
         .pseudo-single > .code-block { flex: 1; min-width: 0; }
 
-        /* CFG side-by-side */
         .cfg-sbs { display: flex; gap: 12px; margin: 8px 0; }
         .cfg-sbs > div { flex: 1; min-width: 0; }
     </style>
@@ -108,7 +98,7 @@
         {% endif %}
     </div>
 
-    <!-- Общая оценка схожести BinDiff -->
+    <!-- Статистика по файлам -->
     <h2>Статистика по файлам</h2>
     <div class="card">
         <div class="flex-row">
@@ -118,9 +108,9 @@
                     <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ real_primary.split('\\')[-1].split('/')[-1] if real_primary else file1.get("filename", "") }}</span></li>
                     <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file1.get("hash", "") }}</code></span></li>
                     <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions1 }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file1.get("basicblocks", 0) + file1.get("libbasicblocks", 0) }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сделано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</span><span class="grouped-row-value">{{ file1.get("instructions", 0) + file1.get("libinstructions", 0) }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</span><span class="grouped-row-value">{{ file1.get("edges", 0) + file1.get("libedges", 0) }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Базовых блоков</span><span class="grouped-row-value">{{ file1.get("basicblocks", 0) + file1.get("libbasicblocks", 0) }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Инструкций</span><span class="grouped-row-value">{{ file1.get("instructions", 0) + file1.get("libinstructions", 0) }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Рёбер</span><span class="grouped-row-value">{{ file1.get("edges", 0) + file1.get("libedges", 0) }}</span></li>
                 </ul>
             </div>
             <div>
@@ -129,20 +119,20 @@
                     <li class="grouped-row"><span class="grouped-row-label">Имя</span><span class="grouped-row-value">{{ real_secondary.split('\\')[-1].split('/')[-1] if real_secondary else file2.get("filename", "") }}</span></li>
                     <li class="grouped-row"><span class="grouped-row-label">Хэш</span><span class="grouped-row-value"><code>{{ file2.get("hash", "") }}</code></span></li>
                     <li class="grouped-row"><span class="grouped-row-label" title="Количество определённых функций">Функций</span><span class="grouped-row-value">{{ total_functions2 }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Последовательность инструкций с единственной точкой входа и единственной точкой выхода. Если первая инструкция блока выполняется, то все остальные инструкции блока гарантированно выполняются последовательно. BinDiff использует базовые блоки как минимальные единицы для структурного сравнения функций.">Базовых блоков</span><span class="grouped-row-value">{{ file2.get("basicblocks", 0) + file2.get("libbasicblocks", 0) }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Отдельные машинные команды, из которых состоят базовые блоки. При сравнении инструкций учитываются только их мнемоники, но не операнды (адреса и непосредственные значения). Это сд��лано намеренно, чтобы находить функциональные соответствия даже при изменении адресов и констант.">Инструкций</span><span class="grouped-row-value">{{ file2.get("instructions", 0) + file2.get("libinstructions", 0) }}</span></li>
-                    <li class="grouped-row"><span class="grouped-row-label" title="Связи между базовыми блоками в графе потока управления (Control Flow Graph). Каждое ребро представляет возможную передачу управления — условный или безусловный переход, вызов функции или возврат. Количество и структура рёбер является ключевым фактором при расчёте общей схожести.">Рёбер</span><span class="grouped-row-value">{{ file2.get("edges", 0) + file2.get("libedges", 0) }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Базовых блоков</span><span class="grouped-row-value">{{ file2.get("basicblocks", 0) + file2.get("libbasicblocks", 0) }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Инструкций</span><span class="grouped-row-value">{{ file2.get("instructions", 0) + file2.get("libinstructions", 0) }}</span></li>
+                    <li class="grouped-row"><span class="grouped-row-label">Рёбер</span><span class="grouped-row-value">{{ file2.get("edges", 0) + file2.get("libedges", 0) }}</span></li>
                 </ul>
             </div>
         </div>
     </div>
 
-    <!-- ▸ Импорты: только в одном из файлов -->
+    <!-- Сравнение hex-дампов -->
     <h2>Сравнение hex-дампов</h2>
     <div class="card">
-	        {% if not global_hex_diff or global_hex_diff|length == 0 or not global_hex_diff[0].hex_rows %}
-	        <p class="empty-state">Сравнение hex-дампов не выполнено (нет данных).</p>
-{% else %}
+        {% if not global_hex_diff or global_hex_diff|length == 0 or not global_hex_diff[0].hex_rows %}
+        <p class="empty-state">Сравнение hex-дампов не выполнено (нет данных).</p>
+        {% else %}
             {% set hd = global_hex_diff[0] %}
             {% set hdrows = hd.hex_rows %}
             {% set meta = hdrows[-1] if hdrows and hdrows[-1].type == "_meta" else none %}
@@ -188,44 +178,38 @@
                 {% endfor %}
                 {% endif %}
             </div>
-{% endif %}
-	    </div>
+        {% endif %}
+    </div>
 
-    <!-- Движок сравнения -->
+    {% set ms = matched_summary if matched_summary else {} %}
+    {% set bd_only = ms.get('bindiff_only', 0) %}
+    {% set dp_only = ms.get('diaphora_only', 0) %}
+    {% set both_cnt = ms.get('both', 0) %}
+    {% set total_found = bd_only + dp_only + both_cnt %}
+
+    <!-- Движок сравнения (показываем только если bindiff+diaphora) -->
+    {% if engine == "bindiff+diaphora" %}
     <h2>Движок сравнения</h2>
     <div class="card">
         <div class="stat-grid">
             <div class="stat-tile" style="text-align:center;">
                 <div class="stat-label" style="margin-bottom:4px;">Движок</div>
                 <div style="display:flex; align-items:center; justify-content:center; gap:8px; min-height:32px; flex-wrap:wrap;">
-                    {% if engine == "bindiff" %}
-                    <span class="badge" style="background:var(--accent-tint); color:var(--accent);">BinDiff</span>
-                    {% elif engine == "diaphora" %}
-                    <span class="badge" style="background:var(--warning-tint); color:var(--warning);">Diaphora</span>
-                    {% elif engine == "bindiff+diaphora" %}
                     <span class="badge" style="background:var(--accent-tint); color:var(--accent);">BinDiff</span>
                     <span style="color:var(--text-tertiary);">+</span>
                     <span class="badge" style="background:var(--warning-tint); color:var(--warning);">Diaphora</span>
-                    {% endif %}
                 </div>
             </div>
-            {% set ms = matched_summary if matched_summary else {} %}
-            {% set bd_only = ms.get('bindiff_only', 0) %}
-            {% set dp_only = ms.get('diaphora_only', 0) %}
-            {% set both_cnt = ms.get('both', 0) %}
-            {% set total_found = bd_only + dp_only + both_cnt %}
             <div class="stat-tile">
                 <div class="stat-value" style="font-size:20px; color:var(--accent);">{{ bd_only + both_cnt }}</div>
                 <div class="stat-label">Только BinDiff</div>
                 <div class="stat-label" style="font-size:10px; color:var(--text-tertiary);">(уникальных: {{ bd_only }})</div>
             </div>
-            {% if engine in ("diaphora", "bindiff+diaphora") %}
             <div class="stat-tile">
                 <div class="stat-value" style="font-size:20px; color:var(--warning);">{{ dp_only + both_cnt }}</div>
-                <div class="stat-label">{{ "Diaphora" if engine == "diaphora" else "Только Diaphora" }}</div>
+                <div class="stat-label">Только Diaphora</div>
                 <div class="stat-label" style="font-size:10px; color:var(--text-tertiary);">(уникальных: {{ dp_only }})</div>
             </div>
-            {% endif %}
             <div class="stat-tile">
                 <div class="stat-value" style="font-size:20px; color:var(--success);">{{ both_cnt }}</div>
                 <div class="stat-label">Общие</div>
@@ -235,7 +219,7 @@
                 <div class="stat-label">Не сопоставлено</div>
             </div>
         </div>
-        {% if engine in ("diaphora", "bindiff+diaphora") and matched_diaphora_only and matched_diaphora_only|length > 0 %}
+        {% if matched_diaphora_only and matched_diaphora_only|length > 0 %}
         <div style="margin-top:12px;">
             <div class="stat-label" style="margin-bottom:4px;">Качество совпадений Diaphora</div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -253,20 +237,21 @@
         </div>
         {% endif %}
     </div>
+    {% endif %}
 
-    <!-- Статистика по файлам -->
+    <!-- Общая оценка схожести (только для BinDiff) -->
     {% if engine in ("bindiff", "bindiff+diaphora") %}
     <h2>Общая оценка схожести BinDiff</h2>
     <div class="card">
         <div class="flex-row">
             <div>
                 <div class="stat-value">{{ "%.2f"|format(similarity * 100) }}%</div>
-                <div class="stat-label" style="margin-bottom:4px;" title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов. Рассчитывается по формуле: ~35% — доля совпавших рёбер потока управления, ~25% — доля совпавших базовых блоков, ~10% — доля совпавших функций, ~10% — доля совпавших инструкций, ~20% — разница индекса MD графа вызовов. Чем ближе к 1.0, тем больше общих структурных элементов в файлах.">Схожесть</div>
+                <div class="stat-label" style="margin-bottom:4px;">Схожесть</div>
                 <div class="progress-bar"><div class="progress-fill" style="width:{{ similarity * 100 }}%;"></div></div>
             </div>
             <div>
                 <div class="stat-value">{{ "%.2f"|format(confidence * 100) }}%</div>
-                <div class="stat-label" style="margin-bottom:4px;" title="Значение от 0 до 1, характеризующее надёжность найденного соответствия. Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией для сглаживания выбросов. Высокая схожесть при низкой уверенности означает, что слабый алгоритм (например, совпадение по адресам) дал хороший результат; низкая схожесть при высокой уверенности — что сильный алгоритм (например, хэш сырых байтов) не обнаружил значительного сходства.">Уверенность</div>
+                <div class="stat-label" style="margin-bottom:4px;">Уверенность</div>
                 <div class="progress-bar"><div class="progress-fill" style="width:{{ confidence * 100 }}%;"></div></div>
             </div>
         </div>
@@ -275,6 +260,7 @@
     </div>
     {% endif %}
 
+    <!-- Различия в импортах -->
     <h2>Различия в импортах</h2>
     <div class="card">
         <div class="flex-row">
@@ -297,22 +283,17 @@
         </div>
     </div>
 
-<!-- ▸ Совпадающие функции — сводка -->
+    <!-- Совпадающие функции -->
     <h2>Совпадающие функции <span class="badge">{{ matched_functions|length }}</span></h2>
     <div class="card">
         <p class="matched-summary" title="Доля функций первичного файла, для которых найдено соответствие хотя бы одним движком.">
             Показатель совпадения: {{ bd_only + dp_only + both_cnt }} из {{ total_functions1 }} функций первичного файла
             ({{ "%.1f"|format((bd_only + dp_only + both_cnt) / total_functions1 * 100) if total_functions1 else 0 }}%)
-            {% if engine == "bindiff+diaphora" %}<span style="font-size:12px; color:var(--text-secondary);">(с учётом обоих движков)</span>{% endif %}
         </p>
 
         {% if matched_functions %}
-        <!-- Таблица: все сопоставления с сортировкой по Источнику -->
         <div class="table-accordion collapsed" id="match-table-accordion">
-            <div class="accordion-header" onclick="
-                var wrap = this.closest('.table-accordion');
-                wrap.classList.toggle('collapsed');
-            ">
+            <div class="accordion-header" onclick="var wrap = this.closest('.table-accordion'); wrap.classList.toggle('collapsed');">
                 <span style="font-weight:600; font-size:14px; color:var(--text-secondary);">
                     Все сопоставления
                     <span class="badge">{{ matched_functions|length }}</span>
@@ -334,7 +315,7 @@
                         <col style="width:auto;">
                         <col style="width:45px;">
                         <col style="width:45px;">
-                        <col style="width:65px; cursor:pointer;" onclick="sortTableBySource('match-table')">
+                        {% if engine == "bindiff+diaphora" %}<col style="width:65px;">{% endif %}
                     </colgroup>
                     <thead>
                         <tr>
@@ -347,11 +328,10 @@
                             <th title="Алгоритм/эвристика матчинга.">Алгоритм</th>
                             <th>Блоки</th>
                             <th>Инстр.</th>
-                            <th title="Нажмите для сортировки по источнику" style="cursor:pointer;">Источник ▾</th>
+                            {% if engine == "bindiff+diaphora" %}<th style="cursor:pointer;">Источник</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
-                        {% set sort_order = {'bindiff': 1, 'both': 2, 'diaphora': 3} %}
                         {% for f in matched_functions|sort(attribute='source') %}
                         <tr>
                             <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ f.name1 }}">{{ f.name1 }}</td>
@@ -363,6 +343,7 @@
                             <td style="font-size:11px; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ f.algorithm_name }}">{{ f.algorithm_name }}</td>
                             <td>{{ f.basicblocks if f.basicblocks is defined else f.nodes1 if f.nodes1 is defined else '—' }}</td>
                             <td>{{ f.instructions if f.instructions is defined else '—' }}</td>
+                            {% if engine == "bindiff+diaphora" %}
                             <td>
                                 {% if f.source == "bindiff" %}
                                 <span class="badge" style="background:var(--accent-tint);color:var(--accent);font-size:9px;">BinDiff</span>
@@ -372,6 +353,7 @@
                                 <span class="badge" style="background:var(--success-tint);color:var(--success);font-size:9px;">Оба</span>
                                 {% endif %}
                             </td>
+                            {% endif %}
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -386,7 +368,7 @@
                 var currentOrder = table.getAttribute('data-sort-order') || 'asc';
                 var newOrder = currentOrder === 'asc' ? 'desc' : 'asc';
                 table.setAttribute('data-sort-order', newOrder);
-                var sourceRank = {'bindiff': 1, 'both': 2, 'diaphora': 3, 'Оба': 2};
+                var sourceRank = {'bindiff': 1, 'both': 2, 'diaphora': 3};
                 rows.sort(function(a, b) {
                     var srcA = a.cells[9].textContent.trim();
                     var srcB = b.cells[9].textContent.trim();
@@ -413,7 +395,7 @@
         {% endif %}
     </div>
 
-    <!-- ▸ Несопоставленные функции -->
+    <!-- Несопоставленные функции -->
     <h2>Несопоставленные функции</h2>
     <div class="card">
         {% set has_un1 = unmatched_functions1 is defined and unmatched_functions1|length > 0 %}
@@ -422,7 +404,7 @@
         {% if not has_un1 and not has_un2 and not total_un %}
             <p class="empty-state">Все функции успешно сопоставлены. Несопоставленных функций нет.</p>
         {% elif not has_un1 and not has_un2 and total_un %}
-            <p class="empty-state">{{ total_unmatched }} функций не имеют сопоставления (имена не определены).</p>
+            <p class="empty-state">{{ total_unmatched }} фу��кций не имеют сопоставления (имена не определены).</p>
         {% else %}
         <div class="flex-row">
             {% if has_un1 %}
@@ -453,7 +435,7 @@
         {% endif %}
     </div>
 
-    <!-- ▸ Глобальный diff по типам инструкций (только с расхождениями) -->
+    <!-- Пофункциональный разбор -->
     <h2>Пофункциональный разбор</h2>
     {% if matched_functions %}
     {% set non_100 = matched_functions|selectattr('similarity', 'lt', 1.0)|list %}
@@ -464,7 +446,6 @@
     <div id="funcList">
     {% for f in matched_functions %}
     {% if f.similarity < 1.0 %}
-    {# Проверяем наличие псевдокода хотя бы с одной стороны #}
     {% set has_pseudo = (f.pseudocode1 is defined and f.pseudocode1 and f.pseudocode1 != "") or (f.pseudocode2 is defined and f.pseudocode2 and f.pseudocode2 != "") %}
     {% set has_hex    = f.hexdump1 or f.hexdump2 %}
     {% set both_pseudo = (f.pseudocode1 is defined and f.pseudocode1 and f.pseudocode1 != "") and (f.pseudocode2 is defined and f.pseudocode2 and f.pseudocode2 != "") %}
@@ -484,21 +465,19 @@
         </div>
         <div class="accordion-body">
             {% if both_pseudo %}
-            {# Обе стороны имеют псевдокод — показываем diff #}
             <h4>Сравнение псевдокода</h4>
             {% if f.pseudocode_diff %}
             <div class="diff-sbs">
                 {% for row in f.pseudocode_diff %}
-                <div class="diff-cell diff-{{ row.type }}">{{ row.left if row.left else ' ' }}</div>
-                <div class="diff-cell diff-{{ row.type }}">{{ row.right if row.right else ' ' }}</div>
+                <div class="diff-cell diff-{{ row.type }}">{{ row.left if row.left else '&nbsp;' }}</div>
+                <div class="diff-cell diff-{{ row.type }}">{{ row.right if row.right else '&nbsp;' }}</div>
                 {% endfor %}
             </div>
             {% else %}
             <p class="no-data">Псевдокод идентичен.</p>
             {% endif %}
             {% elif has_pseudo %}
-            {# Только одна сторона имеет псевдокод — показываем что есть #}
-            <h4>Псевдокод</h4>
+            <h4>Псев��окод</h4>
             <div class="pseudo-single">
                 {% if f.pseudocode1 and f.pseudocode1 != "" %}
                 <div>
@@ -516,7 +495,7 @@
             {% endif %}
 
             {% if has_hex and f.similarity < 1.0 %}
-            <h4>Сравнение Hex‑дампа</h4>
+            <h4>Сравнение Hex-дампа</h4>
             <div class="hex-sbs">
                 <div>
                     <p class="meta-text" style="margin-bottom:4px;">Эталонный ({{ f.address1 }})</p>
@@ -529,7 +508,6 @@
             </div>
             {% endif %}
 
-            {# CFG-изображения только для не 100% #}
             {% if (f.cfg_svg1 or f.cfg_svg2) and f.similarity < 1.0 %}
             <h4>Граф потока управления (CFG)</h4>
             <div class="cfg-sbs">
@@ -547,50 +525,11 @@
                     <img src="{{ f.cfg_svg2 }}" alt="CFG {{ f.name2 }}" style="width:100%; height:auto; border:1px solid var(--separator); border-radius:var(--radius-sm);">
                     {% else %}
                     <p class="no-data">—</p>
-    {% if global_insn_diff %}
-    {% set diffs = global_insn_diff|selectattr('diff', 'ne', 0)|list %}
-    {% if diffs %}
-    <h2>Расхождения по типам инструкций <span class="badge badge--warning">{{ diffs|length }}</span></h2>
-    <div class="card" style="padding:0; overflow-x:auto;">
-        <table class="table" style="margin:0; font-size:12px;">
-            <thead>
-                <tr>
-                    <th>Мнемоника</th>
-                    <th title="Эталонный файл">Primary</th>
-                    <th title="Контрольный файл">Secondary</th>
-                    <th title="Разница (Secondary − Primary)">Δ</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in diffs %}
-                <tr>
-                    <td style="font-family:ui-monospace; font-weight:600;">{{ row.mnemonic }}</td>
-                    <td>{{ row.count1 }}</td>
-                    <td>{{ row.count2 }}</td>
-                    <td>
-                        {% if row.diff > 0 %}
-                        <span style="color:var(--success); font-weight:600;">+{{ row.diff }}</span>
-                        {% elif row.diff < 0 %}
-                        <span style="color:var(--danger); font-weight:600;">{{ row.diff }}</span>
-                        {% else %}
-                        <span style="color:var(--text-tertiary);">0</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
-    {% endif %}
-
-    <!-- ▸ Пофункциональный разбор -->
                     {% endif %}
                 </div>
             </div>
             {% endif %}
 
-            {# Типы инструкций для пары #}
             {% if f.insn_type_diff and f.insn_type_diff|length > 0 %}
             <h4>Расхождения по типам инструкций</h4>
             <table class="table" style="font-size:12px; table-layout:fixed; width:100%;">
@@ -639,8 +578,45 @@
     {% endif %}
     {% endif %}
 
+    <!-- Глобальный diff по типам инструкций -->
+    {% if global_insn_diff %}
+    {% set diffs = global_insn_diff|selectattr('diff', 'ne', 0)|list %}
+    {% if diffs %}
+    <h2>Расхождения по типам инструкций <span class="badge badge--warning">{{ diffs|length }}</span></h2>
+    <div class="card" style="padding:0; overflow-x:auto;">
+        <table class="table" style="margin:0; font-size:12px;">
+            <thead>
+                <tr>
+                    <th>Мнемоника</th>
+                    <th title="Эталонный файл">Primary</th>
+                    <th title="Контрольный файл">Secondary</th>
+                    <th title="Разница (Secondary − Primary)">Δ</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in diffs %}
+                <tr>
+                    <td style="font-family:ui-monospace; font-weight:600;">{{ row.mnemonic }}</td>
+                    <td>{{ row.count1 }}</td>
+                    <td>{{ row.count2 }}</td>
+                    <td>
+                        {% if row.diff > 0 %}
+                        <span style="color:var(--success); font-weight:600;">+{{ row.diff }}</span>
+                        {% elif row.diff < 0 %}
+                        <span style="color:var(--danger); font-weight:600;">{{ row.diff }}</span>
+                        {% else %}
+                        <span style="color:var(--text-tertiary);">0</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% endif %}
+
     <script>
-        /* live search for post-functional analysis */
         const searchInput = document.getElementById('funcSearch');
         if (searchInput) {
             searchInput.addEventListener('input', function() {
@@ -652,5 +628,5 @@
         }
     </script>
 
-    </body>
+</body>
 </html>

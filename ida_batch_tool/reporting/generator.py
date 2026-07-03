@@ -517,6 +517,11 @@ class DiffReportGenerator(BaseReportGenerator):
         avg_similarity = total_similarity / count if count else 0.0
         avg_confidence = total_confidence / count if count else 0.0
 
+        # Определяем, какие движки реально использовались
+        engines_used = set(p.get("engine", "bindiff") for p in pairs)
+        has_bindiff = any(e in ("bindiff", "bindiff+diaphora") for e in engines_used)
+        has_diaphora = any(e in ("diaphora", "bindiff+diaphora") for e in engines_used)
+
         template = self.env.get_template("diff_index.html")
         html = template.render(
             left_dir=str(left_dir),
@@ -527,6 +532,8 @@ class DiffReportGenerator(BaseReportGenerator):
             pairs=pairs,
             generation_time=generation_time,
             ida_version=ida_version,
+            has_bindiff=has_bindiff,
+            has_diaphora=has_diaphora,
         )
         index_path = reports_dir / "index.html"
         with open(index_path, "w", encoding="utf-8") as f:

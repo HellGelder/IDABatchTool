@@ -566,10 +566,12 @@ class DiffWorker(QThread):
             POLL_INTERVAL = 2.0
             PULSE_INTERVAL = 30.0  # обновляем статус каждые 30 сек
             STALL_LOG_INTERVAL = 300.0  # логгируем «зависание» каждые 5 мин
+            STALL_TIMEOUT = 3600.0  # 60 мин без роста файла → убиваем процесс
             start_time = time.monotonic()
             last_pulse_time = 0.0
             last_stall_log_time = 0.0
             last_file_size = 0
+            stall_start_time: Optional[float] = None  # когда начался stall
 
             while True:
                 if self._cancel_event.is_set():
@@ -606,12 +608,30 @@ class DiffWorker(QThread):
                     try:
                         cur_size = out_sqlite.stat().st_size if out_sqlite.is_file() else 0
                         if cur_size == last_file_size:
+                            # Файл не растёт — возможно, зависание
+                            if stall_start_time is None:
+                                stall_start_time = now
+                            stall_duration = now - stall_start_time
+
                             logger.warning(
                                 f"Diaphora экспорт {i64_path.name}: "
                                 f"размер выходного файла не меняется ({cur_size} байт) "
-                                f"уже {int(elapsed//60)} мин. "
+                                f"уже {int(elapsed//60)} мин (stall {int(stall_duration//60)} мин). "
                                 f"Процесс IDA ещё работает (PID={proc.pid})."
                             )
+
+                            # Если stall длится дольше таймаута — убиваем процесс
+                            if stall_duration >= STALL_TIMEOUT:
+                                logger.error(
+                                    f"Diaphora экспорт {i64_path.name}: "
+                                    f"STALL TIMEOUT ({int(STALL_TIMEOUT//60)} мин без роста файла). "
+                                    f"Убиваем процесс IDA (PID={proc.pid})."
+                                )
+                                proc.kill()
+                                proc.wait()
+                                tmp_out.close()
+                                tmp_err.close()
+                                return False
                         else:
                             logger.info(
                                 f"Diaphora экспорт {i64_path.name}: "
@@ -620,6 +640,7 @@ class DiffWorker(QThread):
                                 f"прошло {int(elapsed//60)} мин."
                             )
                             last_file_size = cur_size
+                            stall_start_time = None  # сброс stall-детектора
                     except OSError:
                         pass
 

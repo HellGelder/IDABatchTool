@@ -38,6 +38,7 @@
             <div class="stat-value">{{ total_pairs }}</div>
             <div class="stat-label">Всего пар</div>
         </div>
+        {% if has_bindiff %}
         <div class="stat-tile">
             <div class="stat-value">{{ "%.1f"|format(avg_similarity * 100) }}%</div>
             <div class="stat-label" title="Среднее арифметическое значений общей схожести (от 0 до 1) для всех пар файлов. Позволяет быстро оценить, насколько в среднем изменились файлы между двумя версиями директории. Не учитывает пары с ошибками сравнения.">Средняя схожесть</div>
@@ -46,6 +47,7 @@
             <div class="stat-value">{{ "%.1f"|format(avg_confidence * 100) }}%</div>
             <div class="stat-label" title="Среднее арифметическое значений уверенности (от 0 до 1) по всем успешно сравнённым парам. Даёт представление о надёжности полученных результатов в целом по директории.">Средняя уверенность</div>
         </div>
+        {% endif %}
     </div>
 
     <h2>Список сравнений</h2>
@@ -55,14 +57,17 @@
             <thead>
                 <tr>
                     <th>Файл</th>
-                    <th title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов. При 100% hexdump-сх��жести используется она.">Схожесть</th>
+                    {% if has_bindiff %}
+                    <th title="Значение от 0 до 1, отражающее общую структурную близость двух бинарных файлов. При 100% hexdump-схожести используется она.">Схожесть</th>
                     <th title="Значение от 0 до 1 — побайтовая схожесть hex-дампов оригинальных исполняемых файлов с учётом alignment.">Hexdump схожесть</th>
                     <th title="Значение от 0 до 1, характеризующее надёжность найденного соответствия.">Уверенность</th>
+                    {% endif %}
                     <th>Совпало функций</th>
+                    {% if has_bindiff %}
                     <th>Всего функций</th>
                     <th title="Совпадают ли хэш-суммы (SHA-1) содержимого секций бинарных файлов. Совпадение означает побайтовую идентичность.">Хэши</th>
-                    <th>Движок</th>
-                    <th>Diaphora</th>
+                    {% endif %}
+                    {% if has_diaphora%}<th>Diaphora</th>{% endif %}
                     <th>Подробнее</th>
                 </tr>
             </thead>
@@ -70,6 +75,7 @@
                 {% for pair in pairs %}
                 <tr>
                     <td style="font-family:ui-monospace,'SF Mono','Consolas',monospace; font-size:12px;">{{ pair.stem }}</td>
+                    {% if has_bindiff %}
                     <td>
                         {% set pct = pair.display_similarity if pair.display_similarity is defined and pair.display_similarity > 0 else pair.similarity %}
                         {% set pct = pct * 100 %}
@@ -87,7 +93,9 @@
                         {% endif %}
                     </td>
                     <td>{{ "%.1f"|format(pair.confidence * 100) }}%</td>
+                    {% endif %}
                     <td>{{ pair.matched_count }}</td>
+                    {% if has_bindiff %}
                     <td>{{ pair.total_funcs1 }}</td>
                     <td>
                         {% if pair.hash1 and pair.hash2 %}
@@ -100,17 +108,8 @@
                         <span class="tag tag--neutral">—</span>
                         {% endif %}
                     </td>
-                    <td>
-                        {% if pair.engine == "bindiff" %}
-                        <span class="tag" style="background:var(--accent-tint);color:var(--accent);">BinDiff</span>
-                        {% elif pair.engine == "diaphora" %}
-                        <span class="tag" style="background:var(--warning-tint);color:var(--warning);">Diaphora</span>
-                        {% elif pair.engine == "bindiff+diaphora" %}
-                        <span class="tag" style="background:var(--accent-tint);color:var(--accent);">BinDiff</span>
-                        <span style="color:var(--text-tertiary);font-size:11px;">+</span>
-                        <span class="tag" style="background:var(--warning-tint);color:var(--warning);">Diaphora</span>
-                        {% endif %}
-                    </td>
+                    {% endif %}
+                    {% if has_diaphora %}
                     <td>
                         {% if pair.diaphora_matched_count and pair.diaphora_matched_count > 0 %}
                         <span class="tag" style="background:var(--warning-tint);color:var(--warning);">+{{ pair.diaphora_matched_count }}</span>
@@ -118,6 +117,7 @@
                         <span class="tag tag--neutral">—</span>
                         {% endif %}
                     </td>
+                    {% endif %}
                     <td><a class="pair-link" href="{{ pair.report_filename }}">Отчёт</a></td>
                 </tr>
                 {% endfor %}
@@ -131,50 +131,43 @@
     <h2>Описание метрик сравнения</h2>
     <div class="card">
         <p style="font-size:13px; color:var(--text-secondary); margin-bottom:12px;">
-            Ниже приведено описание метрик, используемых для оценки схожести бинарных файлов. 
-            Метрики перечислены в порядке убывания достоверности.
+            Ниже приведено описание метрик, используемых для оценки схожести бинарных файлов.
+            Метрики перечислены в порядке ��бывания достоверности.
         </p>
 
         <h3>Сравнение hex-дампов (наиболее достоверная метрика)</h3>
         <p style="font-size:13px;">
-            <strong>Hex-dump сравнение</strong> — полное побайтовое сравнение исходных исполняемых файлов поблочно (16 байт) 
+            <strong>Hex-dump сравнение</strong> — полное побайтовое сравнение исходных исполняемых файлов поблочно (16 байт)
             в формате side-by-side. Эталонный файл слева, контрольный справа.
         </p>
         <p style="font-size:13px;">
-            <strong>Схожесть hex-дампов</strong> — значение от 0 до 1 (0%–100%), вычисленное как отношение количества совпавших байтов 
-            к общему размеру файлов с учётом выравнивания (alignment). Является <strong>наиболее достоверной метрикой</strong>, 
+            <strong>Схожесть hex-дампов</strong> — значение от 0 до 1 (0%–100%), вычисленное как отношение количества совпавших байтов
+            к общему размеру файлов с учётом выравнивания (alignment). Является <strong>наиболее достоверной метрикой</strong>,
             так как основана на прямом побайтовом сравнении, а не на эвристических алгоритмах.
         </p>
         <p style="font-size:13px;">
             При 100% схожести hex-дампов файлы побайтово идентичны — это точный результат, не требующий дополнительной верификации.
             При меньшей схожести в отчёте отображаются различающиеся области с подсветкой изменений.
         </p>
-        <p style="font-size:13px;">
-            Особенности отображения:
-            <ul style="font-size:13px;">
-                <li>При полной идентичности показываются первые 4 строки, многоточие и последние 4 строки hex-дампов;</li>
-                <li>При расхождениях отображаются все строки: одинаковые блоки серым цветом, различающиеся — с красной (эталон) и зелёной (контроль) подсветкой;</li>
-                <li>Схожесть hex-дампов также выводится в общую таблицу индексного файла.</li>
-            </ul>
-        </p>
 
+        {% if has_bindiff %}
         <h3 style="margin-top:16px;">BinDiff (Google) — эвристический анализ</h3>
         <p style="font-size:13px;">
-            <strong>Предупреждение:</strong> Эвристические методы сравнения, используемые BinDiff и Diaphora, могут давать 
-            <strong>ошибки первого рода (ложные срабатывания)</strong> — когда несвязанные функции ошибочно помечаются как совпавшие, 
-            и <strong>ошибки второго рода (пропуски)</strong> — когда реально совпадающие функции не обнаруживаются. 
+            <strong>Предупреждение:</strong> Эвристические методы сравнения могут давать
+            <strong>ошибки первого рода (ложные срабатывания)</strong> — когда несвязанные функции ошибочно помечаются как совпавшие,
+            и <strong>ошибки второго рода (пропуски)</strong> — когда реально совпадающие функции не обнаруживаются.
             Результаты эвристического анализа рекомендуется перепроверять визуально.
         </p>
         <p style="font-size:13px;">
-            <strong>Схожесть (Similarity)</strong> — значение от 0 до 1, отражающее общую структурную близость двух файлов. 
-            Рассчитывается как взвешенная комбинация: ~35% — доля совпавших рёбер потока управления, ~25% — доля совпавших базовых блоков, 
-            ~10% — доля совпавших функций, ~10% — доля совпавших инструкций, ~20% — разница индекса MD графа вызовов. 
+            <strong>Схожесть (Similarity)</strong> — значение от 0 до 1, отражающее общую структурную близость двух файлов.
+            Рассчитывается как взвешенная комбинация: ~35% — доля совпавших рёбер потока управления, ~25% — доля совпавших базовых блоков,
+            ~10% — доля совпавших функций, ~10% — доля совпавших инструкций, ~20% — разница индекса MD графа вызовов.
             Чем ближе к 1.0, тем больше общих структурных элементов.
         </p>
         <p style="font-size:13px;">
-            <strong>Уверенность (Confidence)</strong> — значение от 0 до 1, характеризующее надёжность найденного соответствия. 
-            Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией. 
-            Высокая схожесть при низкой уверенности означает, что слабый алгоритм дал хороший результат; 
+            <strong>Уверенность (Confidence)</strong> — значение от 0 до 1, характеризующее надёжность найденного соответствия.
+            Рассчитывается как среднее качество сработавших алгоритмов сопоставления, взвешенное сигмоидной функцией.
+            Высокая схожесть при низкой уверенности означает, что слабый алгоритм дал хороший результат;
             низкая схожесть при высокой уверенности — сильный алгоритм не обнаружил сходства.
         </p>
         <p style="font-size:13px;">
@@ -208,14 +201,16 @@
             </details>
         </p>
         <p style="font-size:13px;">
-            <strong>При сопоставлении по имени</strong> BinDiff проверяет не только совпадение символического имени, 
-            но и внутреннюю структуру функции (хэш тела функции, количество базовых блоков, инструкций и рёбер). 
+            <strong>При сопоставлении по имени</strong> BinDiff проверяет не только совпадение символического имени,
+            но и внутреннюю структуру функции (хэш тела функции, количество базовых блоков, инструкций и рёбер).
             Если структура совпадает — алгоритм «name hash matching». Если структура различается — может сработать другой алгоритм или совпадение не засчитывается.
         </p>
+        {% endif %}
 
+        {% if has_diaphora %}
         <h3 style="margin-top:16px;">Diaphora (Joxean Koret)</h3>
         <p style="font-size:13px;">
-            <strong>Схожесть (Ratio)</strong> — значение от 0 до 1, вычисленное по результатам сработавшей эвристики. 
+            <strong>Схожесть (Ratio)</strong> — значение от 0 до 1, вычисленное по результатам сработавшей эвристики.
             Каждая эвристика имеет свой порог минимального ratio. Чем выше ratio, тем надёжнее совпадение.
         </p>
         <p style="font-size:13px;">
@@ -230,12 +225,11 @@
             <strong>50 эвристик Diaphora</strong> (официальный репозиторий: <a href="https://github.com/joxeankoret/diaphora" target="_blank">github.com/joxeankoret/diaphora</a>):
             <details>
             <summary style="cursor:pointer; font-weight:600;">Развернуть таблицу</summary>
-            
             <p style="font-size:12px; margin-top:8px; font-weight:600;">Best — наивысшая надёжность, без ложных срабатываний:</p>
             <table class="table" style="font-size:11px;">
                 <thead><tr><th>№</th><th>Эвристика (англ.)</th><th>Описание</th><th>Min ratio</th></tr></thead>
                 <tbody>
-                    <tr><td>1</td><td>Same RVA and hash</td><td>Совпадение относительного виртуального адреса (RVA) и хэша функции. Надёжно для файлов с одинаковой компоновкой.</td><td>—</td></tr>
+                    <tr><td>1</td><td>Same RVA and hash</td><td>Совпадение относительного виртуального адреса (RVA) и хэша функции.</td><td>—</td></tr>
                     <tr><td>2</td><td>Same order and hash</td><td>Совпадение порядка следования в файле и хэша функции.</td><td>—</td></tr>
                     <tr><td>3</td><td>Function Hash</td><td>Совпадение хэша тела функции (SHA-1 от байтов).</td><td>—</td></tr>
                     <tr><td>4</td><td>Bytes hash</td><td>Совпадение хэша сырых байтов функции без нормализации.</td><td>—</td></tr>
@@ -249,72 +243,67 @@
                     <tr><td>12</td><td>Same RVA</td><td>Совпадение относительного виртуального адреса (RVA) без проверки хэша.</td><td>0.7</td></tr>
                 </tbody>
             </table>
-
             <p style="font-size:12px; margin-top:12px; font-weight:600;">Partial — средняя надёжность, возможны ложные срабатывания:</p>
             <table class="table" style="font-size:11px;">
                 <thead><tr><th>№</th><th>Эвристика (англ.)</th><th>Описание</th><th>Min ratio</th></tr></thead>
                 <tbody>
-                    <tr><td>13</td><td>Same named compilation unit function match</td><td>Функции из именованной единицы компиляции (объектного файла с известным именем).</td><td>0.44</td></tr>
+                    <tr><td>13</td><td>Same named compilation unit function match</td><td>Функции из именованной единицы компиляции.</td><td>0.44</td></tr>
                     <tr><td>14</td><td>Same anonymous compilation unit function match</td><td>Функции из анонимной единицы компиляции.</td><td>0.449</td></tr>
                     <tr><td>15</td><td>Same constants</td><td>Совпадение констант, используемых в теле функции.</td><td>0.5</td></tr>
-                    <tr><td>16</td><td>Same rare KOKA hash</td><td>Совпадение редкого хэша KOKA (графовый хэш потока управления).</td><td>0.45</td></tr>
-                    <tr><td>17</td><td>Same address and rare constant</td><td>Совпадение адреса и редкой константы в функции.</td><td>0.5</td></tr>
-                    <tr><td>18</td><td>Same rare constant</td><td>Совпадение редкой константы, встречающейся в теле функции.</td><td>0.2</td></tr>
+                    <tr><td>16</td><td>Same rare KOKA hash</td><td>Совпадение редкого хэша KOKA.</td><td>0.45</td></tr>
+                    <tr><td>17</td><td>Same address and rare constant</td><td>Совпадение адреса и редкой константы.</td><td>0.5</td></tr>
+                    <tr><td>18</td><td>Same rare constant</td><td>Совпадение редкой константы.</td><td>0.2</td></tr>
                     <tr><td>19</td><td>Similar pseudo-code and names</td><td>Похожий псевдокод при совпадении имён вызываемых функций.</td><td>0.579</td></tr>
-                    <tr><td>20</td><td>Mnemonics small-primes-product</td><td>Произведение простых чисел мнемоник ассемблера (коммутативный хэш).</td><td>0.6</td></tr>
-                    <tr><td>21</td><td>Same nodes, edges, loops and SCC</td><td>Совпадение структуры графа: узлы, рёбра, циклы, сильно связные компоненты.</td><td>0.549</td></tr>
-                    <tr><td>22</td><td>Same low complexity, prototype and names</td><td>Низкая цикломатическая сложность + прототип + имена.</td><td>0.5</td></tr>
-                    <tr><td>23</td><td>Same low complexity and names</td><td>Низкая сложность + совпадение имён вызываемых функций.</td><td>0.5</td></tr>
-                    <tr><td>24</td><td>Switch structures</td><td>Совпадение структур switch/case (количество и типы case-веток).</td><td>0.5</td></tr>
-                    <tr><td>25</td><td>Pseudo-code fuzzy (normal)</td><td>Нечёткое сравнение псевдокода (нормальный порядок строк).</td><td>0.5</td></tr>
-                    <tr><td>26</td><td>Partial pseudo-code fuzzy hash (normal)</td><td>Частичный нечёткий хэш псевдокода — прямой порядок.</td><td>0.5</td></tr>
-                    <tr><td>27</td><td>Partial pseudo-code fuzzy hash (reverse)</td><td>Частичный нечёткий хэш псевдокода — обратный порядок.</td><td>0.5</td></tr>
-                    <tr><td>28</td><td>Partial pseudo-code fuzzy hash (mixed)</td><td>Частичный нечёткий хэш псевдокода — смешанный порядок.</td><td>0.5</td></tr>
-                    <tr><td>29</td><td>Same rare assembly instruction</td><td>Совпадение редкой ассемблерной инструкции в теле функции.</td><td>0.5</td></tr>
-                    <tr><td>30</td><td>Same rare basic block mnemonics list</td><td>Совпадение редкого набора мнемоник базового блока.</td><td>0.5</td></tr>
-                    <tr><td>31</td><td>Loop count</td><td>Совпадение количества циклов в функции.</td><td>0.49</td></tr>
-                    <tr><td>32</td><td>Same compilation unit</td><td>Функции принадлежат одной единице компиляции (объектному файлу).</td><td>—</td></tr>
-                    <tr><td>33</td><td>Same KOKA hash and constants</td><td>Совпадение хэша KOKA и набора констант.</td><td>—</td></tr>
-                    <tr><td>34</td><td>Same KOKA hash and MD-Index</td><td>Совпадение хэша KOKA и MD-индекса.</td><td>—</td></tr>
-                    <tr><td>35</td><td>Same rare MD Index</td><td>Совпадение редкого MD-индекса.</td><td>—</td></tr>
-                    <tr><td>36</td><td>Same MD Index and constants</td><td>Совпадение MD-индекса и набора констант.</td><td>—</td></tr>
-                    <tr><td>37</td><td>Import names hash</td><td>Совпадение хэша имён импортируемых функций.</td><td>—</td></tr>
-                    <tr><td>38</td><td>Mnemonics and names</td><td>Совпадение мнемоник и имён вызываемых функций.</td><td>—</td></tr>
-                    <tr><td>39</td><td>Pseudo-code fuzzy hash</td><td>Нечёткий хэш псевдокода (полный).</td><td>—</td></tr>
-                    <tr><td>40</td><td>Pseudo-code fuzzy (mixed)</td><td>Нечёткое сравнение псевдокода, смешанный порядок строк.</td><td>—</td></tr>
-                    <tr><td>41</td><td>Pseudo-code fuzzy (reverse)</td><td>Нечёткое сравнение псевдокода, обратный порядок строк.</td><td>—</td></tr>
-                    <tr><td>42</td><td>Pseudo-code fuzzy AST hash</td><td>Нечёткий хэш AST-дерева псевдокода.</td><td>—</td></tr>
-                    <tr><td>43</td><td>Callee found diffing matches assembly</td><td>Динамическая: вызываемые функции (callee) уже сопоставлены по ассемблеру.</td><td>—</td></tr>
-                    <tr><td>44</td><td>Callee found diffing matches pseudo-code</td><td>Динамическая: вызываемые функции уже сопоставлены по псевдокоду.</td><td>—</td></tr>
+                    <tr><td>20</td><td>Mnemonics small-primes-product</td><td>Произведение простых чисел мнемоник ассемблера.</td><td>0.6</td></tr>
+                    <tr><td>21</td><td>Same nodes, edges, loops and SCC</td><td>Совпадение структуры графа.</td><td>0.549</td></tr>
+                    <tr><td>22</td><td>Same low complexity, prototype and names</td><td>Низкая сложность + прототип + имена.</td><td>0.5</td></tr>
+                    <tr><td>23</td><td>Same low complexity and names</td><td>Низкая сложность + имена.</td><td>0.5</td></tr>
+                    <tr><td>24</td><td>Switch structures</td><td>Совпадение структур switch/case.</td><td>0.5</td></tr>
+                    <tr><td>25</td><td>Pseudo-code fuzzy (normal)</td><td>Нечёткое сравнение псевдокода (прямой порядок).</td><td>0.5</td></tr>
+                    <tr><td>26</td><td>Partial pseudo-code fuzzy hash (normal)</td><td>Частичный нечёткий хэш псевдокода.</td><td>0.5</td></tr>
+                    <tr><td>27</td><td>Partial pseudo-code fuzzy hash (reverse)</td><td>Частичный нечёткий хэш (обратный).</td><td>0.5</td></tr>
+                    <tr><td>28</td><td>Partial pseudo-code fuzzy hash (mixed)</td><td>Частичный нечёткий хэш (смешанный).</td><td>0.5</td></tr>
+                    <tr><td>29</td><td>Same rare assembly instruction</td><td>Совпадение редкой инструкции.</td><td>0.5</td></tr>
+                    <tr><td>30</td><td>Same rare basic block mnemonics list</td><td>Совпадение редкого набора мнемоник блока.</td><td>0.5</td></tr>
+                    <tr><td>31</td><td>Loop count</td><td>Совпадение количества циклов.</td><td>0.49</td></tr>
+                    <tr><td>32</td><td>Same compilation unit</td><td>Одна единица компиляции.</td><td>—</td></tr>
+                    <tr><td>33</td><td>Same KOKA hash and constants</td><td>Хэш KOKA + константы.</td><td>—</td></tr>
+                    <tr><td>34</td><td>Same KOKA hash and MD-Index</td><td>Хэш KOKA + MD-Index.</td><td>—</td></tr>
+                    <tr><td>35</td><td>Same rare MD Index</td><td>Редкий MD-Index.</td><td>—</td></tr>
+                    <tr><td>36</td><td>Same MD Index and constants</td><td>MD-Index + константы.</td><td>—</td></tr>
+                    <tr><td>37</td><td>Import names hash</td><td>Хэш имён импортов.</td><td>—</td></tr>
+                    <tr><td>38</td><td>Mnemonics and names</td><td>Мнемоники + имена.</td><td>—</td></tr>
+                    <tr><td>39</td><td>Pseudo-code fuzzy hash</td><td>Нечёткий хэш псевдокода.</td><td>—</td></tr>
+                    <tr><td>40</td><td>Pseudo-code fuzzy (mixed)</td><td>Нечёткий псевдокод (смешанный).</td><td>—</td></tr>
+                    <tr><td>41</td><td>Pseudo-code fuzzy (reverse)</td><td>Нечёткий псевдокод (обратный).</td><td>—</td></tr>
+                    <tr><td>42</td><td>Pseudo-code fuzzy AST hash</td><td>Нечёткий хэш AST.</td><td>—</td></tr>
+                    <tr><td>43</td><td>Callee found diffing matches assembly</td><td>Вызываемые сопоставлены (ассемблер).</td><td>—</td></tr>
+                    <tr><td>44</td><td>Callee found diffing matches pseudo-code</td><td>Вызываемые сопоставлены (псевдокод).</td><td>—</td></tr>
                 </tbody>
             </table>
-
             <p style="font-size:12px; margin-top:12px; font-weight:600;">Unreliable — низкая надёжность, только как подсказка:</p>
             <table class="table" style="font-size:11px;">
                 <thead><tr><th>№</th><th>Эвристика (англ.)</th><th>Описание</th><th>Min ratio</th></tr></thead>
                 <tbody>
-                    <tr><td>45</td><td>Same graph</td><td>Совпадение графа потока управления (CFG) без учёта содержимого узлов.</td><td>0.5</td></tr>
-                    <tr><td>46</td><td>Strongly connected components</td><td>Совпадение количества и структуры сильно связных компонент графа.</td><td>0.8</td></tr>
-                    <tr><td>47</td><td>Nodes, edges, complexity and mnemonics</td><td>Комбинация узлов, рёбер, сложности и мнемоник.</td><td>—</td></tr>
-                    <tr><td>48</td><td>Nodes, edges, complexity and prototype</td><td>Комбинация узлов, рёбер, сложности и прототипа функции.</td><td>—</td></tr>
-                    <tr><td>49</td><td>Nodes, edges, complexity, indegree/outdegree</td><td>Комбинация узлов, рёбер, сложности и входящей/исходящей степени.</td><td>—</td></tr>
-                    <tr><td>50</td><td>Topological sort hash</td><td>Хэш топологической сортировки узлов графа потока управления.</td><td>—</td></tr>
-                    <tr><td>51</td><td>Same high complexity</td><td>Совпадение высокой цикломатической сложности (для сложных функций).</td><td>—</td></tr>
+                    <tr><td>45</td><td>Same graph</td><td>Совпадение CFG без учёта содержимого узлов.</td><td>0.5</td></tr>
+                    <tr><td>46</td><td>Strongly connected components</td><td>Сильно связные компоненты.</td><td>0.8</td></tr>
+                    <tr><td>47</td><td>Nodes, edges, complexity and mnemonics</td><td>Узлы + рёбра + сложность + мнемоники.</td><td>—</td></tr>
+                    <tr><td>48</td><td>Nodes, edges, complexity and prototype</td><td>Узлы + рёбра + сложность + прототип.</td><td>—</td></tr>
+                    <tr><td>49</td><td>Nodes, edges, complexity, indegree/outdegree</td><td>Узлы + рёбра + сложность + степени.</td><td>—</td></tr>
+                    <tr><td>50</td><td>Topological sort hash</td><td>Хэш топологической сортировки CFG.</td><td>—</td></tr>
+                    <tr><td>51</td><td>Same high complexity</td><td>Высокая цикломатическая сложность.</td><td>—</td></tr>
                 </tbody>
             </table>
             </details>
         </p>
-        <p style="font-size:13px;">
-            <strong>Пофункциональный разбор:</strong> Для каждой пары функций (со схожестью менее 100%) выполняется: 
-            сравнение псевдокода (side-by-side diff), сравнение hex-дампа, граф потока управления (CFG), расхождения по типам инструкций.
-        </p>
+        {% endif %}
 
         <h3 style="margin-top:16px;">Дополнительные метрики</h3>
         <p style="font-size:13px;">
             <strong>Hex-dump сравнение:</strong> Полное поблочное (16 байт) side-by-side сравнение исходных исполняемых файлов.
             При идентичности показываются первые 4 строки, многоточие и последние 4 строки. При расхождениях — все строки с подсветкой различий.
         </p>
-        </div>
+    </div>
 
 </body>
 </html>
