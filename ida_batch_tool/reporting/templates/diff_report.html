@@ -139,7 +139,7 @@
             {% set total = meta.total_lines if meta else '?' %}
             {% set has_diff = namespace(found=false) %}
             {% for row in hdrows %}
-                {% if row.type == "removed" and row.left != row.right %}{% set has_diff.found = true %}{% endif %}
+                {% if row.type == "diff" %}{% set has_diff.found = true %}{% endif %}
             {% endfor %}
             {% set hd_sim = hd.hexdump_similarity if hd.hexdump_similarity is defined else 0.0 %}
             <p class="meta-text" style="margin-bottom:4px;">
@@ -154,26 +154,17 @@
                 <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Эталонный файл</div>
                 <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Контрольный файл</div>
                 {% if not has_diff.found %}
-                {% set eq_rows = hdrows|selectattr('type', 'ne', '_meta')|list %}
-                {% for line in eq_rows[:4] %}
-                <div class="diff-cell diff-equal">{{ line.left if line.left else '&nbsp;' }}</div>
-                <div class="diff-cell diff-equal">{{ line.right if line.right else '&nbsp;' }}</div>
-                {% endfor %}
-                <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… (всего {{ total }} строк) …</div>
-                {% for line in eq_rows[-4:] %}
-                <div class="diff-cell diff-equal">{{ line.left if line.left else '&nbsp;' }}</div>
-                <div class="diff-cell diff-equal">{{ line.right if line.right else '&nbsp;' }}</div>
-                {% endfor %}
+                <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… (всего {{ total }} строк, файлы идентичны) …</div>
                 {% else %}
                 {% for row in hdrows %}
-                    {% if row.type != "_meta" %}
                     {% if row.type == "equal" %}
-                    <div class="diff-cell diff-equal">{{ row.left if row.left else '&nbsp;' }}</div>
-                    <div class="diff-cell diff-equal">{{ row.right if row.right else '&nbsp;' }}</div>
-                    {% elif row.type == "removed" %}
-                    <div class="diff-cell diff-removed">{{ row.left if row.left else '&nbsp;' }}</div>
-                    <div class="diff-cell diff-added">{{ row.right if row.right else '&nbsp;' }}</div>
-                    {% endif %}
+                    <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… ({{ row.count }} идентичных строк) …</div>
+                    {% elif row.type == "diff" %}
+                    {% set lb = row.left_bytes if row.left_bytes is defined else [] %}
+                    {% set rb = row.right_bytes if row.right_bytes is defined else [] %}
+                    {% set addr = row.addr if row.addr is defined else '' %}
+                    <div class="diff-cell" style="white-space:pre; font-family:ui-monospace,'SF Mono','Consolas',monospace; font-size:12px;"><span style="color:var(--text-tertiary);">{{ addr }}  </span>{%- for b in lb %}{% if b.d == 1 %}<span style="background:rgba(255,60,60,0.35);font-weight:600;">{{ b.b }}</span> {% else %}<span>{{ b.b }} </span>{% endif %}{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.left_ascii }}|</span></div>
+                    <div class="diff-cell" style="white-space:pre; font-family:ui-monospace,'SF Mono','Consolas',monospace; font-size:12px;"><span style="color:var(--text-tertiary);">{{ addr }}  </span>{%- for b in rb %}{% if b.d == 1 %}<span style="background:rgba(60,255,60,0.35);font-weight:600;">{{ b.b }}</span> {% else %}<span>{{ b.b }} </span>{% endif %}{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.right_ascii }}|</span></div>
                     {% endif %}
                 {% endfor %}
                 {% endif %}
@@ -404,7 +395,7 @@
         {% if not has_un1 and not has_un2 and not total_un %}
             <p class="empty-state">Все функции успешно сопоставлены. Несопоставленных функций нет.</p>
         {% elif not has_un1 and not has_un2 and total_un %}
-            <p class="empty-state">{{ total_unmatched }} фу��кций не имеют сопоставления (имена не определены).</p>
+            <p class="empty-state">{{ total_unmatched }} функций не имеют сопоставления (имена не определены).</p>
         {% else %}
         <div class="flex-row">
             {% if has_un1 %}

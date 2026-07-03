@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional, List, Tuple
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QProgressBar, QTextEdit, QGroupBox, QFileDialog,
-    QLineEdit, QMessageBox, QCheckBox, QButtonGroup, QRadioButton
+    QLineEdit, QMessageBox, QCheckBox, QButtonGroup, QRadioButton,
+    QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PySide6.QtCore import Signal, Qt
 
@@ -30,6 +32,7 @@ class DiffPage(QWidget):
         self._diff_in_progress = False
         self._worker: Optional[DiffWorker] = None
         self._output_dir: Optional[Path] = None
+        self._all_pairs: List[Tuple[Path, Path, str]] = []
 
         self._init_ui()
 
@@ -75,20 +78,38 @@ class DiffPage(QWidget):
 
         main_layout.addWidget(dir_group)
 
-        # --- Динамическое сопоставление файлов ---
-        map_group = QGroupBox("Сопоставление файлов")
+        # --- Таблица сопоставленных пар (с чекбоксами) ---
+        map_group = QGroupBox("Сопоставленные пары (отметьте для сравнения)")
         map_layout = QVBoxLayout(map_group)
 
-        self.map_status_label = QLabel("Укажите обе директории для анализа.")
-        self.map_status_label.setWordWrap(True)
-        map_layout.addWidget(self.map_status_label)
+        self.pairs_table = QTableWidget(0, 4)
+        self.pairs_table.setHorizontalHeaderLabels(["", "Файл", "Размер", "Статус"])
+        self.pairs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.pairs_table.setColumnWidth(0, 30)
+        self.pairs_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.pairs_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.pairs_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.pairs_table.verticalHeader().setVisible(False)
+        self.pairs_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.pairs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.pairs_table.setMinimumHeight(120)
+        self.pairs_table.setMaximumHeight(400)
+        map_layout.addWidget(self.pairs_table)
 
-        # Таблица несоответствий (скрываемая)
-        self.mismatch_text = QTextEdit()
-        self.mismatch_text.setReadOnly(True)
-        self.mismatch_text.setMaximumHeight(100)
-        self.mismatch_text.setVisible(False)
-        map_layout.addWidget(self.mismatch_text)
+        # Главный чекбокс в шапке таблицы
+        self._header_checkbox = QCheckBox()
+        self._header_checkbox.setChecked(True)
+        self._header_checkbox.stateChanged.connect(self._on_header_checkbox_changed)
+        self.pairs_table.setCellWidget(0, 0, self._header_checkbox)  # временно — переставим после заполнения
+        header_item = QTableWidgetItem()
+        self.pairs_table.setHorizontalHeaderItem(0, header_item)
+        # Помещаем QCheckBox в header. Но проще: заменить через setCellWidget 0,0 при первом заполнении.
+        # На самом деле, поместим чекбокс как header: используем setCellWidget для несуществующей строки?
+        # Лучше: после _analyze_directories всегда вставляем.
+        # Для простоты: отложим — у нас метод _populate_header_checkbox
+
+        self.map_status_label = QLabel("Укажите обе директории для анализа.")
+        map_layout.addWidget(self.map_status_label)
 
         main_layout.addWidget(map_group)
 
@@ -151,11 +172,23 @@ class DiffPage(QWidget):
         self.stage_post_layout.addWidget(self.stage_post_bar)
         stages_layout.addWidget(self.stage_post_widget)
 
+        # Отчёты этап
+        self.stage_report_widget = QWidget()
+        self.stage_report_layout = QVBoxLayout(self.stage_report_widget)
+        self.stage_report_layout.setContentsMargins(0, 0, 0, 0)
+        self.stage_report_label = QLabel("HTML-отчёты: ожидание...")
+        self.stage_report_bar = QProgressBar()
+        self.stage_report_bar.setRange(0, 100)
+        self.stage_report_layout.addWidget(self.stage_report_label)
+        self.stage_report_layout.addWidget(self.stage_report_bar)
+        stages_layout.addWidget(self.stage_report_widget)
+
         stages_layout.addStretch()
         right_panel.addWidget(stages_group)
 
-        # По умолчанию скрываем Diaphora
+        # По умолчанию скрываем Diaphora и отчёты
         self.stage_diaphora_widget.setVisible(False)
+        self.stage_report_widget.setVisible(True)
 
         # Добавляем левую и правую панели в сплит
         split_layout.addLayout(left_panel, 1)
@@ -166,7 +199,7 @@ class DiffPage(QWidget):
         btn_layout = QHBoxLayout()
         self.start_btn = QPushButton("Запустить сравнение")
         self.start_btn.setFixedHeight(40)
-        self.start_btn.setEnabled(False)   # будет включено только при наличии пар
+        self.start_btn.setEnabled(False)
         self.cancel_btn = QPushButton("Отмена")
         self.cancel_btn.setFixedHeight(40)
         self.cancel_btn.setEnabled(False)
@@ -198,6 +231,9 @@ class DiffPage(QWidget):
         self.cancel_btn.clicked.connect(self._cancel_comparison)
         self.generate_report_btn.clicked.connect(self._generate_report)
 
+        # Кнопки выбора/снятия всех пар
+        # Кнопки выбора/снятия всех пар
+
         # Автоматический анализ при изменении путей
         self.left_edit.textChanged.connect(self._analyze_directories)
         self.right_edit.textChanged.connect(self._analyze_directories)
@@ -216,23 +252,25 @@ class DiffPage(QWidget):
             self.output_edit.setText(path)
 
     # ----------------------------------------------------------------
-    # Анализ директорий и отображение статуса сопоставления
+    # Анализ директорий и отображение таблицы пар
     # ----------------------------------------------------------------
     def _analyze_directories(self) -> None:
-        """Анализирует левую и правую папки (рекурсивно), обновляет метки и кнопку запуска."""
+        """Анализирует левую и правую папки (рекурсивно), заполняет таблицу пар."""
         left_dir = self.left_edit.text().strip()
         right_dir = self.right_edit.text().strip()
 
+        self.pairs_table.setRowCount(0)
+        self._all_pairs.clear()
+
         if not left_dir or not os.path.isdir(left_dir) or not right_dir or not os.path.isdir(right_dir):
             self.map_status_label.setText("Укажите обе директории для анализа.")
-            self.mismatch_text.setVisible(False)
             self.start_btn.setEnabled(False)
             return
 
         left_roots = list(Path(left_dir).rglob("*.i64"))
         right_roots = list(Path(right_dir).rglob("*.i64"))
 
-        # Индексируем по относительному пути от корня каждой директории
+        # Индексируем по относительному пути
         left_map = {}
         for p in left_roots:
             rel = p.relative_to(Path(left_dir))
@@ -245,54 +283,127 @@ class DiffPage(QWidget):
 
         left_rel_set = set(left_map.keys())
         right_rel_set = set(right_map.keys())
-
-        common = left_rel_set & right_rel_set
+        common = sorted(left_rel_set & right_rel_set)
         only_left = left_rel_set - right_rel_set
         only_right = right_rel_set - left_rel_set
 
+        # Заполняем таблицу
+        self._all_pairs = []
+        self.pairs_table.setRowCount(len(common) + 1)  # +1 для мастер-строки
+
+        # Строка 0: мастер-чекбокс "Все пары"
+        master_cb = QCheckBox()
+        master_cb.setChecked(True)
+        master_cb.stateChanged.connect(self._on_header_checkbox_changed)
+        master_widget = QWidget()
+        master_cb_layout = QHBoxLayout(master_widget)
+        master_cb_layout.addWidget(master_cb)
+        master_cb_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        master_cb_layout.setContentsMargins(0, 0, 0, 0)
+        self.pairs_table.setCellWidget(0, 0, master_widget)
+        master_name = QTableWidgetItem("Все пары")
+        master_name.setFlags(master_name.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.pairs_table.setItem(0, 1, master_name)
+        self.pairs_table.setItem(0, 2, QTableWidgetItem(""))
+        self.pairs_table.setItem(0, 3, QTableWidgetItem(""))
+        # Жирный для мастер-строки
+        font = master_name.font()
+        font.setBold(True)
+        master_name.setFont(font)
+
+        for row, rel in enumerate(common, start=1):
+            left_path = left_map[rel]
+            right_path = right_map[rel]
+
+            # Чекбокс (по умолчанию выбран)
+            cb = QCheckBox()
+            cb.setChecked(True)
+            cb.stateChanged.connect(self._on_checkbox_changed)
+            cb_widget = QWidget()
+            cb_layout = QHBoxLayout(cb_widget)
+            cb_layout.addWidget(cb)
+            cb_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cb_layout.setContentsMargins(0, 0, 0, 0)
+            self.pairs_table.setCellWidget(row, 0, cb_widget)
+
+            # Имя файла
+            name_item = QTableWidgetItem(rel)
+            name_item.setToolTip(f"{left_path}\n{right_path}")
+            self.pairs_table.setItem(row, 1, name_item)
+
+            # Размер
+            try:
+                size = left_path.stat().st_size
+                size_str = f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB"
+            except OSError:
+                size_str = "?"
+            self.pairs_table.setItem(row, 2, QTableWidgetItem(size_str))
+
+            # Статус
+            stem = _safe_filename(rel)
+            diff_json = (Path(self.output_edit.text().strip() or Path(left_dir) / "DiffResults") / f"{stem}.diff.json")
+            status = "✅ Есть" if diff_json.is_file() else "—"
+            self.pairs_table.setItem(row, 3, QTableWidgetItem(status))
+
+            self._all_pairs.append((left_path, right_path, rel))
+
         # Статусная строка
-        if len(common) == len(left_rel_set) == len(right_rel_set) and len(left_rel_set) > 0:
-            status_text = (
-                f"✅ <b>Зеркальные структуры</b> — все файлы имеют пару "
-                f"({len(left_rel_set)} .i64 в каждой папке, {len(common)} пар)."
-            )
-            self.start_btn.setEnabled(True)
-        elif common:
-            status_text = (
-                f"⚠️ <b>Частичное совпадение</b>: {len(common)} пар из "
-                f"{len(left_rel_set)} файлов слева и {len(right_rel_set)} справа."
-            )
-            self.start_btn.setEnabled(True)
+        if common:
+            selected = sum(1 for i in range(1, self.pairs_table.rowCount())
+                          if self.pairs_table.cellWidget(i, 0).findChild(QCheckBox).isChecked())
+            msg = f"✅ {len(common)} пар сопоставлено, выбрано: {selected}"
+            if only_left:
+                msg += f" (+{len(only_left)} только слева)"
+            if only_right:
+                msg += f" (+{len(only_right)} только справа)"
+            self.map_status_label.setText(msg)
+            self.start_btn.setEnabled(selected > 0)
         else:
-            status_text = (
-                f"❌ <b>Нет совпадений</b>: {len(left_rel_set)} файлов слева, "
-                f"{len(right_rel_set)} справа. Проверьте директории."
-            )
+            msg = f"❌ Нет совпадений: {len(left_rel_set)} слева, {len(right_rel_set)} справа."
             self.start_btn.setEnabled(False)
+            self.map_status_label.setText(msg)
 
-        self.map_status_label.setText(status_text)
+        # Подключаем onChange для чекбоксов строк (не мастер-строку)
+        for row in range(1, self.pairs_table.rowCount()):
+            cb = self.pairs_table.cellWidget(row, 0).findChild(QCheckBox)
+            if cb:
+                cb.stateChanged.connect(self._on_checkbox_changed)
 
-        # Список отсутствующих файлов
-        mismatch_lines = []
-        if only_left:
-            mismatch_lines.append(
-                f"<span style='color:#c62828;'>Только в левой папке ({len(only_left)}): "
-                + ", ".join(sorted(only_left)) + "</span>"
-            )
-        if only_right:
-            mismatch_lines.append(
-                f"<span style='color:#c62828;'>Только в правой папке ({len(only_right)}): "
-                + ", ".join(sorted(only_right)) + "</span>"
-            )
+    def _on_checkbox_changed(self) -> None:
+        """Обновляет кнопку запуска и счётчик при изменении чекбокса."""
+        self._update_selected_count()
 
-        if mismatch_lines:
-            self.mismatch_text.setHtml("<br>".join(mismatch_lines))
-            self.mismatch_text.setVisible(True)
-        else:
-            self.mismatch_text.setVisible(False)
+    def _update_selected_count(self) -> None:
+        """Пересчитывает и обновляет отображение количества выбранных пар."""
+        total = self.pairs_table.rowCount() - 1  # не считаем мастер-строку
+        selected = sum(
+            1 for i in range(1, self.pairs_table.rowCount())  # с row 1
+            if self.pairs_table.cellWidget(i, 0).findChild(QCheckBox).isChecked()
+        )
+        self.start_btn.setEnabled(selected > 0)
+        # Обновляем текст статуса, добавляя счётчик выбранных
+        current_text = self.map_status_label.text()
+        base = re.sub(r', выбрано: \d+', '', current_text).rstrip()
+        self.map_status_label.setText(f"{base}, выбрано: {selected}")
+
+    def _set_all_checkboxes(self, checked: bool) -> None:
+        """Устанавливает все чекбоксы в указанное состояние (пропуская строку 0 — главный чекбокс)."""
+        for i in range(1, self.pairs_table.rowCount()):
+            cb_widget = self.pairs_table.cellWidget(i, 0)
+            if cb_widget:
+                cb = cb_widget.findChild(QCheckBox)
+                if cb:
+                    cb.blockSignals(True)
+                    cb.setChecked(checked)
+                    cb.blockSignals(False)
+        self._update_selected_count()
+
+    def _on_header_checkbox_changed(self, state: int) -> None:
+        """Главный чекбокс — выбирает/снимает все пары."""
+        self._set_all_checkboxes(bool(state))
 
     # ----------------------------------------------------------------
-    # Логика сравнения (осталась без изменений)
+    # Логика сравнения
     # ----------------------------------------------------------------
     def _start_comparison(self) -> None:
         if self._diff_in_progress:
@@ -308,6 +419,17 @@ class DiffPage(QWidget):
             QMessageBox.warning(self, "Ошибка", "Укажите корректную правую директорию.")
             return
 
+        # Собираем только выбранные пары (пропускаем мастер-строку row=0)
+        selected_pairs = []
+        for row in range(1, self.pairs_table.rowCount()):
+            cb = self.pairs_table.cellWidget(row, 0).findChild(QCheckBox)
+            if cb and cb.isChecked():
+                selected_pairs.append(self._all_pairs[row])
+
+        if not selected_pairs:
+            QMessageBox.warning(self, "Ошибка", "Не выбрано ни одной пары для сравнения.")
+            return
+
         # Определяем выходную папку
         output_dir = self.output_edit.text().strip()
         if output_dir:
@@ -318,15 +440,13 @@ class DiffPage(QWidget):
 
         idat_path = get_ida_executable()
         if not Path(idat_path).is_file():
-            QMessageBox.warning(
-                self, "Утилита IDA не найдена",
-                f"Исполняемый файл '{idat_path}' не найден.\n"
-                "Проверьте путь в разделе «Конфигурация»."
-            )
+            QMessageBox.warning(self, "IDA не найдена",
+                f"Исполняемый файл '{idat_path}' не найден.\nПроверьте настройки (config.yaml).")
             return
 
         bindiff_path = get_bindiff_executable()
-        if not Path(bindiff_path).is_file():
+        engine = self._get_engine()
+        if engine in ("bindiff", "both") and not Path(bindiff_path).is_file():
             QMessageBox.warning(
                 self, "Утилита BinDiff не найдена",
                 f"Исполняемый файл '{bindiff_path}' не найден.\n"
@@ -334,38 +454,8 @@ class DiffPage(QWidget):
             )
             return
 
-        # Поиск .i64 в левой директории (рекурсивно)
-        left_dir_path = Path(left_dir)
-        right_dir_path = Path(right_dir)
-
-        left_i64 = sorted(left_dir_path.rglob("*.i64"))
-        if not left_i64:
-            QMessageBox.warning(
-                self, "Нет баз данных",
-                "Не найдено файлов .i64 в левой директории (и вложенных папках)."
-            )
-            return
-
-        # Сопоставление с правой директорией по относительному пути
-        right_map = {}
-        for p in right_dir_path.rglob("*.i64"):
-            rel = str(p.relative_to(right_dir_path))
-            right_map[rel] = p
-
-        pairs: List[Tuple[Path, Path, str]] = []
-        for left_path in left_i64:
-            rel = str(left_path.relative_to(left_dir_path))
-            if rel in right_map:
-                pairs.append((left_path, right_map[rel], rel))
-
-        if not pairs:
-            QMessageBox.warning(self, "Нет совпадений", "Ни один файл из левой директории не имеет пары в правой.")
-            return
-
-        # Сортируем пары по размеру .i64 (убывание) — жадный алгоритм: сначала самые большие
-        pairs.sort(key=lambda p: (p[0].stat().st_size if p[0].is_file() else 0), reverse=True)
-
-        # Проверка: есть ли уже результаты сравнения
+        pairs = selected_pairs
+        # Проверка существующих результатов
         existing_stems = set()
         new_pairs = []
         for primary, secondary, rel in pairs:
@@ -376,12 +466,11 @@ class DiffPage(QWidget):
             else:
                 new_pairs.append((primary, secondary, rel))
 
-        proceed_with_new = True
         if existing_stems:
             msg = (f"В выходной папке уже найдены результаты сравнения для {len(existing_stems)} пар.\n\n"
                    "Нажмите «Да», чтобы досравнять только новые пары.\n"
-                   "Нажмите «Нет», чтобы выполнить полное сравнение заново (существующие результаты будут перезаписаны).\n"
-                   "Нажмите «Отмена» для отмены операции.")
+                   "Нажмите «Нет», чтобы выполнить полное сравнение заново.\n"
+                   "Нажмите «Отмена» для отмены.")
             reply = QMessageBox.question(self, "Обнаружены существующие результаты", msg,
                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel)
             if reply == QMessageBox.StandardButton.Yes:
@@ -389,35 +478,35 @@ class DiffPage(QWidget):
                 if not pairs:
                     QMessageBox.information(self, "Готово", "Все пары уже обработаны. Сравнение не требуется.")
                     return
-                proceed_with_new = True
             elif reply == QMessageBox.StandardButton.No:
-                # Удаляем существующие .diff.json для полного пересчёта
                 for p in output_path.glob("*.diff.json"):
                     p.unlink(missing_ok=True)
-                proceed_with_new = True
             else:
-                return  # Отмена
+                return
 
         self._diff_in_progress = True
         self._output_dir = output_path
         self.diff_started.emit()
         self.start_btn.setEnabled(False)
-        engine = self._get_engine()
+
         # Показываем/скрываем виджеты этапов
         self.stage_bindiff_widget.setVisible(engine in ("bindiff", "both"))
         self.stage_diaphora_widget.setVisible(engine in ("diaphora", "both"))
         self.stage_post_widget.setVisible(True)
+        self.stage_report_widget.setVisible(True)
 
         # Сбрасываем прогресс-бары
-        for bar in (self.stage_bindiff_bar, self.stage_diaphora_bar, self.stage_post_bar):
+        for bar in (self.stage_bindiff_bar, self.stage_diaphora_bar, self.stage_post_bar, self.stage_report_bar):
             bar.setValue(0)
         self.stage_bindiff_label.setText("BinDiff: ожидание начала...")
         self.stage_diaphora_label.setText("Diaphora: ожидание начала...")
         self.stage_post_label.setText("Пост-анализ: ожидание начала...")
+        self.stage_report_label.setText("HTML-отчёты: ожидание начала...")
 
         self.error_text.clear()
 
-        self._worker = DiffWorker(pairs, idat_path, bindiff_path, output_path, engine=engine)
+        self._worker = DiffWorker(pairs, idat_path, bindiff_path, output_path,
+                                   engine=engine, left_dir=left_dir, right_dir=right_dir)
         self._worker.stage_updated.connect(self._on_stage_updated)
         self._worker.error_occurred.connect(self._on_error)
         self._worker.finished.connect(self._on_diff_finished)
@@ -425,7 +514,6 @@ class DiffPage(QWidget):
         self._worker.start()
 
     def _get_engine(self) -> str:
-        """Возвращает выбранный движок сравнения."""
         if self.rb_diaphora.isChecked():
             return "diaphora"
         elif self.rb_both.isChecked():
@@ -438,6 +526,7 @@ class DiffPage(QWidget):
             self.stage_bindiff_label.setText("BinDiff: отменён")
             self.stage_diaphora_label.setText("Diaphora: отменён")
             self.stage_post_label.setText("Пост-анализ: отменён")
+            self.stage_report_label.setText("HTML-отчёты: отменён")
             self.cancel_btn.setEnabled(False)
 
     def _on_stage_updated(self, stage_name: str, current: int, total: int, file_stem: str, substage: str) -> None:
@@ -453,6 +542,9 @@ class DiffPage(QWidget):
         elif stage_name == "Post":
             self.stage_post_label.setText(f"Пост-анализ {counter}: {substage}{suffix}")
             self.stage_post_bar.setValue(int(100 * current / total) if total else 0)
+        elif stage_name == "Report":
+            self.stage_report_label.setText(f"HTML-отчёты {counter}: {substage}{suffix}")
+            self.stage_report_bar.setValue(int(100 * current / total) if total else 0)
 
     def _on_error(self, message: str) -> None:
         self.error_text.append(message)
@@ -467,12 +559,33 @@ class DiffPage(QWidget):
         self.stage_bindiff_label.setText(f"BinDiff: завершён ({success_count}/{total})" if self.stage_bindiff_widget.isVisible() else "")
         self.stage_diaphora_label.setText(f"Diaphora: завершён ({success_count}/{total})" if self.stage_diaphora_widget.isVisible() else "")
         self.stage_post_label.setText(f"Пост-анализ: завершён ({success_count}/{total})")
-        for bar in (self.stage_bindiff_bar, self.stage_diaphora_bar, self.stage_post_bar):
+        self.stage_report_label.setText(f"HTML-отчёты: завершён ({success_count}/{total})")
+        for bar in (self.stage_bindiff_bar, self.stage_diaphora_bar, self.stage_post_bar, self.stage_report_bar):
             bar.setValue(100)
 
-        # Проверяем наличие .diff.json в выходной папке
-        any_json = bool(list(self._output_dir.glob("*.diff.json"))) if self._output_dir else False
-        self.generate_report_btn.setEnabled(any_json)
+        # Обновляем статусы в таблице
+        self._analyze_directories()
+
+        # Отчёты сгенерированы автоматически воркером
+        reports_dir = self._output_dir / "Reports"
+        index_html = reports_dir / "index.html"
+        if index_html.is_file():
+            any_json = True
+            self.generate_report_btn.setEnabled(True)
+            from PySide6.QtWidgets import QMessageBox
+            msg = QMessageBox()
+            msg.setWindowTitle("Сравнение завершено")
+            msg.setText(f"Все этапы завершены. HTML-отчёты сохранены в:\n{reports_dir}")
+            msg.setInformativeText(f"Открыть сводный отчёт?")
+            msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+            if msg.exec() == QMessageBox.StandardButton.Yes:
+                import subprocess
+                subprocess.Popen(["start", "", str(index_html)], shell=True)
+        else:
+            any_json = bool(list(self._output_dir.glob("*.diff.json"))) if self._output_dir else False
+            self.generate_report_btn.setEnabled(any_json)
+
         self._worker = None
 
     def _generate_report(self) -> None:
@@ -507,10 +620,8 @@ class DiffPage(QWidget):
                     input_dir=left_dir,
                     internal_set=internal_set
                 )
-            # Генерация сводного индекса
             from datetime import datetime
             generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            # Попытка получить версию IDA из первого попавшегося .export.json в левой папке
             ida_version = ""
             export_jsons = list(left_dir.glob("*.export.json"))
             if export_jsons:
@@ -527,7 +638,9 @@ class DiffPage(QWidget):
                 ida_version=ida_version
             )
             QMessageBox.information(self, "Готово",
-                                    f"Отчёты сохранены в {reports_dir}\nСводный индекс: {index_path}")
+                f"Отчёт сгенерирован:\n{index_path}")
+            import subprocess
+            subprocess.Popen(["start", "", str(index_path)], shell=True)
         except Exception as e:
-            logger.exception("Ошибка генерации отчётов")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось создать отчёты:\n{e}")
+            logger.exception("Ошибка генерации отчёта")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сгенерировать отчёт:\n{e}")

@@ -18,6 +18,7 @@ from typing import List, Tuple, Optional
 from PySide6.QtCore import QThread, Signal
 
 from ida_batch_tool.ui.constants import SCRIPTS_DIR
+from ida_batch_tool.reporting.generator import DiffReportGenerator
 
 _EXPORT_DATA_SCRIPT = SCRIPTS_DIR / "export_data.py"
 _EXPORT_CFG_SCRIPT = SCRIPTS_DIR / "export_cfg.py"
@@ -55,7 +56,10 @@ def _find_original_binary(i64_path: Path) -> Optional[Path]:
 
 def _compute_hexdump_diff(orig1: Path, orig2: Path) -> Tuple[list, float]:
     """Сравнивает два исполняемых файла поблочно (16 байт).
-    Возвращает (hex_rows, hexdump_similarity), где similarity = совпавшие байты / макс. длина (0..1) с учётом alignment."""
+    Возвращает (hex_rows, hexdump_similarity), где:
+      - идентичные строки заменяются на сокращённый блок "..."
+      - различающиеся строки содержат побайтовую разметку (diff_mask)
+      - similarity = совпавшие байты / макс. длина (0..1) с учётом alignment."""
     try:
         data1 = orig1.read_bytes()
         data2 = orig2.read_bytes()
@@ -64,39 +68,103 @@ def _compute_hexdump_diff(orig1: Path, orig2: Path) -> Tuple[list, float]:
     if not data1 or not data2:
         return [], 0.0
 
-    def _format_hex_block(data: bytes, addr: int) -> str:
-        hex_part = ' '.join(f'{b:02x}' for b in data)
-        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data)
-        return f'{addr:08x}  {hex_part:<48}  |{ascii_part}|'
-
     block_size = 16
     max_len = max(len(data1), len(data2))
     hex_rows = []
     matching_bytes = 0
     total_bytes = 0
     offset = 0
+
+    equal_runs = []  # (start, end) ranges of consecutive equal blocks
+    current_equal_start = None
+
     while offset < max_len:
         chunk1 = data1[offset:offset + block_size]
         chunk2 = data2[offset:offset + block_size]
-        line1 = _format_hex_block(chunk1, offset) if chunk1 else ''
-        line2 = _format_hex_block(chunk2, offset) if chunk2 else ''
+        max_chunk_len = max(len(chunk1), len(chunk2))
+
         if chunk1 == chunk2:
-            hex_rows.append({"type": "equal", "left": line1, "right": line2})
             matching_bytes += min(len(chunk1), len(chunk2))
+            if current_equal_start is None:
+                current_equal_start = offset
         else:
-            # Побайтовое сравнение внутри блока
-            for b_idx in range(max(len(chunk1), len(chunk2))):
+            # Завершаем серию равных блоков
+            if current_equal_start is not None:
+                equal_runs.append((current_equal_start, offset))
+                current_equal_start = None
+            # Побайтовая разметка
+            diff_mask = []
+            for b_idx in range(max_chunk_len):
                 b1 = chunk1[b_idx] if b_idx < len(chunk1) else 0
                 b2 = chunk2[b_idx] if b_idx < len(chunk2) else 0
                 if b1 == b2:
                     matching_bytes += 1
-            hex_rows.append({"type": "removed", "left": line1, "right": line2})
-        total_bytes += max(len(chunk1), len(chunk2))
+                    diff_mask.append(0)
+                else:
+                    diff_mask.append(1)
+            # Форматируем с побайтовыми массивами
+            def _make_hex_bytes(data: bytes, mask: list) -> list:
+                result = []
+                for i in range(16):
+                    if i < len(data):
+                        result.append({"b": f'{data[i]:02x}', "d": mask[i] if i < len(mask) else 0})
+                    else:
+                        result.append({"b": "  ", "d": 0})
+                return result
+            def _make_ascii(data: bytes) -> str:
+                return ''.join(chr(b) if 32 <= b < 127 else '.' for b in data) if data else ''
+            left_data = chunk1 if chunk1 else b''
+            right_data = chunk2 if chunk2 else b''
+            hex_rows.append({
+                "type": "diff",
+                "addr": f'{offset:08x}',
+                "left_bytes": _make_hex_bytes(left_data, diff_mask),
+                "right_bytes": _make_hex_bytes(right_data, diff_mask),
+                "left_ascii": _make_ascii(left_data),
+                "right_ascii": _make_ascii(right_data),
+            })
+
+        total_bytes += max_chunk_len
         offset += block_size
 
-    hex_rows.append({"type": "_meta", "total_lines": len(hex_rows) - 1})
+    # Последняя серия равных
+    if current_equal_start is not None:
+        equal_runs.append((current_equal_start, offset))
+
+    # Сжимаем равные серии — заменяем на "..."
+    merged = []
+    diff_idx = 0
+    # Сортируем всё по оффсету
+    for start, end in equal_runs:
+        # Все diff-строки до этой равной серии
+        while diff_idx < len(hex_rows):
+            row = hex_rows[diff_idx]
+            # Вычисляем оффсет diff-строки из её addr
+            try:
+                row_offset = int(row.get("addr", "0"), 16) if row.get("addr") else -1
+            except (ValueError, IndexError):
+                row_offset = -1
+            if row_offset < start:
+                merged.append(row)
+                diff_idx += 1
+            else:
+                break
+        # Вставляем маркер равного блока
+        count_blocks = (end - start) // block_size
+        if count_blocks > 0:
+            merged.append({"type": "equal", "count": count_blocks})
+    # Оставшиеся diff-строки
+    while diff_idx < len(hex_rows):
+        merged.append(hex_rows[diff_idx])
+        diff_idx += 1
+
+    # Если всё идентично — добавим один маркер
+    if not merged:
+        merged.append({"type": "equal", "count": max_len // block_size})
+
+    merged.append({"type": "_meta", "total_lines": max_len // block_size + (1 if max_len % block_size else 0)})
     similarity = round(matching_bytes / total_bytes, 6) if total_bytes > 0 else 0.0
-    return hex_rows, similarity
+    return merged, similarity
 
 
 def _parse_diaphora_results(sqlite_path: Path) -> dict:
@@ -188,19 +256,20 @@ class DiffWorker(QThread):
                  idat_path: str, bindiff_path: str,
                  output_dir: Path,
                  engine: str = "bindiff",
-                 max_workers: Optional[int] = None, parent=None):
+                 max_workers: Optional[int] = None,
+                 left_dir: Optional[str] = None,
+                 right_dir: Optional[str] = None,
+                 parent=None):
         super().__init__(parent)
         self.file_pairs = file_pairs
         self.idat_path = idat_path
         self.bindiff_path = bindiff_path
         self.output_dir = output_dir
         self.engine = engine
-        import multiprocessing
-        cpu_count = multiprocessing.cpu_count()
-        if max_workers is not None:
-            self.max_workers = max_workers
-        else:
-            self.max_workers = max(1, cpu_count - 1)
+        self.left_dir = Path(left_dir) if left_dir else None
+        self.right_dir = Path(right_dir) if right_dir else None
+        # Максимум 6 потоков (жадный алгоритм не требует больше)
+        self.max_workers = min(max_workers or 6, 6)
         self._cancel_event = threading.Event()
         self._completed_count = 0
         self._pulse_counter = 0
@@ -255,28 +324,94 @@ class DiffWorker(QThread):
             return
         logger.info(f"Сравнение {total} пар, engine={self.engine}, результаты в {self.output_dir}")
 
+        # Жадный алгоритм: сначала самые большие файлы (для всех этапов)
+        all_pairs = sorted(
+            self.file_pairs,
+            key=lambda x: x[0].stat().st_size if x[0].is_file() else 0,
+            reverse=True,
+        )
+
         if self.engine in ("bindiff", "both"):
-            bindiff_pairs = [(p, s, r) for p, s, r in self.file_pairs]
             self._safe_emit_stage("BinDiff", 0, total, "", "Ожидание начала...")
             self._stage_current_stage = "BinDiff: экспорт"
-            self._run_pass_with_progress("BinDiff", self._process_bindiff_pair, bindiff_pairs, total)
+            self._run_pass_with_progress("BinDiff", self._process_bindiff_pair, all_pairs, total)
 
         if self.engine in ("diaphora", "both"):
-            # Сортируем пары по размеру primary .i64 по возрастанию — сначала маленькие файлы
-            diaphora_pairs = sorted(
-                [(p, s, r) for p, s, r in self.file_pairs],
-                key=lambda x: x[0].stat().st_size if x[0].is_file() else 0,
-            )
             self._safe_emit_stage("Diaphora", 0, total, "", "Ожидание начала...")
             self._stage_current_stage = "Diaphora: сбор данных"
-            self._run_pass_with_progress("Diaphora", self._process_diaphora_pair, diaphora_pairs, total)
+            self._run_pass_with_progress("Diaphora", self._process_diaphora_pair, all_pairs, total)
 
         self._safe_emit_stage("Post", 0, total, "", "Ожидание начала...")
         self._stage_current_stage = "Пост-анализ"
-        self._run_pass_with_progress("Post", self._process_post_pair, self.file_pairs, total)
+        self._run_pass_with_progress("Post", self._process_post_pair, all_pairs, total)
+
+        # Финальный этап: генерация HTML-отчётов
+        self._stage_current_stage = "Генерация отчётов"
+        self._generate_reports(all_pairs, total)
 
         logger.info(f"Завершено. Всего обработано: {total}")
         self._safe_emit(self.finished, total, total)
+
+    def _generate_reports(self, pairs: list, total: int) -> None:
+        """Финальный этап: генерация HTML-отчётов из .diff.json.
+        Выполняется в фоновом потоке (не блокирует GUI)."""
+        try:
+            from datetime import datetime
+            from ida_batch_tool.reporting.generator import DiffReportGenerator, _build_internal_set
+
+            json_files = list(self.output_dir.glob("*.diff.json"))
+            if not json_files:
+                logger.warning("Нет .diff.json для генерации отчётов")
+                return
+
+            reports_dir = self.output_dir / "Reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+
+            gen = DiffReportGenerator()
+            left_dir = self.left_dir or Path(self.output_dir)
+            right_dir = self.right_dir or Path(self.output_dir)
+            internal_set = _build_internal_set(left_dir).union(_build_internal_set(right_dir))
+
+            self._safe_emit_stage("Report", 0, total, "", "Генерация HTML-отчётов...")
+
+            for idx, jf in enumerate(json_files):
+                if self._cancel_event.is_set():
+                    break
+                html_path = reports_dir / (jf.stem.replace(".diff", "") + ".html")
+                logger.info(f"Генерация отчёта: {jf.name}")
+                try:
+                    gen.generate_from_json(
+                        jf,
+                        output_html=html_path,
+                        reports_dir=reports_dir,
+                        input_dir=left_dir,
+                        internal_set=internal_set,
+                    )
+                except Exception as e:
+                    logger.exception(f"Ошибка генерации отчёта {jf.name}: {e}")
+                self._safe_emit_stage("Report", idx + 1, total, jf.stem, "Генерация HTML-отчётов...")
+
+            # Сводный индекс
+            generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ida_version = ""
+            try:
+                export_jsons = list(self.output_dir.glob("*_primary.export.json")) or list(self.output_dir.glob("*.export.json"))
+                if export_jsons:
+                    import json as jmod
+                    with open(export_jsons[0], "r", encoding="utf-8") as f:
+                        analysis_data = jmod.load(f)
+                    ida_version = analysis_data.get("ida_info", {}).get("kernel_version", "")
+            except Exception:
+                pass
+
+            gen.generate_diff_index(
+                reports_dir, json_files, left_dir, right_dir,
+                generation_time=generation_time,
+                ida_version=ida_version,
+            )
+            logger.info(f"HTML-отчёты сохранены в {reports_dir}")
+        except Exception as e:
+            logger.exception(f"Ошибка генерации отчётов: {e}")
 
     # Порог для крупных файлов: если .i64 больше этого — обрабатываем последовательно
     _LARGE_FILE_THRESHOLD = 100 * 1024 * 1024  # 100 MB
@@ -567,6 +702,7 @@ class DiffWorker(QThread):
             PULSE_INTERVAL = 30.0  # обновляем статус каждые 30 сек
             STALL_LOG_INTERVAL = 300.0  # логгируем «зависание» каждые 5 мин
             STALL_TIMEOUT = 3600.0  # 60 мин без роста файла → убиваем процесс
+            MAX_EXEC_TIMEOUT = 21600.0  # 6 часов общего времени → убиваем процесс
             start_time = time.monotonic()
             last_pulse_time = 0.0
             last_stall_log_time = 0.0
@@ -590,6 +726,19 @@ class DiffWorker(QThread):
                     break  # процесс завершился
                 except subprocess.TimeoutExpired:
                     pass
+
+                # Общий таймаут: не ждать больше MAX_EXEC_TIMEOUT
+                if elapsed >= MAX_EXEC_TIMEOUT:
+                    logger.error(
+                        f"Diaphora экспорт {i64_path.name}: "
+                        f"MAX EXEC TIMEOUT ({int(MAX_EXEC_TIMEOUT//3600)} час). "
+                        f"Убиваем процесс IDA (PID={proc.pid})."
+                    )
+                    proc.kill()
+                    proc.wait()
+                    tmp_out.close()
+                    tmp_err.close()
+                    return False
 
                 # Пульс-обновление статуса каждые 30 секунд
                 if pulse_callback and (now - last_pulse_time >= PULSE_INTERVAL):
