@@ -55,11 +55,16 @@ def _find_original_binary(i64_path: Path) -> Optional[Path]:
 
 
 def _compute_hexdump_diff(orig1: Path, orig2: Path) -> Tuple[list, float]:
-    """Сравнивает два исполняемых файла поблочно (16 байт).
-    Возвращает (hex_rows, hexdump_similarity), где:
-      - идентичные строки заменяются на сокращённый блок "..."
-      - различающиеся строки содержат побайтовую разметку (diff_mask)
-      - similarity = совпавшие байты / макс. длина (0..1) с учётом alignment."""
+    """Сравнивает два исполняемых файла жадным алгоритмом слева направо.
+    
+    Для каждой позиции эталонного файла ищет максимально длинную
+    последовательность (≥16 байт), совпадающую с контрольным файлом.
+    Если адреса совпадают — equal (сжато), если нет — equal_shifted.
+    Несовпавшие байты эталонного — deleted (расхождение).
+    Оставшиеся байты контрольного, не покрытые матчами — inserted.
+    
+    Возвращает (hex_rows, hexdump_similarity), где
+    similarity = matching_bytes / len(эталонный_файл)."""
     try:
         data1 = orig1.read_bytes()
         data2 = orig2.read_bytes()
@@ -68,103 +73,162 @@ def _compute_hexdump_diff(orig1: Path, orig2: Path) -> Tuple[list, float]:
     if not data1 or not data2:
         return [], 0.0
 
-    block_size = 16
-    max_len = max(len(data1), len(data2))
+    min_match = 16
+
+    def _make_hex_bytes(data: bytes) -> list:
+        result = []
+        for i in range(min_match):
+            if i < len(data):
+                result.append({"b": f'{data[i]:02x}', "d": 0})
+            else:
+                result.append({"b": "  ", "d": 0})
+        return result
+
+    def _make_hex_bytes_multi(data: bytes) -> list:
+        """Создаёт hex-байты для произвольной длины (схлопнутые блоки)."""
+        result = []
+        for i in range(len(data)):
+            result.append({"b": f'{data[i]:02x}', "d": 0})
+        return result
+
+    def _make_ascii(data: bytes) -> str:
+        return ''.join(chr(b) if 32 <= b < 127 else '.' for b in data) if data else ''
+
+    # Строим индекс для быстрого поиска в data2:
+    # все вхождения первых 16 байт каждого блока
+    # Используем простой словарь: первые 16 байт -> список позиций
+    start_index = {}
+    for pos in range(len(data2) - min_match + 1):
+        key = data2[pos:pos + min_match]
+        if key not in start_index:
+            start_index[key] = []
+        start_index[key].append(pos)
+
+    # Множество занятых позиций в data2
+    used2 = [False] * len(data2)
+
     hex_rows = []
     matching_bytes = 0
-    total_bytes = 0
-    offset = 0
+    pos1 = 0
 
-    equal_runs = []  # (start, end) ranges of consecutive equal blocks
-    current_equal_start = None
+    while pos1 < len(data1):
+        max_match_len = 0
+        best_pos2 = -1
 
-    while offset < max_len:
-        chunk1 = data1[offset:offset + block_size]
-        chunk2 = data2[offset:offset + block_size]
-        max_chunk_len = max(len(chunk1), len(chunk2))
+        # Ищем максимально длинное совпадение, начиная с min_match
+        remaining1 = len(data1) - pos1
+        if remaining1 >= min_match:
+            key = data1[pos1:pos1 + min_match]
+            if key in start_index:
+                for pos2_candidate in start_index[key]:
+                    # Проверяем, не занята ли уже эта позиция
+                    # (может быть занята частично — проверяем)
+                    # Считаем максимальную длину совпадения
+                    match_len = 0
+                    while (pos1 + match_len < len(data1) and
+                           pos2_candidate + match_len < len(data2) and
+                           data1[pos1 + match_len] == data2[pos2_candidate + match_len]):
+                        match_len += 1
+                    if match_len > max_match_len:
+                        max_match_len = match_len
+                        best_pos2 = pos2_candidate
 
-        if chunk1 == chunk2:
-            matching_bytes += min(len(chunk1), len(chunk2))
-            if current_equal_start is None:
-                current_equal_start = offset
-        else:
-            # Завершаем серию равных блоков
-            if current_equal_start is not None:
-                equal_runs.append((current_equal_start, offset))
-                current_equal_start = None
-            # Побайтовая разметка
-            diff_mask = []
-            for b_idx in range(max_chunk_len):
-                b1 = chunk1[b_idx] if b_idx < len(chunk1) else 0
-                b2 = chunk2[b_idx] if b_idx < len(chunk2) else 0
-                if b1 == b2:
-                    matching_bytes += 1
-                    diff_mask.append(0)
+        if max_match_len >= min_match and best_pos2 >= 0:
+            # Нашли матч
+            block = data1[pos1:pos1 + max_match_len]
+            matched_bytes = _make_hex_bytes_multi(block)
+            ascii_str = _make_ascii(block)
+
+            if pos1 == best_pos2:
+                # Совпадают адреса — equal
+                # Проверяем, можно ли сжать с предыдущим equal
+                if (hex_rows and hex_rows[-1]["type"] == "equal" and
+                    int(hex_rows[-1].get("addr", "0"), 16) + hex_rows[-1].get("count", 0) * 16 == pos1):
+                    # Продолжаем
+                    hex_rows[-1]["count"] += max_match_len // 16
                 else:
-                    diff_mask.append(1)
-            # Форматируем с побайтовыми массивами
-            def _make_hex_bytes(data: bytes, mask: list) -> list:
-                result = []
-                for i in range(16):
-                    if i < len(data):
-                        result.append({"b": f'{data[i]:02x}', "d": mask[i] if i < len(mask) else 0})
-                    else:
-                        result.append({"b": "  ", "d": 0})
-                return result
-            def _make_ascii(data: bytes) -> str:
-                return ''.join(chr(b) if 32 <= b < 127 else '.' for b in data) if data else ''
-            left_data = chunk1 if chunk1 else b''
-            right_data = chunk2 if chunk2 else b''
-            hex_rows.append({
-                "type": "diff",
-                "addr": f'{offset:08x}',
-                "left_bytes": _make_hex_bytes(left_data, diff_mask),
-                "right_bytes": _make_hex_bytes(right_data, diff_mask),
-                "left_ascii": _make_ascii(left_data),
-                "right_ascii": _make_ascii(right_data),
-            })
-
-        total_bytes += max_chunk_len
-        offset += block_size
-
-    # Последняя серия равных
-    if current_equal_start is not None:
-        equal_runs.append((current_equal_start, offset))
-
-    # Сжимаем равные серии — заменяем на "..."
-    merged = []
-    diff_idx = 0
-    # Сортируем всё по оффсету
-    for start, end in equal_runs:
-        # Все diff-строки до этой равной серии
-        while diff_idx < len(hex_rows):
-            row = hex_rows[diff_idx]
-            # Вычисляем оффсет diff-строки из её addr
-            try:
-                row_offset = int(row.get("addr", "0"), 16) if row.get("addr") else -1
-            except (ValueError, IndexError):
-                row_offset = -1
-            if row_offset < start:
-                merged.append(row)
-                diff_idx += 1
+                    hex_rows.append({
+                        "type": "equal",
+                        "count": max_match_len // 16,
+                    })
             else:
-                break
-        # Вставляем маркер равного блока
-        count_blocks = (end - start) // block_size
-        if count_blocks > 0:
-            merged.append({"type": "equal", "count": count_blocks})
-    # Оставшиеся diff-строки
-    while diff_idx < len(hex_rows):
-        merged.append(hex_rows[diff_idx])
-        diff_idx += 1
+                # Сдвинутые — разбиваем на 16-байтовые строки с адресами
+                for block_i in range(0, max_match_len, 16):
+                    end = min(block_i + 16, max_match_len)
+                    block_data1 = data1[pos1 + block_i:pos1 + end]
+                    block_data2 = data2[best_pos2 + block_i:best_pos2 + end]
+                    cur_l_addr = (pos1 + block_i)
+                    cur_r_addr = (best_pos2 + block_i)
+                    shift = best_pos2 - pos1
+                    shift_str = f'+{shift:x}' if shift >= 0 else f'-{abs(shift):x}'
+                    hex_rows.append({
+                        "type": "equal_shifted",
+                        "left_addr": f'{cur_l_addr:08x}',
+                        "right_addr": f'{cur_r_addr:08x}',
+                        "left_bytes": _make_hex_bytes_multi(block_data1),
+                        "right_bytes": _make_hex_bytes_multi(block_data2),
+                        "left_ascii": _make_ascii(block_data1),
+                        "right_ascii": _make_ascii(block_data2),
+                        "shift": shift_str,
+                    })
 
-    # Если всё идентично — добавим один маркер
-    if not merged:
-        merged.append({"type": "equal", "count": max_len // block_size})
+            # Помечаем занятые позиции в data2
+            for k in range(max_match_len):
+                used2[best_pos2 + k] = True
 
-    merged.append({"type": "_meta", "total_lines": max_len // block_size + (1 if max_len % block_size else 0)})
+            matching_bytes += max_match_len
+            pos1 += max_match_len
+        else:
+            # Не нашли матч — байт эталонного → deleted
+            block = data1[pos1:pos1 + min_match]
+            actual_len = min(min_match, len(data1) - pos1)
+            hex_rows.append({
+                "type": "deleted",
+                "addr": f'{pos1:08x}',
+                "left_bytes": _make_hex_bytes_multi(data1[pos1:pos1 + actual_len]),
+                "left_ascii": _make_ascii(data1[pos1:pos1 + actual_len]),
+            })
+            pos1 += actual_len
+
+    # Оставшиеся непокрытые байты data2 → inserted (поблочно по 16 байт)
+    pos2 = 0
+    while pos2 < len(data2):
+        if not used2[pos2]:
+            end = pos2 + 1
+            while end < len(data2) and not used2[end]:
+                end += 1
+            # Разбиваем на 16-байтовые строки
+            for offset in range(pos2, end, 16):
+                chunk_end = min(offset + 16, end)
+                chunk = data2[offset:chunk_end]
+                hex_rows.append({
+                    "type": "inserted",
+                    "addr": f'{offset:08x}',
+                    "right_bytes": _make_hex_bytes_multi(chunk),
+                    "right_ascii": _make_ascii(chunk),
+                })
+            pos2 = end
+        else:
+            pos2 += 1
+
+    total_lines = max(len(data1) // 16 + (1 if len(data1) % 16 else 0),
+                      len(data2) // 16 + (1 if len(data2) % 16 else 0))
+    hex_rows.append({"type": "_meta", "total_lines": total_lines})
+    similarity = round(matching_bytes / len(data1), 6) if data1 else 0.0
+    return hex_rows, similarity
+
+    total_bytes = max(len(data1), len(data2))
+    if total_bytes % block_size:
+        total_bytes = ((total_bytes // block_size) + 1) * block_size
+
+    if not hex_rows:
+        max_len_blocks = max(len(blocks1), len(blocks2))
+        hex_rows.append({"type": "equal", "count": max_len_blocks})
+
+    total_lines = max(len(blocks1), len(blocks2))
+    hex_rows.append({"type": "_meta", "total_lines": total_lines})
     similarity = round(matching_bytes / total_bytes, 6) if total_bytes > 0 else 0.0
-    return merged, similarity
+    return hex_rows, similarity
 
 
 def _parse_diaphora_results(sqlite_path: Path) -> dict:

@@ -424,7 +424,7 @@ class DiffPage(QWidget):
         for row in range(1, self.pairs_table.rowCount()):
             cb = self.pairs_table.cellWidget(row, 0).findChild(QCheckBox)
             if cb and cb.isChecked():
-                selected_pairs.append(self._all_pairs[row])
+                selected_pairs.append(self._all_pairs[row - 1])
 
         if not selected_pairs:
             QMessageBox.warning(self, "Ошибка", "Не выбрано ни одной пары для сравнения.")

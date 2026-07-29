@@ -31,7 +31,21 @@
         .diff-equal   { background: var(--surface); }
         .diff-removed { background: var(--danger-tint); }
         .diff-added   { background: var(--success-tint); }
+        .diff-deleted  { background: var(--danger-tint); }
+        .diff-inserted { background: var(--success-tint); }
         .diff-empty   { background: var(--surface-secondary); color: var(--text-tertiary); }
+        .diff-shifted-left,
+        .diff-shifted-right {
+            background: var(--warning-tint);
+            border-left: 3px solid var(--warning);
+        }
+        .shift-badge {
+            display: inline-block;
+            font-size: 9px; font-weight: 700;
+            color: var(--warning);
+            margin-right: 4px;
+            cursor: help;
+        }
 
         .hex-sbs { display: flex; gap: 12px; margin: 8px 0; }
         .hex-sbs > .code-block { flex: 1; min-width: 0; }
@@ -139,11 +153,12 @@
             {% set total = meta.total_lines if meta else '?' %}
             {% set has_diff = namespace(found=false) %}
             {% for row in hdrows %}
-                {% if row.type == "diff" %}{% set has_diff.found = true %}{% endif %}
+                {% if row.type in ("equal_shifted", "deleted", "inserted") %}{% set has_diff.found = true %}{% endif %}
             {% endfor %}
             {% set hd_sim = hd.hexdump_similarity if hd.hexdump_similarity is defined else 0.0 %}
             <p class="meta-text" style="margin-bottom:4px;">
                 Схожесть hex-дампов: <strong>{{ "%.2f"|format(hd_sim * 100) }}%</strong>
+                <span style="font-size:10px; color:var(--text-tertiary); cursor:help;" title="Доля байт эталонного файла, для которых найдена идентичная последовательность (≥16 байт) в контрольном файле. Рассчитывается как matching_bytes / len(эталонный_файл).">ⓘ</span>
                 {% if hd_sim >= 1.0 %}<span class="badge badge--success" style="font-size:10px;">идентичны</span>{% endif %}
             </p>
             <p class="meta-text" style="margin-bottom:8px;">
@@ -159,12 +174,23 @@
                 {% for row in hdrows %}
                     {% if row.type == "equal" %}
                     <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… ({{ row.count }} идентичных строк) …</div>
-                    {% elif row.type == "diff" %}
+                    {% elif row.type == "equal_shifted" %}
                     {% set lb = row.left_bytes if row.left_bytes is defined else [] %}
                     {% set rb = row.right_bytes if row.right_bytes is defined else [] %}
-                    {% set addr = row.addr if row.addr is defined else '' %}
-                    <div class="diff-cell" style="white-space:pre; font-family:ui-monospace,'SF Mono','Consolas',monospace; font-size:12px;"><span style="color:var(--text-tertiary);">{{ addr }}  </span>{%- for b in lb %}{% if b.d == 1 %}<span style="background:rgba(255,60,60,0.35);font-weight:600;">{{ b.b }}</span> {% else %}<span>{{ b.b }} </span>{% endif %}{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.left_ascii }}|</span></div>
-                    <div class="diff-cell" style="white-space:pre; font-family:ui-monospace,'SF Mono','Consolas',monospace; font-size:12px;"><span style="color:var(--text-tertiary);">{{ addr }}  </span>{%- for b in rb %}{% if b.d == 1 %}<span style="background:rgba(60,255,60,0.35);font-weight:600;">{{ b.b }}</span> {% else %}<span>{{ b.b }} </span>{% endif %}{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.right_ascii }}|</span></div>
+                    <div class="diff-cell diff-shifted-left" title="Эталон: 0x{{ row.left_addr }} → Контроль: 0x{{ row.right_addr }}, сдвиг: {{ row.shift }}">
+                        <span class="shift-badge" title="Смещение: {{ row.shift }}">⤵ {{ row.shift }}</span>
+                        <span style="color:var(--text-tertiary);">{{ row.left_addr }}  </span>{%- for b in lb %}<span>{{ b.b }} </span>{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.left_ascii }}|</span>
+                    </div>
+                    <div class="diff-cell diff-shifted-right" title="Контроль: 0x{{ row.right_addr }} (сдвиг {{ row.shift }})">
+                        <span style="color:var(--text-tertiary);">{{ row.right_addr }}  </span>{%- for b in rb %}<span>{{ b.b }} </span>{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.right_ascii }}|</span>
+                    </div>
+                    {% elif row.type == "deleted" %}
+                    {% set lb = row.left_bytes if row.left_bytes is defined else [] %}
+                    <div class="diff-cell diff-deleted" style="grid-column:1/-1;"><span style="color:var(--text-tertiary);">{{ row.addr }}  </span>{%- for b in lb %}<span>{{ b.b }} </span>{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.left_ascii }}|</span></div>
+                    {% elif row.type == "inserted" %}
+                    {% set rb = row.right_bytes if row.right_bytes is defined else [] %}
+                    <div class="diff-cell diff-empty" style="text-align:center;"><span style="font-style:italic;">—</span></div>
+                    <div class="diff-cell diff-inserted"><span style="color:var(--text-tertiary);">{{ row.addr }}  </span>{%- for b in rb %}<span>{{ b.b }} </span>{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.right_ascii }}|</span></div>
                     {% endif %}
                 {% endfor %}
                 {% endif %}
