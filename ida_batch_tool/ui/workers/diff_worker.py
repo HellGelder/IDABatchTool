@@ -13,7 +13,7 @@ import threading
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 from PySide6.QtCore import QThread, Signal
 
@@ -21,7 +21,6 @@ from ida_batch_tool.ui.constants import SCRIPTS_DIR
 from ida_batch_tool.reporting.generator import DiffReportGenerator
 
 _EXPORT_DATA_SCRIPT = SCRIPTS_DIR / "export_data.py"
-_EXPORT_CFG_SCRIPT = SCRIPTS_DIR / "export_cfg.py"
 _DIAPHORA_DIR = SCRIPTS_DIR / "diaphora"
 _DIAPHORA_SCRIPT = _DIAPHORA_DIR / "diaphora.py"
 
@@ -639,24 +638,6 @@ class DiffWorker(QThread):
                 except (OSError, json.JSONDecodeError):
                     pass
 
-            # CFG export
-            pr_cfg_idx, sc_cfg_idx = self._export_cfg_pair(primary_i64, secondary_i64, stem)
-            if pr_cfg_idx or sc_cfg_idx:
-                try:
-                    with open(json_output, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    for mf in data.get("matched_functions", []):
-                        a1 = mf.get("address1", "")
-                        a2 = mf.get("address2", "")
-                        if pr_cfg_idx and a1 in pr_cfg_idx:
-                            mf["cfg_svg1"] = pr_cfg_idx[a1]
-                        if sc_cfg_idx and a2 in sc_cfg_idx:
-                            mf["cfg_svg2"] = sc_cfg_idx[a2]
-                    with open(json_output, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=2, ensure_ascii=False)
-                except (OSError, json.JSONDecodeError):
-                    pass
-
             # Unmatched из IDA-экспорта
             try:
                 with open(json_output, "r", encoding="utf-8") as f:
@@ -694,8 +675,13 @@ class DiffWorker(QThread):
                 if un1: data.setdefault("unmatched_functions1", un1)
                 if un2: data.setdefault("unmatched_functions2", un2)
                 total1 = data.get("total_functions1", 0)
-                matched_cnt = len(data.get("matched_functions", []))
-                data["total_unmatched"] = total1 - matched_cnt
+                # Используем уникальные адреса primary-функций — после дедупликации
+                # каждая primary-функция сопоставлена не более чем с одной secondary.
+                unique_primary = len({
+                    m.get("address1", "") for m in data.get("matched_functions", [])
+                    if m.get("address1")
+                })
+                data["total_unmatched"] = max(0, total1 - unique_primary)
                 with open(json_output, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
             except (OSError, json.JSONDecodeError):
@@ -715,7 +701,7 @@ class DiffWorker(QThread):
 
     # ----- Все существующие приватные методы (неизменны) -----
     # _run_diaphora_export, _run_diaphora_diff, _merge_diaphora_into_json
-    # _export_cfg_pair, _export_binexport, _run_bindiff
+    # _export_binexport, _run_bindiff
     # _get_table_columns, _parse_bindiff_result, _export_json
     # _enrich_diff_json
 
@@ -900,6 +886,46 @@ class DiffWorker(QThread):
             logger.warning(f"Ошибка Diaphora diff: {e}")
             return False
 
+    @staticmethod
+    def _deduplicate_matched_functions(matched: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Оставляет только лучшее соответствие для каждого address1 и address2.
+        
+        Приоритет источника: both > bindiff > diaphora.
+        При равном источнике — выше similarity.
+        Это предотвращает ситуацию, когда одна функция primary сопоставлена
+        с несколькими разными функциями secondary (и наоборот).
+        """
+        if not matched:
+            return matched
+
+        SOURCE_PRIORITY = {"both": 0, "bindiff": 1, "diaphora": 2}
+
+        # Сортируем: сначала по приоритету источника, затем по убыванию similarity
+        def _sort_key(m):
+            src = m.get("source", "diaphora")
+            src_prio = SOURCE_PRIORITY.get(src, 99)
+            sim = float(m.get("similarity", 0.0) or 0.0)
+            return (src_prio, -sim)
+
+        sorted_matches = sorted(matched, key=_sort_key)
+
+        seen_addr1 = set()
+        seen_addr2 = set()
+        result = []
+
+        for m in sorted_matches:
+            a1 = m.get("address1", "")
+            a2 = m.get("address2", "")
+            if not a1 or not a2:
+                continue
+            if a1 in seen_addr1 or a2 in seen_addr2:
+                continue
+            seen_addr1.add(a1)
+            seen_addr2.add(a2)
+            result.append(m)
+
+        return result
+
     def _merge_diaphora_into_json(self, json_path: Path, diaphora_sqlite: Path, stem: str) -> None:
         """Сливает результаты Diaphora в .diff.json с разделением по source.
         
@@ -960,6 +986,11 @@ class DiffWorker(QThread):
         # Добавляем новые совпадения (только Diaphora)
         data["matched_functions"].extend(new_matches)
 
+        # Дедупликация: оставляем только лучшее соответствие для каждого адреса.
+        # Это предотвращает ситуацию, когда одна primary-функция сопоставлена
+        # с разными secondary-функциями (или наоборот), и total_matched > total_functions.
+        data["matched_functions"] = self._deduplicate_matched_functions(data["matched_functions"])
+
         # Собираем matched_summary
         bindiff_only = [m for m in data["matched_functions"] if m.get("source") == "bindiff"]
         diaphora_only = [m for m in data["matched_functions"] if m.get("source") == "diaphora"]
@@ -975,8 +1006,12 @@ class DiffWorker(QThread):
         data["matched_diaphora_only"] = diaphora_only
 
         # Метаданные
-        data["diaphora_matched_count"] = len(new_matches) + len(both_matches)
-        # Определяем engine на основе источни��ов
+        # Пересчитываем diaphora_matched_count после дедупликации
+        data["diaphora_matched_count"] = sum(
+            1 for m in data["matched_functions"]
+            if m.get("source") in ("diaphora", "both")
+        )
+        # Определяем engine на основе источников
         has_bindiff = any(m.get("source") in ("bindiff", "both") for m in data.get("matched_functions", []))
         has_diaphora = any(m.get("source") in ("diaphora", "both") for m in data.get("matched_functions", []))
         if has_bindiff and has_diaphora:
@@ -1012,50 +1047,6 @@ class DiffWorker(QThread):
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except OSError:
             pass
-
-    def _export_cfg_pair(self, primary_i64: Path, secondary_i64: Path, stem: str) -> Tuple[Optional[dict], Optional[dict]]:
-        """Экспортирует SVG-графы. Возвращает (pr_index, sc_index) {hex_addr: rel_svg_path}."""
-        cfg_dir = self.output_dir / "cfg" / stem
-        cfg_dir.mkdir(parents=True, exist_ok=True)
-        out_pr = cfg_dir / "primary"
-        out_sc = cfg_dir / "secondary"
-        for i64, out_dir in [(primary_i64, out_pr), (secondary_i64, out_sc)]:
-            cmd = [
-                self.idat_path, "-A",
-                f"-S\"{_EXPORT_CFG_SCRIPT}\"",
-                f"output={out_dir}",
-                str(i64),
-            ]
-            try:
-                subprocess.run(cmd, capture_output=True, text=True, check=False,
-                               encoding="utf-8", errors="replace")
-            except Exception:
-                pass
-
-        def _load_cfg_index(base_dir: Path, side: str) -> Optional[dict]:
-            """Читает cfg_manifest.json и строит {hex_addr: rel_path}."""
-            mp = base_dir / "cfg_manifest.json"
-            if not mp.is_file():
-                return None
-            try:
-                with open(mp, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                return None
-            idx = {}
-            for func_name, rel in raw.items():
-                if not rel:
-                    continue
-                try:
-                    addr_hex = Path(rel).stem.split("_")[-1]
-                    idx[f"0x{addr_hex}"] = f"cfg/{stem}/{side}/{rel}"
-                except (IndexError, ValueError):
-                    continue
-            return idx
-
-        pr_idx = _load_cfg_index(out_pr, "primary")
-        sc_idx = _load_cfg_index(out_sc, "secondary")
-        return pr_idx, sc_idx
 
     def _export_binexport(self, i64_path: Path, output_file: Path) -> bool:
         if self._cancel_event.is_set():

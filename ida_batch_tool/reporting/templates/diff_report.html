@@ -86,9 +86,6 @@
 
         .pseudo-single { display: flex; gap: 12px; margin: 8px 0; }
         .pseudo-single > .code-block { flex: 1; min-width: 0; }
-
-        .cfg-sbs { display: flex; gap: 12px; margin: 8px 0; }
-        .cfg-sbs > div { flex: 1; min-width: 0; }
     </style>
 </head>
 <body>
@@ -521,28 +518,6 @@
                 <div>
                     <p class="meta-text" style="margin-bottom:4px;">Контрольный ({{ f.address2 }})</p>
                     <div class="code-block">{{ f.hexdump2 if f.hexdump2 else '—' }}</div>
-                </div>
-            </div>
-            {% endif %}
-
-            {% if (f.cfg_svg1 or f.cfg_svg2) and f.similarity < 1.0 %}
-            <h4>Граф потока управления (CFG)</h4>
-            <div class="cfg-sbs">
-                <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Эталонный ({{ f.address1 }})</p>
-                    {% if f.cfg_svg1 %}
-                    <img src="{{ f.cfg_svg1 }}" alt="CFG {{ f.name1 }}" style="width:100%; height:auto; border:1px solid var(--separator); border-radius:var(--radius-sm);">
-                    {% else %}
-                    <p class="no-data">—</p>
-                    {% endif %}
-                </div>
-                <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Контрольный ({{ f.address2 }})</p>
-                    {% if f.cfg_svg2 %}
-                    <img src="{{ f.cfg_svg2 }}" alt="CFG {{ f.name2 }}" style="width:100%; height:auto; border:1px solid var(--separator); border-radius:var(--radius-sm);">
-                    {% else %}
-                    <p class="no-data">—</p>
-                    {% endif %}
                 </div>
             </div>
             {% endif %}
