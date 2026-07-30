@@ -497,11 +497,13 @@ class DiffReportGenerator(BaseReportGenerator):
             engine = data.get("engine", "bindiff")
 
             # Если в файле нет функций или hexdump 100% — hexdump-схожесть.
-            # Если оба движка — показатель совпадения из частного отчёта
-            # (доля функций, найденных хотя бы одним движком).
+            # Если оба движка и Diaphora добавила уникальные пары —
+            # показатель совпадения = доля функций, найденных в сумме.
+            # Иначе (BinDiff-only или Diaphora не добавила нового) — sim BinDiff.
+            diaphora_only = data.get("matched_summary", {}).get("diaphora_only", 0)
             if hexdump_sim >= 1.0 or total1 == 0:
                 display_sim = hexdump_sim
-            elif engine == "bindiff+diaphora":
+            elif engine == "bindiff+diaphora" and diaphora_only > 0:
                 display_sim = matched / total1 if total1 else 0.0
             else:
                 display_sim = sim
@@ -516,8 +518,8 @@ class DiffReportGenerator(BaseReportGenerator):
                 "report_filename": html_filename,
                 "hash1": hash1,
                 "hash2": hash2,
-                "engine": data.get("engine", "bindiff"),
-                "diaphora_matched_count": data.get("diaphora_matched_count", 0),
+                "engine": engine,
+                "diaphora_matched_count": diaphora_only,
             })
             total_similarity += display_sim
             total_confidence += conf

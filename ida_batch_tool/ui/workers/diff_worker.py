@@ -535,13 +535,30 @@ class DiffWorker(QThread):
         except OSError:
             return False
 
-    def _run_pass_with_progress(self, stage_name: str, process_func, pairs: list, total: int) -> None:
+    def _run_pass_with_progress(self, stage_name: str, process_func, pairs: list, total: int,
+                                 engine: Optional[str] = None,
+                                 status_text: str = "",
+                                 status_done: str = "\u2713") -> None:
         """Запускает фазу с эмиссией прогресса.
-        Крупные ф��йлы обрабатываются последовательно (1 за раз) для снижения нагрузки на память."""
+
+        Args:
+            engine: "bindiff"/"diaphora"/None.
+            status_text: текст статуса на время выполнения.
+            status_done: текст статуса при завершении.
+        """
         if total == 0:
             return
 
-        # Разделяем пары на маленькие (параллельно) и крупные (последовательно)
+        # Сигнал начала
+        for _p, _s, r in pairs:
+            if engine is None:
+                if self.engine in ("bindiff", "both"):
+                    self._safe_emit(self.pair_status_updated, r, "bindiff", status_text)
+                if self.engine in ("diaphora", "both"):
+                    self._safe_emit(self.pair_status_updated, r, "diaphora", status_text)
+            else:
+                self._safe_emit(self.pair_status_updated, r, engine, status_text)
+
         small_pairs = [x for x in pairs if not self._is_large_file(x[0])]
         large_pairs = [x for x in pairs if self._is_large_file(x[0])]
 
@@ -550,15 +567,25 @@ class DiffWorker(QThread):
         def _emit_progress(p, s, r, ok: bool):
             nonlocal completed
             display_name = p.name
+            status = status_done if ok else "\u2717"
             with self._lock:
                 completed += 1
-                self._pulse_counter = completed  # для pulse-обновлений
-                if ok:
-                    self._safe_emit_stage(stage_name, completed, total, display_name, self._stage_current_stage)
+                self._pulse_counter = completed
+                self._global_step += 1
+                desc = self._stage_current_stage or stage_name
+                self._safe_emit(self.global_progress_updated,
+                                self._global_step, self._total_steps, desc)
+                self._safe_emit_stage(stage_name, completed, total,
+                                      display_name, self._stage_current_stage)
+                if engine is None:
+                    if self.engine in ("bindiff", "both"):
+                        self._safe_emit(self.pair_status_updated, r, "bindiff", status)
+                    if self.engine in ("diaphora", "both"):
+                        self._safe_emit(self.pair_status_updated, r, "diaphora", status)
                 else:
-                    self._safe_emit_stage(stage_name, completed, total, display_name, f"ОШИБКА {r}")
+                    self._safe_emit(self.pair_status_updated, r, engine, status)
 
-        # 1) Маленькие файлы — параллельно через ThreadPoolExecutor
+        # 1) Маленькие файлы
         if small_pairs:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 future_to_pair = {
@@ -576,13 +603,14 @@ class DiffWorker(QThread):
                         _emit_progress(p, s, r, ok)
                     except Exception as e:
                         logger.exception(f"Ошибка {r} в фазе {stage_name}: {e}")
-                        self._safe_emit(self.error_occurred, f"Ошибка {r} в фазе {stage_name}: {e}")
+                        self._safe_emit(self.error_occurred,
+                                        f"Ошибка {r} в фазе {stage_name}: {e}")
                         _emit_progress(p, s, r, False)
 
         if self._cancel_event.is_set():
             return
 
-        # 2) Крупные файлы — последовательно (1 IDA-процесс за раз)
+        # 2) Крупные файлы
         for p, s, r in large_pairs:
             if self._cancel_event.is_set():
                 break
@@ -591,7 +619,8 @@ class DiffWorker(QThread):
                 _emit_progress(p, s, r, ok)
             except Exception as e:
                 logger.exception(f"Ошибка {r} в фазе {stage_name}: {e}")
-                self._safe_emit(self.error_occurred, f"Ошибка {r} в фазе {stage_name}: {e}")
+                self._safe_emit(self.error_occurred,
+                                f"Ошибка {r} в фазе {stage_name}: {e}")
                 _emit_progress(p, s, r, False)
 
     # ----- ФАЗА 1: BinDiff -----
