@@ -267,15 +267,18 @@ def _parse_diaphora_results(sqlite_path: Path) -> dict:
                     except (ValueError, TypeError):
                         return 0
 
+                                # Diaphora confidence — производная от типа совпадения
+                match_type = r.get("type", "partial")
+                _CONFIDENCE_MAP = {"best": 0.95, "partial": 0.60, "unreliable": 0.25}
                 result["matched_functions"].append({
                     "address1": _parse_addr(r.get("address")),
                     "name1": r.get("name", ""),
                     "address2": _parse_addr(r.get("address2")),
                     "name2": r.get("name2", ""),
                     "similarity": round(float(r.get("ratio", 0) or 0), 4),
-                    "confidence": round(float(r.get("ratio", 0) or 0), 4),
+                    "confidence": _CONFIDENCE_MAP.get(match_type, 0.50),
                     "algorithm_name": heuristic_name,
-                    "match_type": r.get("type", "partial"),
+                    "match_type": match_type,
                     "nodes1": _safe_int(r.get("nodes1")),
                     "nodes2": _safe_int(r.get("nodes2")),
                     "source": "diaphora",
@@ -314,6 +317,8 @@ class DiffWorker(QThread):
     pair_completed = Signal(str)
     finished = Signal(int, int)
     error_occurred = Signal(str)
+    global_progress_updated = Signal(int, int, str)  # (step, total, description)
+    pair_status_updated = Signal(str, str, str)       # (rel_key, engine, status)
 
     def __init__(self, file_pairs: List[Tuple[Path, Path, str]],
                  idat_path: str, bindiff_path: str,
@@ -337,6 +342,8 @@ class DiffWorker(QThread):
         self._completed_count = 0
         self._pulse_counter = 0
         self._lock = threading.Lock()
+        self._global_step = 0
+        self._total_steps = 0
 
     def _safe_emit(self, signal, *args) -> None:
         """Безопасный эмит сигнала — ловит TypeError если QThread уже уничтожен."""
@@ -394,22 +401,38 @@ class DiffWorker(QThread):
             reverse=True,
         )
 
-        if self.engine in ("bindiff", "both"):
-            self._safe_emit_stage("BinDiff", 0, total, "", "Ожидание начала...")
-            self._stage_current_stage = "BinDiff: экспорт"
-            self._run_pass_with_progress("BinDiff", self._process_bindiff_pair, all_pairs, total)
+        self._global_step = 0
+        self._safe_emit(self.global_progress_updated, 0, self._total_steps, "Запуск...")
 
-        if self.engine in ("diaphora", "both"):
-            self._safe_emit_stage("Diaphora", 0, total, "", "Ожидание начала...")
-            self._stage_current_stage = "Diaphora: сбор данных"
-            self._run_pass_with_progress("Diaphora", self._process_diaphora_pair, all_pairs, total)
+        use_bindiff = self.engine in ("bindiff", "both")
+        use_diaphora = self.engine in ("diaphora", "both")
 
-        self._safe_emit_stage("Post", 0, total, "", "Ожидание начала...")
+        # Количество фаз: экспорт (1 или 2) + пост-анализ + HTML
+        phases = 2 + int(use_bindiff) + int(use_diaphora)
+        self._total_steps = total * phases
+
+        if use_bindiff:
+            self._stage_current_stage = "BinDiff - Экспорт из БД"
+            self._run_pass_with_progress(
+                "BinDiff", self._process_bindiff_pair, all_pairs, total,
+                engine="bindiff", status_text="Экспорт из БД",
+            )
+
+        if use_diaphora:
+            self._stage_current_stage = "Diaphora - Экспорт из БД"
+            self._run_pass_with_progress(
+                "Diaphora", self._process_diaphora_pair, all_pairs, total,
+                engine="diaphora", status_text="Экспорт из БД",
+            )
+
         self._stage_current_stage = "Пост-анализ"
-        self._run_pass_with_progress("Post", self._process_post_pair, all_pairs, total)
+        self._run_pass_with_progress(
+            "Post", self._process_post_pair, all_pairs, total,
+            engine=None, status_text="Пост-анализ",
+        )
 
         # Финальный этап: генерация HTML-отчётов
-        self._stage_current_stage = "Генерация отчётов"
+        self._stage_current_stage = "Генерация HTML"
         self._generate_reports(all_pairs, total)
 
         logger.info(f"Завершено. Всего обработано: {total}")
@@ -435,6 +458,16 @@ class DiffWorker(QThread):
             right_dir = self.right_dir or Path(self.output_dir)
             internal_set = _build_internal_set(left_dir).union(_build_internal_set(right_dir))
 
+            # Маппинг stem -> rel_key для pair_status_updated
+            stem_to_rel = {_safe_filename(r): r for _, _, r in pairs}
+
+            # Сигнал начала: "Генерация HTML" для всех пар
+            for _p, _s, r in pairs:
+                if self.engine in ("bindiff", "both"):
+                    self._safe_emit(self.pair_status_updated, r, "bindiff", "Генерация HTML")
+                if self.engine in ("diaphora", "both"):
+                    self._safe_emit(self.pair_status_updated, r, "diaphora", "Генерация HTML")
+
             self._safe_emit_stage("Report", 0, total, "", "Генерация HTML-отчётов...")
 
             for idx, jf in enumerate(json_files):
@@ -452,6 +485,21 @@ class DiffWorker(QThread):
                     )
                 except Exception as e:
                     logger.exception(f"Ошибка генерации отчёта {jf.name}: {e}")
+
+                # Статус пары: завершена
+                stem = jf.stem.replace(".diff", "")
+                rel_key = stem_to_rel.get(stem, "")
+                if rel_key:
+                    if self.engine in ("bindiff", "both"):
+                        self._safe_emit(self.pair_status_updated, rel_key, "bindiff", "\u2713")
+                    if self.engine in ("diaphora", "both"):
+                        self._safe_emit(self.pair_status_updated, rel_key, "diaphora", "\u2713")
+
+                with self._lock:
+                    self._global_step += 1
+                    self._safe_emit(self.global_progress_updated, self._global_step, self._total_steps,
+                                    "Генерация HTML")
+
                 self._safe_emit_stage("Report", idx + 1, total, jf.stem, "Генерация HTML-отчётов...")
 
             # Сводный индекс

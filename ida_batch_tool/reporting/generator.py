@@ -494,8 +494,17 @@ class DiffReportGenerator(BaseReportGenerator):
             else:
                 real_name = stem.replace("_i64", "")
             hexdump_sim = float(data.get("hexdump_similarity", 0.0))
-            # Если в файле нет функций или hexdump 100% — используем hexdump-схожесть
-            display_sim = hexdump_sim if (hexdump_sim >= 1.0 or total1 == 0) else sim
+            engine = data.get("engine", "bindiff")
+
+            # Если в файле нет функций или hexdump 100% — hexdump-схожесть.
+            # Если оба движка — показатель совпадения из частного отчёта
+            # (доля функций, найденных хотя бы одним движком).
+            if hexdump_sim >= 1.0 or total1 == 0:
+                display_sim = hexdump_sim
+            elif engine == "bindiff+diaphora":
+                display_sim = matched / total1 if total1 else 0.0
+            else:
+                display_sim = sim
             pairs.append({
                 "stem": real_name,
                 "similarity": sim,
