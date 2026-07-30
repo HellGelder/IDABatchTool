@@ -255,13 +255,19 @@
 
     <!-- Общая оценка схожести (только для BinDiff) -->
     {% if engine in ("bindiff", "bindiff+diaphora") %}
+    {% set display_sim = hexdump_similarity if total_functions1 == 0 else similarity %}
     <h2>Общая оценка схожести BinDiff</h2>
     <div class="card">
         <div class="flex-row">
             <div>
-                <div class="stat-value">{{ "%.2f"|format(similarity * 100) }}%</div>
-                <div class="stat-label" style="margin-bottom:4px;">Схожесть</div>
-                <div class="progress-bar"><div class="progress-fill" style="width:{{ similarity * 100 }}%;"></div></div>
+                <div class="stat-value">{{ "%.2f"|format(display_sim * 100) }}%</div>
+                <div class="stat-label" style="margin-bottom:4px;">
+                    Схожесть
+                    {% if total_functions1 == 0 %}
+                    <span class="badge" style="font-size:9px; background:var(--warning-tint); color:var(--warning);">HEXDUMP</span>
+                    {% endif %}
+                </div>
+                <div class="progress-bar"><div class="progress-fill" style="width:{{ display_sim * 100 }}%;"></div></div>
             </div>
             <div>
                 <div class="stat-value">{{ "%.2f"|format(confidence * 100) }}%</div>

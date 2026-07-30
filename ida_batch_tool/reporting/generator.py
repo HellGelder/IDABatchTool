@@ -494,8 +494,8 @@ class DiffReportGenerator(BaseReportGenerator):
             else:
                 real_name = stem.replace("_i64", "")
             hexdump_sim = float(data.get("hexdump_similarity", 0.0))
-            # Если hexdump 100% — используем его как основную схожесть
-            display_sim = hexdump_sim if hexdump_sim >= 1.0 else sim
+            # Если в файле нет функций или hexdump 100% — используем hexdump-схожесть
+            display_sim = hexdump_sim if (hexdump_sim >= 1.0 or total1 == 0) else sim
             pairs.append({
                 "stem": real_name,
                 "similarity": sim,
