@@ -4,9 +4,10 @@ import re
 import shutil
 from pathlib import Path
 from datetime import datetime
+from typing import Callable, Optional, List as TypedList
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from ida_batch_tool.database.sfa_doc_cache import SfaDocCache
+from ida_batch_tool.database.sfa_doc_cache import DocCacheManager
 from ida_batch_tool.reporting.utils import compute_back_link
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -20,7 +21,7 @@ class SfaReportGenerator:
         )
         self.report_template = self.env.get_template("sfa_report.html")
         self.index_template = self.env.get_template("sfa_index.html")
-        self._doc_cache: SfaDocCache | None = None
+        self._doc_cache: DocCacheManager | None = None
         self._log_file = None
         self._npx_path = None
         # Загружаем marked.min.js один раз
@@ -139,7 +140,22 @@ class SfaReportGenerator:
             # fallback: если библиотека не установлена — возвращаем как есть
             return ""
 
-    def generate_report_from_json(self, json_path: Path, output_html: Path, reports_dir: Path = None) -> None:
+    def generate_report_from_json(
+        self,
+        json_path: Path,
+        output_html: Path,
+        reports_dir: Path = None,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> None:
+        """Генерирует HTML-отчёт СФ из JSON-файла экспорта IDA.
+
+        Args:
+            json_path: путь к .export.json.
+            output_html: куда писать .sfa.html.
+            reports_dir: корневая папка отчётов (для кэша и лога).
+            progress_callback: вызывается после каждой обработанной функции
+                с аргументами (function_name, current_idx, total_in_file).
+        """
         if reports_dir:
             self._init_log(reports_dir)
         self._log(f"[INFO] Processing {json_path}")
@@ -149,13 +165,14 @@ class SfaReportGenerator:
 
         file_name = data.get("file_name", "")
         imports = data.get("imports", [])
-        self._log(f"[INFO] Found {len(imports)} imports in {file_name}")
+        total_imports = len(imports)
+        self._log(f"[INFO] Found {total_imports} imports in {file_name}")
 
-        # Создаём/открываем SQLite-кэш документации
+        # Создаём/открываем DocCacheManager (потокобезопасный кэш)
         cache_db = reports_dir / "mslearn_cache.db" if reports_dir else None
         if cache_db:
             try:
-                self._doc_cache = SfaDocCache(cache_db)
+                self._doc_cache = DocCacheManager(cache_db)
                 self._log(f"[INFO] MS Learn cache: {cache_db} ({self._doc_cache.count()} функций)")
             except Exception as e:
                 self._log(f"[WARN] Failed to open cache DB: {e}")
@@ -164,11 +181,15 @@ class SfaReportGenerator:
             self._doc_cache = None
 
         system_calls = []
-        for imp in imports:
+        for idx, imp in enumerate(imports):
             func_name = imp.get("name")
             if not func_name:
                 continue
             self._log(f"[DEBUG] Processing import: {func_name}")
+
+            # Сообщаем прогресс (перед обработкой функции)
+            if progress_callback:
+                progress_callback(func_name, idx, total_imports)
 
             # Пытаемся взять dll_name из импорта JSON-экспорта IDA
             dll_name = imp.get("module", "") or "—"
@@ -195,6 +216,7 @@ class SfaReportGenerator:
 
                     if self._doc_cache:
                         try:
+                            # Асинхронная запись: не блокирует поток
                             self._doc_cache.save_results(func_name, results, dll_name=dll_name)
                             self._log(f"[INFO] Fetched and cached {len(results)} results for {func_name}")
                         except Exception as e:
@@ -223,6 +245,10 @@ class SfaReportGenerator:
                 back_link = compute_back_link(rel)
             except ValueError:
                 pass
+
+        # Сбрасываем кэш-менеджер (ждём завершения всех записей)
+        if self._doc_cache:
+            self._doc_cache.flush()
 
         html = self.report_template.render(
             file_name=file_name,

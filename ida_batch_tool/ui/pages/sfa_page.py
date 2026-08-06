@@ -456,7 +456,10 @@ class SfaPage(QWidget):
         self.cancel_btn.setEnabled(False)
         self.html_generate_btn.setEnabled(False)
         self.process_progress.setValue(0)
-        self.process_label.setText("Генерация HTML-отчётов СФ...")
+        self.process_progress.setMaximum(len(json_files))
+        self.process_label.setText(
+            f"Генерация HTML-отчётов СФ…\nРезультаты: {sfa_reports}"
+        )
         self.html_worker = SfaHtmlGeneratorWorker(
             {json_path: True for json_path in json_files},
             generator, sfa_reports, input_dir,
@@ -468,8 +471,12 @@ class SfaPage(QWidget):
         self.html_worker.start()
 
     def _on_html_progress(self, current: int, total: int, message: str):
-        self.process_label.setText(f"Генерация HTML: {current}/{total} {message}")
-        self.process_progress.setValue(int(100 * current / total))
+        if message:
+            self.process_label.setText(f"Генерация HTML: {current}/{total} — {message}")
+        else:
+            self.process_label.setText(f"Генерация HTML: {current}/{total}")
+        self.process_progress.setValue(current)
+        self.process_progress.setMaximum(total)
 
     def _on_html_finished(self, result: object):
         # result — SfaHtmlGenerationResult (dataclass)

@@ -68,10 +68,25 @@ class SfaHtmlGeneratorWorker(QThread):
             out_rel = rel.with_suffix(".sfa.html")
             output_html = self.reports_dir / out_rel
             output_html.parent.mkdir(parents=True, exist_ok=True)
-
-            self.generator.generate_report_from_json(json_path, output_html, self.reports_dir)
-            link = out_rel.as_posix()
             display = rel.as_posix()
+
+            # Общее число импортов в файле — для прогресса внутри файла
+            imports = data.get("imports", [])
+            func_total = len(imports)
+
+            def on_func_progress(func_name: str, func_idx: int, total_in_file: int):
+                """Вызывается из generate_report_from_json для каждой функции."""
+                # completed/total — прогресс по файлам, чтобы бар не откатывался
+                self.progress_updated.emit(
+                    completed, total,
+                    f"{display} → {func_name} ({func_idx + 1}/{total_in_file})"
+                )
+
+            self.generator.generate_report_from_json(
+                json_path, output_html, self.reports_dir,
+                progress_callback=on_func_progress,
+            )
+            link = out_rel.as_posix()
             file_size = source_full.stat().st_size if source_full.exists() else 0
             file_exists = 1 if source_full.exists() else 0
 
@@ -102,7 +117,10 @@ class SfaHtmlGeneratorWorker(QThread):
                         total_files += f_exists
                         total_size_bytes += f_size
 
-                self.progress_updated.emit(completed, total, "")
+                if result is not None:
+                    self.progress_updated.emit(completed, total, f"{result[1]} — готов")
+                else:
+                    self.progress_updated.emit(completed, total, f"{json_path.name} — ошибка")
 
         # Сводный SFA index генерируется в main-потоке через _on_html_finished
         self.finished.emit(SfaHtmlGenerationResult(
