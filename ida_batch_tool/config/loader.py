@@ -31,7 +31,6 @@ def _default_config() -> Dict[str, Any]:
         "default_inputdir": ".",
         "log_level": "INFO",
         "theme": "light",
-        "sf_db_path": "databases",
     }
 
 
@@ -45,10 +44,6 @@ def _merge_with_defaults(user_cfg: Dict[str, Any]) -> Dict[str, Any]:
                 if subkey not in user_cfg[key]:
                     user_cfg[key][subkey] = subval
     return user_cfg
-
-
-def get_sf_db_path() -> str:
-    return load_config().get("sf_db_path", "databases")
 
 
 def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:

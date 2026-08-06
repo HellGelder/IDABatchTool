@@ -1,5 +1,4 @@
 import json
-import shutil
 import threading
 from pathlib import Path
 from typing import Set, Optional, Dict, Any, List
@@ -8,9 +7,6 @@ from PySide6.QtCore import QThread, Signal
 
 from ida_batch_tool.reporting.sfa_generator import SfaReportGenerator
 from ida_batch_tool.ui.workers.results import SfaHtmlGenerationResult
-
-# Путь к вендоренному marked.min.js
-_MARKED_SRC = Path(__file__).resolve().parent.parent.parent / "reporting" / "templates" / "vendor" / "marked.min.js"
 
 
 class SfaHtmlGeneratorWorker(QThread):
@@ -28,13 +24,6 @@ class SfaHtmlGeneratorWorker(QThread):
         self.delete_json = delete_json
 
     def run(self):
-        # Копируем marked.min.js offline
-        vendor_dir = self.reports_dir / "vendor"
-        vendor_dir.mkdir(parents=True, exist_ok=True)
-        marked_dst = vendor_dir / "marked.min.js"
-        if _MARKED_SRC.is_file() and not marked_dst.exists():
-            shutil.copy2(_MARKED_SRC, marked_dst)
-
         jobs: List[Path] = [p for p in self.json_files if p.exists()]
         total = len(jobs)
         if total == 0:

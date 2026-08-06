@@ -66,8 +66,9 @@
         .markdown-content h3 { font-size: 14px; margin: 8px 0 2px; }
         .markdown-content pre { background: var(--bg); padding: 10px; border-radius: var(--radius-sm); overflow-x: auto; }
         .markdown-content code { background: var(--bg); padding: 2px 5px; border-radius: 4px; font-size: 12px; }
+        .markdown-content p code { background: var(--bg); padding: 2px 5px; border-radius: 4px; font-size: 12px; }
     </style>
-    <script src="vendor/marked.min.js"></script>
+    <script>{{ marked_js | safe }}</script>
 </head>
 <body>
     <div class="app-header">
@@ -101,7 +102,7 @@
             });
         }
 
-        async function renderFunction(index) {
+        function renderFunction(index) {
             const f = functions[index];
             if (!f) return;
 
@@ -140,19 +141,21 @@
                              </div>`;
                 });
                 document.getElementById('content-area').innerHTML = html;
-                // Render Markdown via marked
+
+                // Render Markdown via marked (client-side)
                 for (let idx = 0; idx < f.search_results.length; idx++) {
                     const mdText = f.search_results[idx].markdown;
                     const container = document.getElementById(`md-${index}-${idx}`);
                     if (container && mdText) {
                         try {
-                            const rendered = await marked.parse(mdText);
+                            const rendered = marked.parse(mdText);
                             container.innerHTML = rendered;
                         } catch(e) {
                             container.innerHTML = `<pre>${escapeHtml(mdText)}</pre>`;
                         }
                     }
                 }
+
                 // Tab handlers
                 const buttons = document.querySelectorAll(`#tabs-${index} .tab-button`);
                 const contents = document.querySelectorAll(`#content-area .tab-content`);

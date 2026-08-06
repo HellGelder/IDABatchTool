@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from ida_batch_tool.config.loader import load_config, get_ida_executable, get_default_inputdir, get_sf_db_path
+from ida_batch_tool.config.loader import load_config, get_ida_executable, get_default_inputdir
 from ida_batch_tool.discovery.finder import find_executables
 from ida_batch_tool.ui.constants import AnalysisStatus, PLATFORM_EXTENSIONS, SCRIPTS_DIR
 from ida_batch_tool.ui.workers.analysis_worker import AnalysisWorker
@@ -21,7 +21,6 @@ from ida_batch_tool.ui.workers.sfa_html_generation import SfaHtmlGeneratorWorker
 from ida_batch_tool.ui.workers.export_worker import ExportWorker
 from ida_batch_tool.archive_handler import extract_archive, ARCHIVE_EXTENSIONS, find_7z
 from ida_batch_tool.ida.runner import IDAAnalyzer
-from ida_batch_tool.database.win32_sync import Win32DatabaseSync
 
 import logging
 logger = logging.getLogger(__name__)
@@ -444,42 +443,6 @@ class SfaPage(QWidget):
         json_files = list(input_dir.rglob("*.export.json"))
         if not json_files:
             QMessageBox.warning(self, "Ошибка", "Нет JSON-файлов экспорта.")
-            return
-        db_path = Path(get_sf_db_path()) / "win32api.db"
-        if not db_path.exists():
-            reply = QMessageBox.question(self, "Нет базы", "База сигнатур не найдена. Синхронизировать сейчас?",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                self.sync_thread = Win32DatabaseSync(get_sf_db_path())
-                self.sync_thread.progress.connect(self._on_sync_progress)
-                self.sync_thread.finished.connect(lambda success, msg: self._on_sync_finished(success, msg, input_dir, json_files))
-                self.sync_thread.error.connect(self._on_sync_error)
-                self.sync_thread.start()
-                self.process_label.setText("Синхронизация БД...")
-                self.start_btn.setEnabled(False)
-                self.cancel_btn.setEnabled(False)
-                self.html_generate_btn.setEnabled(False)
-                return
-            else:
-                QMessageBox.warning(self, "Нет базы", "Невозможно выполнить анализ СФ.")
-                return
-        self._do_generate_html(input_dir, json_files)
-
-    def _on_sync_progress(self, message: str, percent: int):
-        self.process_label.setText(f"Синхронизация: {message} ({percent}%)")
-
-    def _on_sync_error(self, error_msg: str):
-        self.process_label.setText(f"Ошибка синхронизации: {error_msg}")
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
-        self.html_generate_btn.setEnabled(False)
-
-    def _on_sync_finished(self, success: bool, result: str, input_dir: Path, json_files: List[Path]):
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
-        if not success:
-            self.process_label.setText("Синхронизация не удалась")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось синхронизировать: {result}")
             return
         self._do_generate_html(input_dir, json_files)
 

@@ -6,4 +6,4 @@ ida:
 log_level: INFO
 max_ida: 6
 sf_db_path: C:/Users/Alekseev.Dmitry/Documents/Work/PKI Client 2.1.1/Win32BD
-theme: light
+theme: dark

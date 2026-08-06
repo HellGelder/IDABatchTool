@@ -1,5 +1,4 @@
 import json
-import sqlite3
 import subprocess
 import re
 import shutil
@@ -7,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from ida_batch_tool.config.loader import get_sf_db_path
+from ida_batch_tool.database.sfa_doc_cache import SfaDocCache
 from ida_batch_tool.reporting.utils import compute_back_link
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -21,9 +20,22 @@ class SfaReportGenerator:
         )
         self.report_template = self.env.get_template("sfa_report.html")
         self.index_template = self.env.get_template("sfa_index.html")
-        self._doc_cache = {}
+        self._doc_cache: SfaDocCache | None = None
         self._log_file = None
         self._npx_path = None
+        # Загружаем marked.min.js один раз
+        self._marked_js = self._load_marked_js()
+
+    @staticmethod
+    def _load_marked_js() -> str:
+        """Загружает содержимое marked.min.js для inline-встраивания в HTML."""
+        src = TEMPLATES_DIR / "vendor" / "marked.min.js"
+        if src.is_file():
+            try:
+                return src.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        return ""
 
     def _init_log(self, reports_dir: Path):
         if self._log_file is None:
@@ -74,7 +86,8 @@ class SfaReportGenerator:
                 capture_output=True,
                 text=True,
                 timeout=15,
-                encoding='utf-8'
+                encoding='utf-8',
+                errors='replace',
             )
             if proc.returncode != 0:
                 self._log(f"[ERROR] npx search failed: {proc.stderr}")
@@ -91,7 +104,7 @@ class SfaReportGenerator:
                     title_match = re.match(r'^\[\d+\]\s+(.+)$', line)
                     title = title_match.group(1).strip() if title_match else "Untitled"
                     url = ""
-                    if i+1 < len(lines) and (lines[i+1].startswith('http://') or lines[i+1].startswith('https://')):
+                    if i+1 < len(lines) and (lines[i+1].strip().startswith('http://') or lines[i+1].strip().startswith('https://')):
                         url = lines[i+1].strip()
                         i += 1
                     i += 1
@@ -106,7 +119,8 @@ class SfaReportGenerator:
                         results.append({
                             "title": title,
                             "url": url,
-                            "markdown": markdown_text
+                            "markdown": markdown_text,
+                            "markdown_html": self._render_markdown(markdown_text),
                         })
                 else:
                     i += 1
@@ -114,6 +128,16 @@ class SfaReportGenerator:
         except Exception as e:
             self._log(f"[ERROR] Exception: {e}")
             return []
+
+    @staticmethod
+    def _render_markdown(text: str) -> str:
+        """Рендерит Markdown в HTML (если доступна библиотека markdown)."""
+        try:
+            import markdown
+            return markdown.markdown(text, extensions=['fenced_code', 'codehilite'])
+        except ImportError:
+            # fallback: если библиотека не установлена — возвращаем как есть
+            return ""
 
     def generate_report_from_json(self, json_path: Path, output_html: Path, reports_dir: Path = None) -> None:
         if reports_dir:
@@ -127,73 +151,69 @@ class SfaReportGenerator:
         imports = data.get("imports", [])
         self._log(f"[INFO] Found {len(imports)} imports in {file_name}")
 
-        db_path = Path(get_sf_db_path()) / "win32api.db"
-        if not db_path.exists():
-            self._generate_error_report(file_name, output_html, "База сигнатур не найдена. Выполните синхронизацию.", reports_dir)
-            return
-
-        cache_file = Path(get_sf_db_path()) / "doc_cache.json"
-        if cache_file.exists():
+        # Создаём/открываем SQLite-кэш документации
+        cache_db = reports_dir / "mslearn_cache.db" if reports_dir else None
+        if cache_db:
             try:
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    self._doc_cache = json.load(f)
-                self._log(f"[INFO] Loaded doc_cache with {len(self._doc_cache)} entries")
+                self._doc_cache = SfaDocCache(cache_db)
+                self._log(f"[INFO] MS Learn cache: {cache_db} ({self._doc_cache.count()} функций)")
             except Exception as e:
-                self._log(f"[WARN] Failed to load doc_cache: {e}")
+                self._log(f"[WARN] Failed to open cache DB: {e}")
+                self._doc_cache = None
+        else:
+            self._doc_cache = None
 
-        conn = sqlite3.connect(str(db_path))
-        try:
-            cursor = conn.cursor()
+        system_calls = []
+        for imp in imports:
+            func_name = imp.get("name")
+            if not func_name:
+                continue
+            self._log(f"[DEBUG] Processing import: {func_name}")
 
-            system_calls = []
-            for imp in imports:
-                func_name = imp.get("name")
-                if not func_name:
-                    continue
-                self._log(f"[DEBUG] Processing import: {func_name}")
+            # Пытаемся взять dll_name из импорта JSON-экспорта IDA
+            dll_name = imp.get("module", "") or "—"
 
-                cursor.execute("SELECT dll_name, return_type, n_arguments FROM functions WHERE name = ?", (func_name,))
-                row = cursor.fetchone()
-                if not row:
-                    self._log(f"[DEBUG] No signature in DB for {func_name}")
-                    continue
-                dll_name, return_type, n_arguments = row
+            # Получаем результаты поиска (из кэша или Microsoft Learn)
+            results = []
+            if self._doc_cache and self._doc_cache.has_function(func_name):
+                results = self._doc_cache.get_results(func_name)
+                # Берём dll_name из кэша, если там сохранили
+                cached_dll = self._doc_cache.get_dll_name(func_name)
+                if cached_dll:
+                    dll_name = cached_dll
+                self._log(f"[INFO] Using cached results for {func_name} (count: {len(results)})")
+            else:
+                results = self._search_function(func_name)
+                if results:
+                    # Извлекаем dll_name из результатов Microsoft Learn (если есть)
+                    for r in results:
+                        md = r.get("markdown", "")
+                        dll_match = re.search(r'[Dd][Ll][Ll]\s*:\s*(\S+\.dll)', md)
+                        if dll_match:
+                            dll_name = dll_match.group(1)
+                            break
 
-                cursor.execute(
-                    "SELECT idx, name, type, in_out FROM parameters WHERE function_id = (SELECT id FROM functions WHERE name = ?) ORDER BY idx",
-                    (func_name,)
-                )
-                params = [{"idx": p[0], "name": p[1] or f"arg{p[0]}", "type": p[2] or "unknown", "in_out": p[3] or "in"} for p in cursor.fetchall()]
-                self._log(f"[DEBUG] Found {len(params)} parameters for {func_name}")
-
-                # Получаем результаты поиска
-                results = []
-                if func_name in self._doc_cache:
-                    results = self._doc_cache[func_name]
-                    self._log(f"[INFO] Using cached results for {func_name} (count: {len(results)})")
+                    if self._doc_cache:
+                        try:
+                            self._doc_cache.save_results(func_name, results, dll_name=dll_name)
+                            self._log(f"[INFO] Fetched and cached {len(results)} results for {func_name}")
+                        except Exception as e:
+                            self._log(f"[WARN] Failed to save cache: {e}")
                 else:
-                    results = self._search_function(func_name)
-                    if results:
-                        self._doc_cache[func_name] = results
-                        with open(cache_file, "w", encoding="utf-8") as f:
-                            json.dump(self._doc_cache, f, indent=2, ensure_ascii=False)
-                        self._log(f"[INFO] Fetched and cached {len(results)} results for {func_name}")
-                    else:
-                        self._log(f"[ERROR] No results for {func_name}")
+                    self._log(f"[ERROR] No results for {func_name}")
 
-                system_calls.append({
-                    "name": func_name,
-                    "dll": dll_name,
-                    "return_type": return_type or "unknown",
-                    "expected_args": n_arguments or len(params),
-                    "params": params,
-                    "address": imp.get("address", ""),
-                    "module": imp.get("module", ""),
-                    "warning": None,
-                    "search_results": results
-                })
-        finally:
-            conn.close()
+            system_calls.append({
+                "name": func_name,
+                "dll": dll_name,
+                "return_type": "—",
+                "expected_args": 0,
+                "params": [],
+                "address": imp.get("address", ""),
+                "module": imp.get("module", ""),
+                "warning": None,
+                "search_results": results,
+            })
+
         self._log(f"[INFO] Generated {len(system_calls)} system calls")
 
         back_link = "index.html"
@@ -208,7 +228,8 @@ class SfaReportGenerator:
             file_name=file_name,
             system_calls=system_calls,
             error=None,
-            back_link=back_link
+            back_link=back_link,
+            marked_js=self._marked_js,
         )
         output_html.write_text(html, encoding="utf-8")
         self._log(f"[INFO] Report saved to {output_html}")
@@ -227,7 +248,8 @@ class SfaReportGenerator:
             file_name=file_name,
             system_calls=[],
             error=error_msg,
-            back_link=back_link
+            back_link=back_link,
+            marked_js=self._marked_js,
         )
         output_html.write_text(html, encoding="utf-8")
         self._log(f"[INFO] Error report saved to {output_html}")
