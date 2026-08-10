@@ -86,12 +86,8 @@ class SfaHtmlGeneratorWorker(QThread):
         self.progress_updated.emit(0, total, "Генерация HTML…")
 
         def process_one(json_path: Path):
-<<<<<<< HEAD
             # В reuse-режиме json_path может не существовать на диске
             if not self.reuse_cache and not json_path.exists():
-=======
-            if not json_path.exists():
->>>>>>> fa1ac88d9f6133793771fcd529b3a1bb8ec2c05f
                 return None
 
             # Reuse-режим: импорты читаем из index БД, а не из JSON
@@ -125,17 +121,6 @@ class SfaHtmlGeneratorWorker(QThread):
             output_html = self.reports_dir / out_rel
             output_html.parent.mkdir(parents=True, exist_ok=True)
             display = rel.as_posix()
-<<<<<<< HEAD
-=======
-            try:
-                rel = source_full.relative_to(self.input_dir)
-            except ValueError:
-                rel = Path(original_file)
-            out_rel = rel.with_suffix(".sfa.html")
-            output_html = self.reports_dir / out_rel
-            output_html.parent.mkdir(parents=True, exist_ok=True)
-            display = rel.as_posix()
->>>>>>> fa1ac88d9f6133793771fcd529b3a1bb8ec2c05f
 
             def on_func_progress(func_name: str, func_idx: int, total_in_file: int):
                 """Вызывается из generate_report_from_json для каждой функции.

@@ -466,20 +466,16 @@ class SfaPage(QWidget):
 
         if reuse_cache:
             # В reuse-режиме JSON-файлы не нужны — данные уже в index БД
-            json_files = list(input_dir.rglob("*.export.json"))
+            import sqlite3
+            conn = sqlite3.connect(str(index_db))
+            try:
+                cur = conn.execute("SELECT DISTINCT json_path FROM file_imports")
+                json_files = [Path(row[0]) for row in cur.fetchall() if row[0]]
+            finally:
+                conn.close()
             if not json_files:
-                # Создаём заглушки на основе index БД, чтобы воркер не упал
-                # Воркеру нужен список путей для адресации, реальные файлы не читаются
-                import sqlite3
-                conn = sqlite3.connect(str(index_db))
-                try:
-                    cur = conn.execute("SELECT DISTINCT json_path FROM file_imports")
-                    json_files = [Path(row[0]) for row in cur.fetchall() if row[0]]
-                finally:
-                    conn.close()
-                if not json_files:
-                    QMessageBox.warning(self, "Ошибка", "Нет данных в индексе БД.")
-                    return
+                QMessageBox.warning(self, "Ошибка", "Нет данных в индексе БД.")
+                return
         else:
             json_files = list(input_dir.rglob("*.export.json"))
             if not json_files:
