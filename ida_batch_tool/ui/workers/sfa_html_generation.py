@@ -87,17 +87,28 @@ class SfaHtmlGeneratorWorker(QThread):
         def process_one(json_path: Path):
             if not json_path.exists():
                 return None
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception as e:
-                self.error_occurred.emit(f"Ошибка чтения {json_path.name}: {e}")
-                return None
 
-            local_ida = data.get("ida_info", {})
+            # Reuse-режим: импорты читаем из index БД, а не из JSON
+            if self.reuse_cache and function_index and function_index.available:
+                imports_data = function_index.get_file_imports(json_path)
+                local_file_name = function_index.get_file_name(json_path)
+                if not imports_data:
+                    self.error_occurred.emit(f"Нет импортов в индексе для {json_path.name}")
+                    return None
+                local_ida = {}
+            else:
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception as e:
+                    self.error_occurred.emit(f"Ошибка чтения {json_path.name}: {e}")
+                    return None
+                imports_data = data.get("imports", [])
+                local_file_name = data.get("file_name", "")
+                local_ida = data.get("ida_info", {})
 
-            original_file = Path(data["file_name"]).name
-            source_full = Path(data["file_name"])
+            original_file = Path(local_file_name).name
+            source_full = Path(local_file_name)
             if not source_full.is_absolute():
                 source_full = self.input_dir / source_full
             try:
@@ -108,9 +119,14 @@ class SfaHtmlGeneratorWorker(QThread):
             output_html = self.reports_dir / out_rel
             output_html.parent.mkdir(parents=True, exist_ok=True)
             display = rel.as_posix()
-
-            # Локальный счётчик для прогресса внутри файла
-            imports = data.get("imports", [])
+            try:
+                rel = source_full.relative_to(self.input_dir)
+            except ValueError:
+                rel = Path(original_file)
+            out_rel = rel.with_suffix(".sfa.html")
+            output_html = self.reports_dir / out_rel
+            output_html.parent.mkdir(parents=True, exist_ok=True)
+            display = rel.as_posix()
 
             def on_func_progress(func_name: str, func_idx: int, total_in_file: int):
                 """Вызывается из generate_report_from_json для каждой функции.
@@ -126,6 +142,8 @@ class SfaHtmlGeneratorWorker(QThread):
                 progress_callback=on_func_progress,
                 function_index=function_index,
                 reuse_cache=self.reuse_cache,
+                imports=imports_data,
+                file_name_hint=local_file_name,
             )
             link = out_rel.as_posix()
             file_size = source_full.stat().st_size if source_full.exists() else 0

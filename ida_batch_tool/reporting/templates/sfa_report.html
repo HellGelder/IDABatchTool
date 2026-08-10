@@ -46,12 +46,26 @@
         .markdown-content table th { background: var(--surface-secondary); }
 
         .summary-bar {
-            display: flex; gap: 20px; margin-bottom: 16px; flex-wrap: wrap;
+            display: flex; gap: 20px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
         }
         .summary-item {
             font-size: 13px; color: var(--text-secondary);
         }
         .summary-item strong { color: var(--text); }
+
+        .filter-btn {
+            background: none; border: 1px solid var(--separator); border-radius: var(--radius-sm);
+            padding: 6px 14px; font-size: 12px; cursor: pointer; color: var(--text-secondary);
+            transition: all 0.15s; font-weight: 500;
+        }
+        .filter-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .filter-btn.active { border-color: var(--accent); background: var(--accent-tint); color: var(--accent); }
+        .filter-btn .count { font-weight: 600; }
+        .filter-clear {
+            background: none; border: none; font-size: 12px; cursor: pointer;
+            color: var(--text-tertiary); text-decoration: underline; padding: 4px 8px;
+        }
+        .filter-clear:hover { color: var(--text-secondary); }
     </style>
     <script>{{ marked_js | safe }}</script>
 </head>
@@ -66,12 +80,14 @@
     {% set notfound_calls = system_calls | selectattr("found", "equalto", false) | list %}
 
     <div class="summary-bar">
-        <span class="summary-item">Всего вызовов: <strong>{{ system_calls|length }}</strong></span>
-        <span class="summary-item">С документацией: <strong>{{ found_calls|length }}</strong></span>
-        <span class="summary-item">Без документации: <strong>{{ notfound_calls|length }}</strong></span>
+        <span class="summary-item">Всего вызовов: <strong id="total-count">{{ system_calls|length }}</strong></span>
+        <button class="filter-btn active" data-filter="all" id="filter-all">Все <span class="count">{{ system_calls|length }}</span></button>
+        <button class="filter-btn" data-filter="found" id="filter-found">С документацией <span class="count">{{ found_calls|length }}</span></button>
+        <button class="filter-btn" data-filter="notfound" id="filter-notfound">Без документации <span class="count">{{ notfound_calls|length }}</span></button>
+        <button class="filter-clear" id="filter-clear" style="display:none;">✕ сбросить</button>
     </div>
 
-    <table>
+    <table id="sfa-table">
         <thead>
             <tr>
                 <th style="width:160px;">Библиотека</th>
@@ -79,10 +95,10 @@
                 <th>Информация (Microsoft Learn)</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="sfa-tbody">
             {% for call in system_calls %}
             {% set row_class = "not-found" if not call.found else "" %}
-            <tr class="{{ row_class }}">
+            <tr class="{{ row_class }}" data-found="{{ 'true' if call.found else 'false' }}">
                 <td class="dll-cell">{{ call.dll }}</td>
                 <td class="func-cell">{{ call.name }}</td>
                 <td class="info-cell">
@@ -112,5 +128,40 @@
             {% endfor %}
         </tbody>
     </table>
+    <script>
+        (function() {
+            const filterAll = document.getElementById('filter-all');
+            const filterFound = document.getElementById('filter-found');
+            const filterNotfound = document.getElementById('filter-notfound');
+            const filterClear = document.getElementById('filter-clear');
+            const rows = document.querySelectorAll('#sfa-tbody tr');
+            const totalCount = document.getElementById('total-count');
+
+            function setActive(btn) {
+                [filterAll, filterFound, filterNotfound].forEach(b => b.classList.remove('active'));
+                if (btn) btn.classList.add('active');
+            }
+
+            function applyFilter(filter) {
+                let visible = 0;
+                rows.forEach(function(row) {
+                    const found = row.getAttribute('data-found') === 'true';
+                    let show = false;
+                    if (filter === 'all') show = true;
+                    else if (filter === 'found') show = found;
+                    else if (filter === 'notfound') show = !found;
+                    row.style.display = show ? '' : 'none';
+                    if (show) visible++;
+                });
+                totalCount.textContent = visible;
+                filterClear.style.display = (filter === 'all') ? 'none' : '';
+            }
+
+            filterAll.addEventListener('click', function() { setActive(filterAll); applyFilter('all'); });
+            filterFound.addEventListener('click', function() { setActive(filterFound); applyFilter('found'); });
+            filterNotfound.addEventListener('click', function() { setActive(filterNotfound); applyFilter('notfound'); });
+            filterClear.addEventListener('click', function() { setActive(filterAll); applyFilter('all'); });
+        })();
+    </script>
 </body>
 </html>
