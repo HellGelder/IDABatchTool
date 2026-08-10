@@ -188,15 +188,15 @@ class SfaFunctionIndex:
             conn.close()
 
         # Открываем read-only соединение для последующих запросов
-        self._open_readonly()
+        self.open_readonly()
         logger.info(
             "SfaFunctionIndex built: %d functions from %d files",
             self.total_functions,
             total,
         )
 
-    def _open_readonly(self) -> None:
-        """Открывает read-only SQLite-соединение."""
+    def open_readonly(self) -> None:
+        """Открывает read-only SQLite-соединение для уже существующей БД."""
         if not self._db_path.exists():
             self._available = False
             return
@@ -240,6 +240,19 @@ class SfaFunctionIndex:
             return 0
         try:
             cur = self._conn.execute("SELECT COUNT(*) FROM system_functions")
+            return cur.fetchone()[0]
+        except Exception:
+            return 0
+
+    @property
+    def total_modules(self) -> int:
+        """Количество уникальных системных DLL в индексе."""
+        if not self._available or not self._conn:
+            return 0
+        try:
+            cur = self._conn.execute(
+                "SELECT COUNT(DISTINCT module_name) FROM system_functions"
+            )
             return cur.fetchone()[0]
         except Exception:
             return 0

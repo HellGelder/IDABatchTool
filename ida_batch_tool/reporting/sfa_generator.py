@@ -130,7 +130,7 @@ class SfaReportGenerator:
                 [npx, "@microsoft/learn-cli", "search", func_name],
                 capture_output=True,
                 text=False,  # binary — сами декодируем
-                timeout=30,  # первый запуск npx качает пакет
+                timeout=45,  # первый запуск npx качает пакет
             )
             # Декодируем с автоопределением кодировки
             stdout = _decode_bytes(proc.stdout)
@@ -143,13 +143,12 @@ class SfaReportGenerator:
                 if not stdout.strip():
                     return []
 
-            # Парсим результаты
+            # Парсим результаты — берём только первый
             results = []
             lines = stdout.splitlines()
             i = 0
             while i < len(lines):
                 line = lines[i]
-                # Ищем строку вида "[1] Some Title"
                 if re.match(r'^\[\d+\]', line):
                     title_match = re.match(r'^\[\d+\]\s+(.+)$', line)
                     title = title_match.group(1).strip() if title_match else "Untitled"
@@ -172,6 +171,7 @@ class SfaReportGenerator:
                             "markdown": markdown_text,
                             "markdown_html": self._render_markdown(markdown_text),
                         })
+                    break  # только первый результат
                 else:
                     i += 1
             return results
@@ -199,6 +199,7 @@ class SfaReportGenerator:
         reports_dir: Path = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
         function_index: Optional[SfaFunctionIndex] = None,
+        reuse_cache: bool = False,
     ) -> None:
         """Генерирует HTML-отчёт СФ из JSON-файла экспорта IDA.
 
@@ -210,6 +211,9 @@ class SfaReportGenerator:
                 с аргументами (function_name, current_idx, total_in_file).
             function_index: индекс известных системных функций (опционально).
                 Если передан, функции не из индекса пропускаются без npx-запроса.
+            reuse_cache: если True — не вызывать npx, использовать только
+                имеющийся mslearn_cache.db. Функции без кэша помечаются
+                как not-found.
         """
         if reports_dir:
             self._init_log(reports_dir)
@@ -278,6 +282,9 @@ class SfaReportGenerator:
                     dll_name = cached_dll
                 found = bool(results)
                 self._log(f"[INFO] Using cached results for {func_name} (count: {len(results)})")
+            elif reuse_cache:
+                # Режим reuse: не вызываем npx, функция остаётся not-found
+                self._log(f"[INFO] {func_name} не в кэше (reuse_cache=True) — пропуск")
             else:
                 results = self._search_function(func_name)
                 if results:
@@ -361,6 +368,8 @@ class SfaReportGenerator:
     def generate_index(self, reports_dir: Path, input_dir: Path, reports: list,
                        ida_info: dict = None,
                        total_files: int = 0, total_size_bytes: int = 0,
+                       total_system_modules: int = 0,
+                       total_system_functions: int = 0,
                        generation_time: str = "") -> Path:
         if not generation_time:
             generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -368,6 +377,8 @@ class SfaReportGenerator:
             "input_dir": str(input_dir),
             "total_files": total_files,
             "total_size_bytes": total_size_bytes,
+            "total_system_modules": total_system_modules,
+            "total_system_functions": total_system_functions,
             "reports": reports,
             "generation_time": generation_time,
         }

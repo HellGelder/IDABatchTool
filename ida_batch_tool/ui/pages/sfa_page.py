@@ -444,26 +444,61 @@ class SfaPage(QWidget):
         if not json_files:
             QMessageBox.warning(self, "Ошибка", "Нет JSON-файлов экспорта.")
             return
-        self._do_generate_html(input_dir, json_files)
 
-    def _do_generate_html(self, input_dir: Path, json_files: List[Path]):
+        # Проверяем, есть ли папка SFAReports с ранее сформированным кэшем
+        sfa_reports = input_dir / "SFAReports"
+        cache_db = sfa_reports / "mslearn_cache.db"
+        reuse_cache = False
+        if sfa_reports.is_dir() and cache_db.is_file():
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Существующий кэш MS Learn")
+            msg.setText(
+                f"Найдена папка {sfa_reports.name} с ранее сформированным "
+                f"кэшем документации ({'%.1f' % (cache_db.stat().st_size / 1024)} КБ)."
+            )
+            btn_full = msg.addButton("Выполнить полный анализ", QMessageBox.ButtonRole.ActionRole)
+            btn_reuse = msg.addButton("Перегенерировать HTML из кэша", QMessageBox.ButtonRole.AcceptRole)
+            btn_cancel = msg.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            msg.setDefaultButton(btn_reuse)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == btn_cancel:
+                return
+            reuse_cache = (clicked == btn_reuse)
+
+        self._do_generate_html(input_dir, json_files, reuse_cache=reuse_cache)
+
+    def _do_generate_html(self, input_dir: Path, json_files: List[Path],
+                          reuse_cache: bool = False):
         from ida_batch_tool.reporting.sfa_generator import SfaReportGenerator
         generator = SfaReportGenerator()
         sfa_reports = input_dir / "SFAReports"
-        sfa_reports.mkdir(parents=True, exist_ok=True)
+        if not reuse_cache:
+            # При полном анализе создаём папку заново
+            sfa_reports.mkdir(parents=True, exist_ok=True)
+        else:
+            # При перегенерации папка уже существует
+            if not sfa_reports.is_dir():
+                sfa_reports.mkdir(parents=True, exist_ok=True)
         self.html_in_progress = True
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
         self.html_generate_btn.setEnabled(False)
         self.process_progress.setValue(0)
         self.process_progress.setMaximum(len(json_files))
-        self.process_label.setText(
-            f"Генерация HTML-отчётов СФ…\nРезультаты: {sfa_reports}"
-        )
+        if reuse_cache:
+            self.process_label.setText(
+                f"Перегенерация HTML-отчётов СФ из кэша…\n{sfa_reports}"
+            )
+        else:
+            self.process_label.setText(
+                f"Генерация HTML-отчётов СФ…\nРезультаты: {sfa_reports}"
+            )
         self.html_worker = SfaHtmlGeneratorWorker(
             {json_path: True for json_path in json_files},
             generator, sfa_reports, input_dir,
-            delete_json=self.delete_json_check.isChecked()
+            delete_json=self.delete_json_check.isChecked(),
+            reuse_cache=reuse_cache,
         )
         self.html_worker.progress_updated.connect(self._on_html_progress)
         self.html_worker.error_occurred.connect(self._on_error)
@@ -471,12 +506,13 @@ class SfaPage(QWidget):
         self.html_worker.start()
 
     def _on_html_progress(self, current: int, total: int, message: str):
+        if total > 0:
+            self.process_progress.setMaximum(total)
         if message:
             self.process_label.setText(f"Генерация HTML: {current}/{total} — {message}")
         else:
             self.process_label.setText(f"Генерация HTML: {current}/{total}")
         self.process_progress.setValue(current)
-        self.process_progress.setMaximum(total)
 
     def _on_html_finished(self, result: object):
         # result — SfaHtmlGenerationResult (dataclass)
@@ -490,6 +526,8 @@ class SfaPage(QWidget):
             index_path = generator.generate_index(
                 result.reports_dir, result.input_dir, result.report_links, result.ida_info,
                 total_files=result.total_files, total_size_bytes=result.total_size_bytes,
+                total_system_modules=result.total_system_modules,
+                total_system_functions=result.total_system_functions,
                 generation_time=gen_time
             )
             self.html_in_progress = False

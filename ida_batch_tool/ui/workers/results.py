@@ -35,3 +35,5 @@ class SfaHtmlGenerationResult:
     input_dir: Path
     total_files: int
     total_size_bytes: int
+    total_system_modules: int = 0
+    total_system_functions: int = 0

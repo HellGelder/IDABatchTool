@@ -25,7 +25,7 @@
         <div class="stat-grid" style="margin-top: 16px;">
             <div class="stat-tile">
                 <div class="stat-value">{{ total_files }}</div>
-                <div class="stat-label">Всего файлов</div>
+                <div class="stat-label">Файлов</div>
             </div>
             <div class="stat-tile">
                 <div class="stat-value">
@@ -34,6 +34,14 @@
                     {% else %}{{ (total_size_bytes / (1024*1024)) | round(1) }} МБ{% endif %}
                 </div>
                 <div class="stat-label">Общий размер</div>
+            </div>
+            <div class="stat-tile">
+                <div class="stat-value">{{ total_system_modules }}</div>
+                <div class="stat-label">Системных библиотек</div>
+            </div>
+            <div class="stat-tile">
+                <div class="stat-value">{{ total_system_functions }}</div>
+                <div class="stat-label">Уникальных системных функций</div>
             </div>
             <div class="stat-tile">
                 <div class="stat-value">{{ reports|length }}</div>

@@ -6,227 +6,111 @@
     <title>Анализ СФ: {{ file_name }}</title>
     {% include "_design_tokens.html" %}
     <style>
-        /* ▸ Split‑view overrides */
-        body { padding: 0; font-size: 14px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        body { padding: 20px; font-size: 14px; }
         .app-header {
-            background: var(--surface-secondary); border-bottom: 1px solid var(--separator-opaque);
-            padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;
-            flex-shrink: 0;
-        }
-        .app-header > div:last-child { width: 80px; }
-        .split-container { display: flex; flex: 1; overflow: hidden; }
-        .sidebar {
-            width: 320px; background: var(--surface-secondary); border-right: 1px solid var(--separator-opaque);
-            overflow-y: auto; padding: 12px; flex-shrink: 0;
-        }
-        .sidebar .section-title {
-            font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
-            color: var(--text-tertiary); margin: 12px 0 4px; padding: 0 4px;
-        }
-        .sidebar ul { list-style: none; padding: 0; margin: 0; }
-        .sidebar li {
-            padding: 8px 12px; cursor: pointer; border-radius: var(--radius-sm); margin-bottom: 2px;
-            font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-size: 13px;
             display: flex; justify-content: space-between; align-items: center;
-            transition: background 0.1s;
+            margin-bottom: 20px; padding-bottom: 12px;
+            border-bottom: 1px solid var(--separator);
         }
-        .sidebar li:hover { background: var(--separator); }
-        .sidebar li.active { background: var(--accent-tint); color: var(--accent); font-weight: 600; }
-        .sidebar li .dll-tag { font-size: 10px; color: var(--text-tertiary); margin-left: 6px; }
-        .sidebar li.active .dll-tag { color: var(--accent); opacity: 0.7; }
-        .sidebar li .status-icon { font-size: 12px; margin-right: 6px; flex-shrink: 0; }
-        .sidebar li.not-found { opacity: 0.55; }
-        .sidebar li.not-found:hover { opacity: 0.8; }
-
-        .content { flex: 1; overflow-y: auto; padding: 24px 32px; background: var(--surface); }
-
-        .func-name { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-        .func-dll { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
-
-        .warning-box {
-            background: var(--warning-tint); border-left: 4px solid var(--warning);
-            padding: 10px 14px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-            margin: 12px 0; font-size: 14px;
+        .app-header .title { font-weight: 600; font-size: 16px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        thead th {
+            background: var(--surface-secondary); padding: 10px 12px;
+            text-align: left; font-weight: 600; font-size: 12px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            color: var(--text-secondary); border-bottom: 2px solid var(--separator);
+            position: sticky; top: 0; z-index: 1;
         }
-
-        .not-found-box {
-            background: var(--surface-secondary); border-left: 4px solid var(--text-tertiary);
-            padding: 10px 14px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-            margin: 12px 0; font-size: 14px; color: var(--text-secondary);
+        tbody td {
+            padding: 10px 12px; border-bottom: 1px solid var(--separator);
+            vertical-align: top;
         }
+        tbody tr:hover { background: var(--surface-secondary); }
+        tbody tr.not-found { opacity: 0.5; }
+        tbody tr.not-found:hover { opacity: 0.75; }
 
-        /* Tabs */
-        .tabs { display: flex; border-bottom: 1px solid var(--separator-opaque); margin: 16px 0 10px; gap: 0; }
-        .tab-button {
-            background: none; border: none; padding: 8px 16px; cursor: pointer;
-            font-size: 13px; color: var(--text-secondary); font-weight: 500;
-            border-bottom: 2px solid transparent; transition: all 0.15s;
+        .dll-cell { white-space: nowrap; font-family: ui-monospace, "SF Mono", "Consolas", monospace; color: var(--accent); width: 160px; }
+        .func-cell { font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-weight: 500; width: 220px; }
+        .info-cell { min-width: 300px; }
+        .info-cell .empty { color: var(--text-tertiary); font-style: italic; }
+
+        .markdown-content h1 { font-size: 16px; margin: 0 0 4px; }
+        .markdown-content h2 { font-size: 14px; margin: 0 0 3px; }
+        .markdown-content h3 { font-size: 13px; margin: 0 0 2px; }
+        .markdown-content p { margin: 2px 0; }
+        .markdown-content pre { background: var(--bg); padding: 8px; border-radius: var(--radius-sm); overflow-x: auto; font-size: 12px; margin: 4px 0; }
+        .markdown-content code { background: var(--bg); padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+        .markdown-content ul, .markdown-content ol { margin: 4px 0; padding-left: 20px; }
+        .markdown-content a { color: var(--accent); }
+        .markdown-content table { font-size: 12px; }
+        .markdown-content table th { background: var(--surface-secondary); }
+
+        .summary-bar {
+            display: flex; gap: 20px; margin-bottom: 16px; flex-wrap: wrap;
         }
-        .tab-button:hover { color: var(--text); }
-        .tab-button.active { color: var(--accent); border-bottom-color: var(--accent); }
-
-        .tab-content { display: none; margin-top: 10px; }
-        .tab-content.active { display: block; }
-
-        .markdown-content {
-            background: var(--surface-secondary); padding: 16px 20px;
-            border-radius: var(--radius-sm); overflow-x: auto;
-            border: 1px solid var(--separator);
+        .summary-item {
+            font-size: 13px; color: var(--text-secondary);
         }
-        .markdown-content h1 { font-size: 18px; margin: 12px 0 4px; }
-        .markdown-content h2 { font-size: 16px; margin: 10px 0 4px; }
-        .markdown-content h3 { font-size: 14px; margin: 8px 0 2px; }
-        .markdown-content pre { background: var(--bg); padding: 10px; border-radius: var(--radius-sm); overflow-x: auto; }
-        .markdown-content code { background: var(--bg); padding: 2px 5px; border-radius: 4px; font-size: 12px; }
-        .markdown-content p code { background: var(--bg); padding: 2px 5px; border-radius: 4px; font-size: 12px; }
+        .summary-item strong { color: var(--text); }
     </style>
     <script>{{ marked_js | safe }}</script>
 </head>
 <body>
     <div class="app-header">
-        <div><a class="btn-back" style="margin-bottom:0;" href="{{ back_link }}">← Назад</a></div>
-        <div style="font-weight:600; font-size:15px;">{{ file_name }}</div>
+        <div><a class="btn-back" href="{{ back_link }}">← Назад</a></div>
+        <div class="title">{{ file_name }}</div>
         <div></div>
     </div>
-    <div class="split-container">
-        <div class="sidebar">
-            {% set found_calls = system_calls | selectattr("found", "equalto", true) | list %}
-            {% set notfound_calls = system_calls | selectattr("found", "equalto", false) | list %}
-            <h3>Системные вызовы <span class="badge">{{ system_calls|length }}</span></h3>
 
-            {% if found_calls %}
-            <div class="section-title">Найдены ({{ found_calls|length }})</div>
-            <ul id="func-list-found">
-                {% for call in found_calls %}
-                <li data-index="{{ loop.index0 }}" class="found">
-                    <span><span class="status-icon">✓</span>{{ call.name }}</span>
-                    <span class="dll-tag">({{ call.dll }})</span>
-                </li>
-                {% endfor %}
-            </ul>
-            {% endif %}
+    {% set found_calls = system_calls | selectattr("found", "equalto", true) | list %}
+    {% set notfound_calls = system_calls | selectattr("found", "equalto", false) | list %}
 
-            {% if notfound_calls %}
-            <div class="section-title">Не найдены ({{ notfound_calls|length }})</div>
-            <ul id="func-list-notfound">
-                {% for call in notfound_calls %}
-                <li data-index="{{ found_calls|length + loop.index0 }}" class="not-found">
-                    <span><span class="status-icon">—</span>{{ call.name }}</span>
-                    <span class="dll-tag">({{ call.dll }})</span>
-                </li>
-                {% endfor %}
-            </ul>
-            {% endif %}
-        </div>
-        <div class="content" id="content-area">
-            <p class="empty-state">Выберите функцию из списка слева.</p>
-        </div>
+    <div class="summary-bar">
+        <span class="summary-item">Всего вызовов: <strong>{{ system_calls|length }}</strong></span>
+        <span class="summary-item">С документацией: <strong>{{ found_calls|length }}</strong></span>
+        <span class="summary-item">Без документации: <strong>{{ notfound_calls|length }}</strong></span>
     </div>
-    <script>
-        const functions = {{ system_calls | tojson }};
 
-        function escapeHtml(str) {
-            if (!str) return '';
-            return str.replace(/[&<>]/g, function(m) {
-                if (m === '&') return '&amp;';
-                if (m === '<') return '&lt;';
-                if (m === '>') return '&gt;';
-                return m;
-            });
-        }
-
-        function renderFunction(index) {
-            const f = functions[index];
-            if (!f) return;
-
-            let html = `
-                <div class="func-name">${escapeHtml(f.name)}</div>
-                <div class="func-dll">${escapeHtml(f.dll)} · Возвращает: ${escapeHtml(f.return_type)} · Аргументов: ${f.expected_args}</div>
-            `;
-            if (f.warning) html += `<div class="warning-box">⚠️ ${escapeHtml(f.warning)}</div>`;
-            if (f.params && f.params.length) {
-                html += `<h3 style="margin-top:12px;">Параметры</h3>
-                         <table class="table">
-                             <thead><tr><th>#</th><th>Направление</th><th>Имя</th><th>Тип</th></tr></thead>
-                             <tbody>`;
-                f.params.forEach(p => {
-                    html += `<tr>
-                                 <td>${p.idx}</td>
-                                 <td>${escapeHtml(p.in_out)}</td>
-                                 <td>${escapeHtml(p.name)}</td>
-                                 <td>${escapeHtml(p.type)}</td>
-                             </tr>`;
-                });
-                html += `</tbody></table>`;
-            }
-
-            if (f.search_results && f.search_results.length) {
-                html += `<div class="tabs" id="tabs-${index}">`;
-                f.search_results.forEach((res, idx) => {
-                    const activeClass = idx === 0 ? 'active' : '';
-                    html += `<button class="tab-button ${activeClass}" data-tab="${idx}">${escapeHtml(res.title)}</button>`;
-                });
-                html += `</div>`;
-                f.search_results.forEach((res, idx) => {
-                    const activeClass = idx === 0 ? 'active' : '';
-                    html += `<div class="tab-content ${activeClass}" data-tab-content="${idx}">
-                                 <div class="markdown-content" id="md-${index}-${idx}">Загрузка...</div>
-                             </div>`;
-                });
-                document.getElementById('content-area').innerHTML = html;
-
-                // Render Markdown via marked (client-side)
-                for (let idx = 0; idx < f.search_results.length; idx++) {
-                    const mdText = f.search_results[idx].markdown;
-                    const container = document.getElementById(`md-${index}-${idx}`);
-                    if (container && mdText) {
-                        try {
-                            const rendered = marked.parse(mdText);
-                            container.innerHTML = rendered;
-                        } catch(e) {
-                            container.innerHTML = `<pre>${escapeHtml(mdText)}</pre>`;
-                        }
-                    }
-                }
-
-                // Tab handlers
-                const buttons = document.querySelectorAll(`#tabs-${index} .tab-button`);
-                const contents = document.querySelectorAll(`#content-area .tab-content`);
-                buttons.forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        const tabIdx = btn.getAttribute('data-tab');
-                        buttons.forEach(b => b.classList.remove('active'));
-                        contents.forEach(c => c.classList.remove('active'));
-                        btn.classList.add('active');
-                        const target = document.querySelector(`.tab-content[data-tab-content="${tabIdx}"]`);
-                        if (target) target.classList.add('active');
-                    });
-                });
-            } else {
-                html += `<div class="not-found-box">Документация по функции не найдена в Microsoft Learn.</div>`;
-                document.getElementById('content-area').innerHTML = html;
-            }
-        }
-
-        function setActive(index) {
-            document.querySelectorAll('#func-list-found li, #func-list-notfound li').forEach((li, i) => {
-                if (i === index) li.classList.add('active');
-                else li.classList.remove('active');
-            });
-        }
-
-        document.querySelectorAll('#func-list-found li, #func-list-notfound li').forEach(li => {
-            const idx = parseInt(li.dataset.index, 10);
-            li.addEventListener('click', () => { renderFunction(idx); setActive(idx); });
-        });
-
-        {% if system_calls %}
-        // Select first found function, or first overall
-        const firstFound = functions.findIndex(f => f.found);
-        const startIdx = firstFound >= 0 ? firstFound : 0;
-        renderFunction(startIdx);
-        setActive(startIdx);
-        {% endif %}
-    </script>
+    <table>
+        <thead>
+            <tr>
+                <th style="width:160px;">Библиотека</th>
+                <th style="width:220px;">Функция</th>
+                <th>Информация (Microsoft Learn)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for call in system_calls %}
+            {% set row_class = "not-found" if not call.found else "" %}
+            <tr class="{{ row_class }}">
+                <td class="dll-cell">{{ call.dll }}</td>
+                <td class="func-cell">{{ call.name }}</td>
+                <td class="info-cell">
+                    {% if call.search_results and call.search_results|length > 0 %}
+                    {% set result = call.search_results[0] %}
+                    <div class="markdown-content" id="md-{{ loop.index0 }}">Загрузка...</div>
+                    <script>
+                        (function(){
+                            const mdText = {{ result.markdown | tojson }};
+                            const container = document.getElementById('md-{{ loop.index0 }}');
+                            if (container && mdText) {
+                                try {
+                                    container.innerHTML = marked.parse(mdText);
+                                } catch(e) {
+                                    container.innerHTML = '<pre>' + mdText.replace(/[&<>]/g, function(m){
+                                        if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;
+                                    }) + '</pre>';
+                                }
+                            }
+                        })();
+                    </script>
+                    {% else %}
+                    <span class="empty">Документация не найдена</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
 </body>
 </html>

@@ -16,13 +16,15 @@ class SfaHtmlGeneratorWorker(QThread):
     error_occurred = Signal(str)
 
     def __init__(self, json_files: dict, generator: SfaReportGenerator,
-                 reports_dir: Path, input_dir: Path, delete_json: bool):
+                 reports_dir: Path, input_dir: Path, delete_json: bool,
+                 reuse_cache: bool = False):
         super().__init__()
         self.json_files = json_files
         self.generator = generator
         self.reports_dir = reports_dir
         self.input_dir = input_dir
         self.delete_json = delete_json
+        self.reuse_cache = reuse_cache
 
     def run(self):
         jobs: List[Path] = [p for p in self.json_files if p.exists()]
@@ -35,23 +37,38 @@ class SfaHtmlGeneratorWorker(QThread):
             ))
             return
 
-        # ─── Фаза 1: предварительное сканирование — строим индекс системных функций ───
-        self.progress_updated.emit(0, total, "Сканирование системных функций...")
+        # ─── Фаза 1: предварительное сканирование — строим индекс ──────
         function_index_path = self.reports_dir / "sfa_function_index.db"
-        try:
-            function_index = SfaFunctionIndex.build_from_jsons(
-                jobs, function_index_path,
-                progress_callback=lambda c, t: self.progress_updated.emit(
-                    c, t, f"Сканирование системных функций… ({c}/{t})"
-                ),
-            )
-            self.progress_updated.emit(
-                0, total,
-                f"Найдено {function_index.total_functions} системных функций. Генерация HTML…"
-            )
-        except Exception as e:
-            self.error_occurred.emit(f"Ошибка сканирования системных функций: {e}")
+        if self.reuse_cache:
+            # Переиспользуем существующий индекс и кэш — только перегенерация HTML
             function_index = None
+            if function_index_path.exists():
+                try:
+                    function_index = SfaFunctionIndex(function_index_path)
+                    function_index.open_readonly()
+                except Exception:
+                    pass
+            total_system_modules = function_index.total_modules if function_index and function_index.available else 0
+            total_system_functions = function_index.total_functions if function_index and function_index.available else 0
+            self.progress_updated.emit(0, 0, "Перегенерация HTML из кэша…")
+        else:
+            self.progress_updated.emit(0, 0, "Сканирование системных функций…")
+            try:
+                function_index = SfaFunctionIndex.build_from_jsons(
+                    jobs, function_index_path,
+                    progress_callback=None,
+                )
+                total_system_modules = function_index.total_modules if function_index and function_index.available else 0
+                total_system_functions = function_index.total_functions if function_index and function_index.available else 0
+                self.progress_updated.emit(
+                    0, 0,
+                    f"Найдено {total_system_functions} системных функций. Генерация HTML…"
+                )
+            except Exception as e:
+                self.error_occurred.emit(f"Ошибка сканирования системных функций: {e}")
+                function_index = None
+                total_system_modules = 0
+                total_system_functions = 0
 
         # Жадный алгоритм: крупные файлы первыми
         jobs.sort(key=lambda p: p.stat().st_size, reverse=True)
@@ -63,6 +80,9 @@ class SfaHtmlGeneratorWorker(QThread):
         total_files = 0
         total_size_bytes = 0
         completed = 0
+
+        # Устанавливаем максимум прогресс-бара = количество файлов
+        self.progress_updated.emit(0, total, "Генерация HTML…")
 
         def process_one(json_path: Path):
             if not json_path.exists():
@@ -89,13 +109,13 @@ class SfaHtmlGeneratorWorker(QThread):
             output_html.parent.mkdir(parents=True, exist_ok=True)
             display = rel.as_posix()
 
-            # Общее число импортов в файле — для прогресса внутри файла
+            # Локальный счётчик для прогресса внутри файла
             imports = data.get("imports", [])
-            func_total = len(imports)
 
             def on_func_progress(func_name: str, func_idx: int, total_in_file: int):
-                """Вызывается из generate_report_from_json для каждой функции."""
-                # completed/total — прогресс по файлам, чтобы бар не откатывался
+                """Вызывается из generate_report_from_json для каждой функции.
+                Не влияет на основной прогресс-бар (он по файлам).
+                """
                 self.progress_updated.emit(
                     completed, total,
                     f"{display} → {func_name} ({func_idx + 1}/{total_in_file})"
@@ -105,6 +125,7 @@ class SfaHtmlGeneratorWorker(QThread):
                 json_path, output_html, self.reports_dir,
                 progress_callback=on_func_progress,
                 function_index=function_index,
+                reuse_cache=self.reuse_cache,
             )
             link = out_rel.as_posix()
             file_size = source_full.stat().st_size if source_full.exists() else 0
@@ -142,7 +163,9 @@ class SfaHtmlGeneratorWorker(QThread):
                 else:
                     self.progress_updated.emit(completed, total, f"{json_path.name} — ошибка")
 
-        # Сводный SFA index генерируется в main-потоке через _on_html_finished
+        # Сортируем отчёты по пути
+        report_links.sort(key=lambda r: r["display_name"])
+
         self.finished.emit(SfaHtmlGenerationResult(
             generated_count=generated_count,
             report_links=report_links,
@@ -151,4 +174,6 @@ class SfaHtmlGeneratorWorker(QThread):
             input_dir=self.input_dir,
             total_files=total_files,
             total_size_bytes=total_size_bytes,
+            total_system_modules=total_system_modules,
+            total_system_functions=total_system_functions,
         ))
