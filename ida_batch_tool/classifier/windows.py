@@ -347,6 +347,27 @@ _WINDOWS_USER_SUBSYSTEM = {
         "интерфейс для управления принтерами: установка, настройка, "
         "управление очередями печати."
     ),
+    # --- Web / Browser ---
+    "ieframe.dll": (
+        "IEFrame — Internet Explorer Frame: встраиваемый "
+        "веб-браузер (WebBrowser control)."
+    ),
+    "shdocvw.dll": (
+        "SHDocVw — Shell Doc Object and Control: интерфейс "
+        "ActiveX для WebBrowser и оболочки."
+    ),
+    "xmllite.dll": (
+        "XmlLite — лёгкий парсер XML (SAX/Reader): быстрый "
+        "разбор XML-файлов."
+    ),
+    "msxml3.dll": (
+        "MSXML3 — Microsoft XML Core Services 3.0: DOM и "
+        "SAX-парсер XML."
+    ),
+    "msxml6.dll": (
+        "MSXML6 — Microsoft XML Core Services 6.0: актуальная "
+        "версия XML-парсера."
+    ),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -496,6 +517,24 @@ _WINDOWS_SECURITY_CRYPTO = {
         "аудит криптографических операций CNG для соответствия "
         "требованиям безопасности (PCI DSS, FIPS 140-2)."
     ),
+    # --- XML Digital Signature ---
+    "cryptxml.dll": (
+        "CryptXML — XML Digital Signature: работа с "
+        "XML-подписями (XMLDSig)."
+    ),
+    # --- LDAP / Directory access ---
+    "wldap32.dll": (
+        "WLDAP32 — Windows LDAP API: клиентская библиотека "
+        "протокола LDAP v3."
+    ),
+    "logoncli.dll": (
+        "LogonCLI — Logon Client: поддержка входа в домен, "
+        "запрос билетов Kerberos."
+    ),
+    "dsrole.dll": (
+        "DSRole — Directory Services Role: определение роли "
+        "сервера в Active Directory (DC, member)."
+    ),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -639,6 +678,50 @@ _WINDOWS_NETWORK = {
         "Windows-служб. Одна из ключевых исполняемых систем Windows, "
         "используется для запуска разнообразных служб (DHCP, DNS, "
         "Windows Update, BFE и др.)."
+    ),
+    # --- Remote Access & Telephony ---
+    "rasapi32.dll": (
+        "RASAPI32 — Remote Access API: управление VPN- и "
+        "dial-up-подключениями."
+    ),
+    "rasdlg.dll": (
+        "RASDLG — Remote Access Dialogs: диалоговые окна "
+        "для настройки удалённого доступа (RAS)."
+    ),
+    "tapi32.dll": (
+        "TAPI32 — Telephony API: управление телефонными "
+        "линиями и модемами."
+    ),
+    "tapi3.dll": (
+        "TAPI3 — Telephony API 3.0: современная COM-версия TAPI."
+    ),
+    # --- SMB / Network services ---
+    "browser.dll": (
+        "Browser — Computer Browser Service: просмотр сетевых "
+        "ресурсов (NetBIOS)."
+    ),
+    "trkwks.dll": (
+        "TrkWks — Distributed Link Tracking Client: отслеживание "
+        "перемещённых файлов в сети."
+    ),
+    "srvsvc.dll": (
+        "SrvSvc — Server Service: управление серверными "
+        "службами SMB."
+    ),
+    "wkssvc.dll": (
+        "WksSvc — Workstation Service: управление рабочими "
+        "станциями в сети."
+    ),
+    "dhcpcsvc.dll": (
+        "DHCP Client Service: клиент DHCP для получения "
+        "IP-конфигурации."
+    ),
+    # --- RPC Name Service ---
+    "rpcnsi.dll": (
+        "RPC Name Service Interface: служба имён для RPC."
+    ),
+    "rpcns4.dll": (
+        "RPC Name Service 4: устаревшая служба имён RPC."
     ),
 }
 
@@ -1232,6 +1315,37 @@ _WINDOWS_SYSTEM_SERVICES = {
         "управления динамическими дисками и томами "
         "Windows (RAID-0, RAID-1, RAID-5)."
     ),
+    # --- Configuration & Version ---
+    "cfgmgr32.dll": (
+        "CfgMgr32 — Configuration Manager API: управление "
+        "устройствами Plug and Play, конфигурацией оборудования, "
+        "запрос списка устройств и их свойств."
+    ),
+    "shcore.dll": (
+        "SHCore — Shell Core: базовые функции оболочки Windows, "
+        "включая DPI-адаптацию (SetProcessDpiAwareness), "
+        "работу с display-режимами."
+    ),
+    "version.dll": (
+        "Version — Version API: получение информации о версии "
+        "файлов (GetFileVersionInfo), чтение ресурсов VERSIONINFO."
+    ),
+    "verifier.dll": (
+        "Verifier — Application Verifier Runtime: проверка "
+        "приложений на ошибки работы с памятью и дескрипторами."
+    ),
+    "imagehlp.dll": (
+        "ImageHlp — Image Helper Library: работа с PE-образами "
+        "(MapAndLoad), получение информации о загруженных модулях."
+    ),
+    "dbgcore.dll": (
+        "DbgCore — Debug Core: базовые функции отладки и "
+        "создания минидампов, используемые dbghelp.dll."
+    ),
+    "spoolss.dll": (
+        "SpoolSS — Print Spooler API: управление очередями "
+        "печати, принтерами, драйверами печати."
+    ),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1617,6 +1731,15 @@ _WINDOWS_DATA_SERVICES = {
         "ADSNT — ADSI Windows NT Provider: провайдер ADSI "
         "для Windows NT 4.0 Directory Services (обратная "
         "совместимость)."
+    ),
+    # --- Active Directory Services ---
+    "activeds.dll": (
+        "ActiveDS — Active Directory Services: интерфейс "
+        "для работы с Active Directory через ADSI."
+    ),
+    "adsldpc.dll": (
+        "ADsLDPC — Active Directory LDAP Provider: провайдер "
+        "LDAP для ADSI."
     ),
 }
 

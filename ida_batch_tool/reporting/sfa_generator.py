@@ -8,9 +8,36 @@ from typing import Callable, Optional, List as TypedList
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from ida_batch_tool.database.sfa_doc_cache import DocCacheManager
+from ida_batch_tool.classifier.windows import WINDOWS_MODULES as _WINDOWS_MODULES
 from ida_batch_tool.reporting.utils import compute_back_link
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Нормализованный список системных Win32 DLL (без расширения, нижний регистр)
+_WIN32_SYSTEM_DLLS_NORMALIZED: set[str] = {
+    dll.replace(".dll", "").lower()
+    for dll in _WINDOWS_MODULES
+}
+
+# API Sets — проверяем по префиксу
+_API_SET_PREFIXES: tuple[str, ...] = (
+    "api-ms-win-",
+    "ext-ms-win-",
+)
+
+
+def _is_win32_system_module(module_name: str) -> bool:
+    """Проверяет, является ли имя модуля системным Win32 на основе словаря WINDOWS_MODULES."""
+    if not module_name:
+        return False
+    name = module_name.strip().lower()
+    name = Path(name).stem  # убираем расширение
+    if name in _WIN32_SYSTEM_DLLS_NORMALIZED:
+        return True
+    for prefix in _API_SET_PREFIXES:
+        if name.startswith(prefix):
+            return True
+    return False
 
 
 class SfaReportGenerator:
@@ -181,10 +208,19 @@ class SfaReportGenerator:
             self._doc_cache = None
 
         system_calls = []
+        skipped = 0
         for idx, imp in enumerate(imports):
             func_name = imp.get("name")
             if not func_name:
                 continue
+            module = imp.get("module", "") or ""
+
+            # Фильтр: только системные Win32 функции
+            if not _is_win32_system_module(module):
+                self._log(f"[SKIP] {func_name} ({module}) — не Win32 системная DLL")
+                skipped += 1
+                continue
+
             self._log(f"[DEBUG] Processing import: {func_name}")
 
             # Сообщаем прогресс (перед обработкой функции)
@@ -236,7 +272,7 @@ class SfaReportGenerator:
                 "search_results": results,
             })
 
-        self._log(f"[INFO] Generated {len(system_calls)} system calls")
+        self._log(f"[INFO] Generated {len(system_calls)} system calls (skipped {skipped} non-Win32)")
 
         back_link = "index.html"
         if reports_dir:
