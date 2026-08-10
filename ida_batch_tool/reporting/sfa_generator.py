@@ -200,31 +200,36 @@ class SfaReportGenerator:
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
         function_index: Optional[SfaFunctionIndex] = None,
         reuse_cache: bool = False,
+        imports: Optional[list] = None,
+        file_name_hint: str = "",
     ) -> None:
-        """Генерирует HTML-отчёт СФ из JSON-файла экспорта IDA.
+        """Генерирует HTML-отчёт СФ.
 
         Args:
-            json_path: путь к .export.json.
+            json_path: путь к .export.json (используется для адресации).
             output_html: куда писать .sfa.html.
             reports_dir: корневая папка отчётов (для кэша и лога).
-            progress_callback: вызывается после каждой обработанной функции
-                с аргументами (function_name, current_idx, total_in_file).
+            progress_callback: вызывается после каждой обработанной функции.
             function_index: индекс известных системных функций (опционально).
-                Если передан, функции не из индекса пропускаются без npx-запроса.
-            reuse_cache: если True — не вызывать npx, использовать только
-                имеющийся mslearn_cache.db. Функции без кэша помечаются
-                как not-found.
+            reuse_cache: если True — не вызывать npx, только mslearn_cache.db.
+            imports: список импортов (если None — читается из json_path).
+            file_name_hint: отображаемое имя файла (если imports передан).
         """
         if reports_dir:
             self._init_log(reports_dir)
         self._log(f"[INFO] Processing {json_path}")
 
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        if imports is not None:
+            # Reuse-режим: импорты переданы из index БД
+            file_name = file_name_hint or json_path.stem
+            all_imports = imports
+        else:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            file_name = data.get("file_name", "")
+            all_imports = data.get("imports", [])
 
-        file_name = data.get("file_name", "")
-        imports = data.get("imports", [])
-        total_imports = len(imports)
+        total_imports = len(all_imports)
         self._log(f"[INFO] Found {total_imports} imports in {file_name}")
 
         # Создаём/открываем DocCacheManager (потокобезопасный кэш)
@@ -242,7 +247,7 @@ class SfaReportGenerator:
         system_calls = []
         skipped = 0
         skipped_not_in_index = 0
-        for idx, imp in enumerate(imports):
+        for idx, imp in enumerate(all_imports):
             func_name = imp.get("name")
             if not func_name:
                 continue

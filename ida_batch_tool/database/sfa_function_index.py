@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS system_functions (
     module_name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS file_imports (
+    json_path TEXT NOT NULL,
+    file_name TEXT NOT NULL DEFAULT '',
+    func_name TEXT NOT NULL,
+    module_name TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (json_path, func_name)
+);
+CREATE INDEX IF NOT EXISTS idx_fi_jp ON file_imports(json_path);
 """
 
 
@@ -131,7 +141,7 @@ class SfaFunctionIndex:
         conn = sqlite3.connect(str(self._db_path))
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(_SCHEMA_SQL)
+            conn.executescript(_SCHEMA_SQL)
 
             category_map = _build_dll_category_map()
 
@@ -150,10 +160,20 @@ class SfaFunctionIndex:
                         progress_callback(idx + 1, total)
                     continue
 
+                json_path_str = str(json_path)
+                file_name = data.get("file_name", "")
                 imports = data.get("imports", [])
+
+                # Удаляем старые импорты для этого json_path (на случай перезапуска)
+                conn.execute(
+                    "DELETE FROM file_imports WHERE json_path = ?",
+                    (json_path_str,),
+                )
+
                 for imp in imports:
                     func_name = imp.get("name", "")
                     module = imp.get("module", "") or ""
+                    address = imp.get("address", "")
                     if not func_name or not module:
                         continue
 
@@ -161,8 +181,19 @@ class SfaFunctionIndex:
                     mod_clean = normalize_display_name(module).lower()
                     mod_stem = Path(mod_clean).stem
 
-                    # Проверяем по набору системных DLL
-                    if mod_stem not in _WIN32_SYSTEM_MODULES_NORMALIZED:
+                    # Проверяем по набору системных DLL — только для system_functions
+                    is_system = mod_stem in _WIN32_SYSTEM_MODULES_NORMALIZED
+
+                    # Всегда сохраняем импорт в file_imports (для перегенерации HTML)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO file_imports "
+                        "(json_path, file_name, func_name, module_name, address) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (json_path_str, file_name, func_name, module, address),
+                    )
+
+                    # В system_functions — только системные
+                    if not is_system:
                         continue
 
                     # Дедупликация
@@ -227,6 +258,47 @@ class SfaFunctionIndex:
             return cur.fetchone() is not None
         except Exception:
             return True  # fallback
+
+    def get_file_imports(self, json_path: str | Path) -> list[dict]:
+        """Возвращает список импортов для указанного JSON-файла.
+
+        Используется в reuse-режиме вместо повторного чтения JSON.
+        """
+        if not self._available or not self._conn:
+            return []
+        try:
+            cur = self._conn.execute(
+                "SELECT func_name, module_name, address, file_name "
+                "FROM file_imports WHERE json_path = ? ORDER BY rowid",
+                (str(json_path),),
+            )
+            rows = cur.fetchall()
+            # Определяем file_name из первой записи (одинаков для всех)
+            file_name = rows[0][3] if rows else ""
+            imports = []
+            for row in rows:
+                imports.append({
+                    "name": row[0],
+                    "module": row[1],
+                    "address": row[2] or "",
+                })
+            return imports
+        except Exception:
+            return []
+
+    def get_file_name(self, json_path: str | Path) -> str:
+        """Возвращает file_name для указанного JSON-файла."""
+        if not self._available or not self._conn:
+            return ""
+        try:
+            cur = self._conn.execute(
+                "SELECT file_name FROM file_imports WHERE json_path = ? LIMIT 1",
+                (str(json_path),),
+            )
+            row = cur.fetchone()
+            return row[0] if row else ""
+        except Exception:
+            return ""
 
     # ─── Свойства ───────────────────────────────────────────────────
 
