@@ -13,13 +13,16 @@
             padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;
             flex-shrink: 0;
         }
-        .app-header > div:last-child { width: 80px; } /* spacer for symmetry */
+        .app-header > div:last-child { width: 80px; }
         .split-container { display: flex; flex: 1; overflow: hidden; }
         .sidebar {
             width: 320px; background: var(--surface-secondary); border-right: 1px solid var(--separator-opaque);
             overflow-y: auto; padding: 12px; flex-shrink: 0;
         }
-        .sidebar h3 { margin: 0 0 8px; padding: 0 4px; }
+        .sidebar .section-title {
+            font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+            color: var(--text-tertiary); margin: 12px 0 4px; padding: 0 4px;
+        }
         .sidebar ul { list-style: none; padding: 0; margin: 0; }
         .sidebar li {
             padding: 8px 12px; cursor: pointer; border-radius: var(--radius-sm); margin-bottom: 2px;
@@ -31,6 +34,9 @@
         .sidebar li.active { background: var(--accent-tint); color: var(--accent); font-weight: 600; }
         .sidebar li .dll-tag { font-size: 10px; color: var(--text-tertiary); margin-left: 6px; }
         .sidebar li.active .dll-tag { color: var(--accent); opacity: 0.7; }
+        .sidebar li .status-icon { font-size: 12px; margin-right: 6px; flex-shrink: 0; }
+        .sidebar li.not-found { opacity: 0.55; }
+        .sidebar li.not-found:hover { opacity: 0.8; }
 
         .content { flex: 1; overflow-y: auto; padding: 24px 32px; background: var(--surface); }
 
@@ -41,6 +47,12 @@
             background: var(--warning-tint); border-left: 4px solid var(--warning);
             padding: 10px 14px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
             margin: 12px 0; font-size: 14px;
+        }
+
+        .not-found-box {
+            background: var(--surface-secondary); border-left: 4px solid var(--text-tertiary);
+            padding: 10px 14px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+            margin: 12px 0; font-size: 14px; color: var(--text-secondary);
         }
 
         /* Tabs */
@@ -78,12 +90,33 @@
     </div>
     <div class="split-container">
         <div class="sidebar">
+            {% set found_calls = system_calls | selectattr("found", "equalto", true) | list %}
+            {% set notfound_calls = system_calls | selectattr("found", "equalto", false) | list %}
             <h3>Системные вызовы <span class="badge">{{ system_calls|length }}</span></h3>
-            <ul id="func-list">
-                {% for call in system_calls %}
-                <li data-index="{{ loop.index0 }}">{{ call.name }} <span class="dll-tag">({{ call.dll }})</span></li>
+
+            {% if found_calls %}
+            <div class="section-title">Найдены ({{ found_calls|length }})</div>
+            <ul id="func-list-found">
+                {% for call in found_calls %}
+                <li data-index="{{ loop.index0 }}" class="found">
+                    <span><span class="status-icon">✓</span>{{ call.name }}</span>
+                    <span class="dll-tag">({{ call.dll }})</span>
+                </li>
                 {% endfor %}
             </ul>
+            {% endif %}
+
+            {% if notfound_calls %}
+            <div class="section-title">Не найдены ({{ notfound_calls|length }})</div>
+            <ul id="func-list-notfound">
+                {% for call in notfound_calls %}
+                <li data-index="{{ found_calls|length + loop.index0 }}" class="not-found">
+                    <span><span class="status-icon">—</span>{{ call.name }}</span>
+                    <span class="dll-tag">({{ call.dll }})</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% endif %}
         </div>
         <div class="content" id="content-area">
             <p class="empty-state">Выберите функцию из списка слева.</p>
@@ -170,26 +203,29 @@
                     });
                 });
             } else {
-                html += `<p class="meta-text" style="margin-top:16px;">Документация не найдена.</p>`;
+                html += `<div class="not-found-box">Документация по функции не найдена в Microsoft Learn.</div>`;
                 document.getElementById('content-area').innerHTML = html;
             }
         }
 
         function setActive(index) {
-            document.querySelectorAll('#func-list li').forEach((li, i) => {
+            document.querySelectorAll('#func-list-found li, #func-list-notfound li').forEach((li, i) => {
                 if (i === index) li.classList.add('active');
                 else li.classList.remove('active');
             });
         }
 
-        document.querySelectorAll('#func-list li').forEach(li => {
+        document.querySelectorAll('#func-list-found li, #func-list-notfound li').forEach(li => {
             const idx = parseInt(li.dataset.index, 10);
             li.addEventListener('click', () => { renderFunction(idx); setActive(idx); });
         });
 
         {% if system_calls %}
-        renderFunction(0);
-        setActive(0);
+        // Select first found function, or first overall
+        const firstFound = functions.findIndex(f => f.found);
+        const startIdx = firstFound >= 0 ? firstFound : 0;
+        renderFunction(startIdx);
+        setActive(startIdx);
         {% endif %}
     </script>
 </body>

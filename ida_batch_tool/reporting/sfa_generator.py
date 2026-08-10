@@ -8,6 +8,7 @@ from typing import Callable, Optional, List as TypedList
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from ida_batch_tool.database.sfa_doc_cache import DocCacheManager
+from ida_batch_tool.database.sfa_function_index import SfaFunctionIndex
 from ida_batch_tool.classifier.windows import WINDOWS_MODULES as _WINDOWS_MODULES
 from ida_batch_tool.reporting.utils import compute_back_link
 
@@ -24,6 +25,22 @@ _API_SET_PREFIXES: tuple[str, ...] = (
     "api-ms-win-",
     "ext-ms-win-",
 )
+
+
+def _decode_bytes(data: bytes) -> str:
+    """Декодирует байты из subprocess с автоопределением кодировки.
+
+    На Windows npx(Node) может выводить в UTF-8 или в OEM (cp866) кодировке.
+    Пробуем UTF-8, затем системную кодовую страницу, затем latin-1 (не падает).
+    """
+    if not data:
+        return ""
+    for enc in ("utf-8", "cp866", "cp1251", "latin-1"):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("latin-1", errors="replace")
 
 
 def _is_win32_system_module(module_name: str) -> bool:
@@ -112,18 +129,23 @@ class SfaReportGenerator:
             proc = subprocess.run(
                 [npx, "@microsoft/learn-cli", "search", func_name],
                 capture_output=True,
-                text=True,
-                timeout=15,
-                encoding='utf-8',
-                errors='replace',
+                text=False,  # binary — сами декодируем
+                timeout=30,  # первый запуск npx качает пакет
             )
+            # Декодируем с автоопределением кодировки
+            stdout = _decode_bytes(proc.stdout)
+            stderr = _decode_bytes(proc.stderr)
+
             if proc.returncode != 0:
-                self._log(f"[ERROR] npx search failed: {proc.stderr}")
-                return []
-            output = proc.stdout
+                self._log(f"[WARN] npx search returned {proc.returncode}: {stderr[:200]}")
+                # Даже при ошибке пытаемся распарсить stdout (npx может выдать
+                # результат на stdout, а предупреждения — на stderr)
+                if not stdout.strip():
+                    return []
+
             # Парсим результаты
             results = []
-            lines = output.splitlines()
+            lines = stdout.splitlines()
             i = 0
             while i < len(lines):
                 line = lines[i]
@@ -153,8 +175,11 @@ class SfaReportGenerator:
                 else:
                     i += 1
             return results
+        except subprocess.TimeoutExpired:
+            self._log(f"[ERROR] npx search timed out (30s) for {func_name}")
+            return []
         except Exception as e:
-            self._log(f"[ERROR] Exception: {e}")
+            self._log(f"[ERROR] Exception searching {func_name}: {e}")
             return []
 
     @staticmethod
@@ -173,6 +198,7 @@ class SfaReportGenerator:
         output_html: Path,
         reports_dir: Path = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        function_index: Optional[SfaFunctionIndex] = None,
     ) -> None:
         """Генерирует HTML-отчёт СФ из JSON-файла экспорта IDA.
 
@@ -182,6 +208,8 @@ class SfaReportGenerator:
             reports_dir: корневая папка отчётов (для кэша и лога).
             progress_callback: вызывается после каждой обработанной функции
                 с аргументами (function_name, current_idx, total_in_file).
+            function_index: индекс известных системных функций (опционально).
+                Если передан, функции не из индекса пропускаются без npx-запроса.
         """
         if reports_dir:
             self._init_log(reports_dir)
@@ -209,17 +237,26 @@ class SfaReportGenerator:
 
         system_calls = []
         skipped = 0
+        skipped_not_in_index = 0
         for idx, imp in enumerate(imports):
             func_name = imp.get("name")
             if not func_name:
                 continue
             module = imp.get("module", "") or ""
 
-            # Фильтр: только системные Win32 функции
+            # Фильтр 1: только системные Win32 DLL
             if not _is_win32_system_module(module):
                 self._log(f"[SKIP] {func_name} ({module}) — не Win32 системная DLL")
                 skipped += 1
                 continue
+
+            # Фильтр 2: проверка по индексу системных функций (если доступен)
+            if function_index and function_index.available:
+                if not function_index.is_known(func_name):
+                    self._log(f"[SKIP] {func_name} — нет в индексе системных функций")
+                    skipped_not_in_index += 1
+                    skipped += 1
+                    continue
 
             self._log(f"[DEBUG] Processing import: {func_name}")
 
@@ -232,16 +269,19 @@ class SfaReportGenerator:
 
             # Получаем результаты поиска (из кэша или Microsoft Learn)
             results = []
+            found = False
             if self._doc_cache and self._doc_cache.has_function(func_name):
                 results = self._doc_cache.get_results(func_name)
                 # Берём dll_name из кэша, если там сохранили
                 cached_dll = self._doc_cache.get_dll_name(func_name)
                 if cached_dll:
                     dll_name = cached_dll
+                found = bool(results)
                 self._log(f"[INFO] Using cached results for {func_name} (count: {len(results)})")
             else:
                 results = self._search_function(func_name)
                 if results:
+                    found = True
                     # Извлекаем dll_name из результатов Microsoft Learn (если есть)
                     for r in results:
                         md = r.get("markdown", "")
@@ -270,9 +310,11 @@ class SfaReportGenerator:
                 "module": imp.get("module", ""),
                 "warning": None,
                 "search_results": results,
+                "found": found,
             })
 
-        self._log(f"[INFO] Generated {len(system_calls)} system calls (skipped {skipped} non-Win32)")
+        self._log(f"[INFO] Generated {len(system_calls)} system calls "
+                  f"(skipped {skipped} non-Win32, {skipped_not_in_index} not in index)")
 
         back_link = "index.html"
         if reports_dir:

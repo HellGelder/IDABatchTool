@@ -5,6 +5,7 @@ from typing import Set, Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal
 
+from ida_batch_tool.database.sfa_function_index import SfaFunctionIndex
 from ida_batch_tool.reporting.sfa_generator import SfaReportGenerator
 from ida_batch_tool.ui.workers.results import SfaHtmlGenerationResult
 
@@ -33,6 +34,24 @@ class SfaHtmlGeneratorWorker(QThread):
                 total_files=0, total_size_bytes=0,
             ))
             return
+
+        # ─── Фаза 1: предварительное сканирование — строим индекс системных функций ───
+        self.progress_updated.emit(0, total, "Сканирование системных функций...")
+        function_index_path = self.reports_dir / "sfa_function_index.db"
+        try:
+            function_index = SfaFunctionIndex.build_from_jsons(
+                jobs, function_index_path,
+                progress_callback=lambda c, t: self.progress_updated.emit(
+                    c, t, f"Сканирование системных функций… ({c}/{t})"
+                ),
+            )
+            self.progress_updated.emit(
+                0, total,
+                f"Найдено {function_index.total_functions} системных функций. Генерация HTML…"
+            )
+        except Exception as e:
+            self.error_occurred.emit(f"Ошибка сканирования системных функций: {e}")
+            function_index = None
 
         # Жадный алгоритм: крупные файлы первыми
         jobs.sort(key=lambda p: p.stat().st_size, reverse=True)
@@ -85,6 +104,7 @@ class SfaHtmlGeneratorWorker(QThread):
             self.generator.generate_report_from_json(
                 json_path, output_html, self.reports_dir,
                 progress_callback=on_func_progress,
+                function_index=function_index,
             )
             link = out_rel.as_posix()
             file_size = source_full.stat().st_size if source_full.exists() else 0
