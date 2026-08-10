@@ -469,12 +469,25 @@ class SfaPage(QWidget):
             import sqlite3
             conn = sqlite3.connect(str(index_db))
             try:
-                cur = conn.execute("SELECT DISTINCT json_path FROM file_imports")
-                json_files = [Path(row[0]) for row in cur.fetchall() if row[0]]
+                # Проверяем, есть ли таблица file_imports (старые БД могут не иметь)
+                cur = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='file_imports'"
+                )
+                has_file_imports = cur.fetchone() is not None
+                if has_file_imports:
+                    cur = conn.execute("SELECT DISTINCT json_path FROM file_imports")
+                    json_files = [Path(row[0]) for row in cur.fetchall() if row[0]]
+                else:
+                    # Старая БД — не можем перегенерировать без JSON
+                    json_files = []
             finally:
                 conn.close()
             if not json_files:
-                QMessageBox.warning(self, "Ошибка", "Нет данных в индексе БД.")
+                QMessageBox.warning(
+                    self, "Ошибка",
+                    "Индекс БД устарел или не содержит данных.\n"
+                    "Выполните полный анализ для перестроения индекса."
+                )
                 return
         else:
             json_files = list(input_dir.rglob("*.export.json"))
