@@ -5,10 +5,12 @@ IDAPython-скрипт для экспорта данных из IDA Pro в JSON
 Параметры (передаются после имени скрипта в кавычках):
     pseudocode=1 – генерировать псевдокод только для экспортных функций
 """
+import hashlib
 import json
 import os
 import re
 import struct
+import zlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 
@@ -20,12 +22,25 @@ import ida_bytes
 import ida_funcs  # for callers/callees
 import ida_xref  # for xrefs (cross-references)
 
-# Для парсинга DT_NEEDED (ELF) – с корректной обработкой отсутствия библиотеки
+# Нативные API IDA для информации о файле (хеши, компилятор, формат).
+# В старых версиях IDA модули могут отсутствовать — тогда используются fallback'и.
+try:
+    import ida_ida
+except ImportError:
+    ida_ida = None
+try:
+    import ida_typeinf
+except ImportError:
+    ida_typeinf = None
+
+# Для парсинга DT_NEEDED (ELF) – с корректной обработкой отсутствия библиотеки.
+# pyelftools используется ТОЛЬКО как fallback, когда IDA Pro не даёт нужных полей
+# (DT_NEEDED / DT_SONAME / DT_RPATH / DT_RUNPATH / .comment) нативными API.
 try:
     from elftools.elf.elffile import ELFFile
 except ImportError:
     ELFFile = None
-    print("[IDAPython] pyelftools не установлен. ELF-зависимости не будут получены.")
+    print("[IDAPython] pyelftools не установлен. ELF-зависимости будут получены только из IDA.")
 
 
 # -------------------------------------------------------------------- #
@@ -44,6 +59,31 @@ def _get_file_format() -> str:
     except Exception:
         pass
     return 'unknown'
+
+
+def _get_file_type_name() -> str:
+    """Возвращает человекочитаемое имя типа входного файла (f_ELF → 'ELF', и т.д.)."""
+    try:
+        ft = ida_ida.inf_get_filetype() if ida_ida is not None else None
+        if ft is None:
+            return ""
+        names = {
+            "f_PE": "PE",
+            "f_ELF": "ELF",
+            "f_MACHO": "Mach-O",
+            "f_BIN": "Binary",
+            "f_COFF": "COFF",
+            "f_AOUT": "a.out",
+        }
+        for key, label in names.items():
+            try:
+                if ft == getattr(ida_ida, key):
+                    return label
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ""
 
 
 def _format_hexdump_with_ascii(data: bytes, start_addr: int = 0) -> str:
@@ -132,31 +172,214 @@ def _extract_framework_name(raw_path: str) -> str:
     return Path(clean).name
 
 
-def _get_elf_needed_libraries(elf_path: str) -> List[str]:
-    """Возвращает список DT_NEEDED из ELF-файла или пустой список, если pyelftools недоступен."""
-    if ELFFile is None:
-        return []
+_ELF_MACHINES = {
+    "EM_386": "x86",
+    "EM_X86_64": "x86-64",
+    "EM_ARM": "ARM",
+    "EM_AARCH64": "AArch64",
+    "EM_MIPS": "MIPS",
+    "EM_PPC": "PowerPC",
+    "EM_PPC64": "PowerPC64",
+    "EM_RISCV": "RISC-V",
+    "EM_S390": "S390",
+    "EM_SPARC": "SPARC",
+    "EM_LOONGARCH": "LoongArch",
+}
+
+_ELF_TYPES = {
+    "ET_NONE": "No file type",
+    "ET_REL": "Relocatable",
+    "ET_EXEC": "Executable",
+    "ET_DYN": "Shared object",
+    "ET_CORE": "Core",
+}
+
+
+def _compute_file_hashes(file_path: str) -> Dict[str, str]:
+    """Возвращает SHA256/MD5/CRC32 файла.
+
+    Приоритет: нативные API IDA Pro (значения из БД, верхний регистр),
+    затем самостоятельное вычисление по файлу на диске.
+    """
+    result = {"sha256": "", "md5": "", "crc32": ""}
+
+    def _ida_hex(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).hex().upper()
+        if isinstance(value, int):
+            return f"{value & 0xFFFFFFFF:08X}"
+        return str(value).upper()
 
     try:
-        with open(elf_path, 'rb') as f:
+        result["sha256"] = _ida_hex(ida_nalt.retrieve_input_file_sha256())
+    except Exception:
+        result["sha256"] = ""
+    try:
+        result["md5"] = _ida_hex(ida_nalt.retrieve_input_file_md5())
+    except Exception:
+        result["md5"] = ""
+    try:
+        result["crc32"] = _ida_hex(ida_nalt.retrieve_input_file_crc32())
+    except Exception:
+        result["crc32"] = ""
+
+    # Если IDA не вернула какое-то значение — считаем напрямую из файла.
+    try:
+        if not all(result.values()) and file_path and os.path.exists(file_path):
+            sha = hashlib.sha256()
+            md5 = hashlib.md5()
+            crc = 0
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    sha.update(chunk)
+                    md5.update(chunk)
+                    crc = zlib.crc32(chunk, crc)
+            if not result["sha256"]:
+                result["sha256"] = sha.hexdigest().upper()
+            if not result["md5"]:
+                result["md5"] = md5.hexdigest().upper()
+            if not result["crc32"]:
+                result["crc32"] = f"{crc & 0xFFFFFFFF:08X}"
+    except Exception as e:
+        print(f"[IDAPython] Ошибка вычисления хешей {file_path}: {e}")
+    return result
+
+
+def _get_compiler_name() -> Optional[str]:
+    """Определяет компилятор через нативные API IDA (ida_typeinf.get_compiler_name)."""
+    if ida_typeinf is None:
+        return None
+    try:
+        comp_id = idc.get_inf_attr(idc.INF_CC_ID)
+        if comp_id is None:
+            return None
+        comp_id = int(comp_id) & 0x0F  # COMP_MASK
+        name = ida_typeinf.get_compiler_name(comp_id)
+        if name and name.lower() not in ("unknown", "unknown compiler"):
+            return name
+    except Exception:
+        pass
+    return None
+
+
+def _parse_comment_section(elffile) -> Optional[str]:
+    """Извлекает строку компилятора из секции .comment (GCC/clang)."""
+    try:
+        comment = elffile.get_section_by_name(".comment")
+        if comment is None:
+            return None
+        raw = comment.data()
+    except Exception:
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    for token in text.split("\x00"):
+        token = token.strip()
+        if not token:
+            continue
+        if "clang version" in token:
+            return "Clang " + token.split("clang version", 1)[1].strip().split()[0]
+        if token.startswith("GCC:"):
+            version = token.split("GCC:", 1)[1].strip()
+            version = version.lstrip("(GNU) ").split()[0]
+            return "GNU C/C++ " + version
+    return None
+
+
+def _infer_compiler(needed_libs: List[str]) -> Optional[str]:
+    """Определяет компилятор по набору зависимостей, если .comment отсутствует."""
+    libs = set(needed_libs)
+    if any(l.startswith("libstdc++") for l in libs):
+        return "GNU C++"
+    if any(l.startswith("libgfortran") for l in libs):
+        return "GNU Fortran"
+    if any(l.startswith(("libgo", "libobjc")) for l in libs):
+        return "GNU Go/Objective-C"
+    if any(l.startswith(("libmono", "libcoreclr", "libmscoree")) for l in libs):
+        return ".NET (managed)"
+    if libs & {"libc.so.6", "libc.so", "libc.musl-x86_64.so.1"}:
+        return "GNU C"
+    return None
+
+
+def _get_elf_metadata(elf_path: str) -> Dict[str, Any]:
+    """Извлекает метаданные ELF: формат, DT_NEEDED, DT_SONAME, RPATH/RUNPATH, компилятор.
+
+    Приоритет данных:
+      1. Нативные API IDA Pro (хеши — отдельно, компилятор, формат).
+      2. pyelftools — только для полей, которые IDA не отдаёт напрямую
+         (DT_NEEDED, DT_SONAME, DT_RPATH, DT_RUNPATH, .comment).
+    """
+    meta: Dict[str, Any] = {
+        "format": "",
+        "needed_libs": [],
+        "soname": None,
+        "rpath": None,
+        "runpath": None,
+        "compiler": None,
+    }
+
+    # Компилятор — сначала нативный API IDA.
+    meta["compiler"] = _get_compiler_name()
+
+    # Формат — нативный API IDA.
+    meta["format"] = _get_file_type_name()
+
+    if ELFFile is None:
+        return meta
+
+    try:
+        with open(elf_path, "rb") as f:
             elffile = ELFFile(f)
+
+            # Формат: если IDA не дал имя типа, собираем его из заголовка ELF.
+            if not meta["format"]:
+                elf_class = f"ELF{elffile.elfclass}"
+                machine = _ELF_MACHINES.get(elffile["e_machine"], "")
+                etype = _ELF_TYPES.get(elffile["e_type"], "")
+                parts = [elf_class]
+                if machine:
+                    parts.append("for " + machine)
+                if etype:
+                    parts.append("(" + etype + ")")
+                meta["format"] = " ".join(parts)
+
+            # Компилятор: если IDA не дал, берём из .comment.
+            if not meta["compiler"]:
+                meta["compiler"] = _parse_comment_section(elffile)
+
             dynamic = None
             for segment in elffile.iter_segments():
-                if segment['p_type'] == 'PT_DYNAMIC':
+                if segment["p_type"] == "PT_DYNAMIC":
                     dynamic = segment
                     break
-            if not dynamic:
-                dynamic = elffile.get_section_by_name('.dynamic')
-            if not dynamic:
-                return []
-            needed = []
-            for tag in dynamic.iter_tags():
-                if tag.entry.d_tag == 'DT_NEEDED':
-                    needed.append(tag.needed)
-            return needed
+            if dynamic is None:
+                dynamic = elffile.get_section_by_name(".dynamic")
+            if dynamic is not None:
+                needed = []
+                for tag in dynamic.iter_tags():
+                    d_tag = tag.entry.d_tag
+                    if d_tag == "DT_NEEDED":
+                        needed.append(tag.needed)
+                    elif d_tag == "DT_SONAME" and meta["soname"] is None:
+                        meta["soname"] = tag.soname
+                    elif d_tag == "DT_RPATH" and meta["rpath"] is None:
+                        meta["rpath"] = tag.rpath
+                    elif d_tag == "DT_RUNPATH" and meta["runpath"] is None:
+                        meta["runpath"] = tag.runpath
+                meta["needed_libs"] = needed
+
+            if meta["compiler"] is None:
+                meta["compiler"] = _infer_compiler(meta["needed_libs"])
     except Exception as e:
-        print(f"[IDAPython] Ошибка получения DT_NEEDED: {e}")
-        return []
+        print(f"[IDAPython] Ошибка извлечения метаданных ELF: {e}")
+    return meta
+
+
+def _get_elf_needed_libraries(elf_path: str) -> List[str]:
+    """Возвращает список DT_NEEDED из ELF-файла или пустой список, если pyelftools недоступен."""
+    return _get_elf_metadata(elf_path).get("needed_libs", [])
 
 
 # -------------------------------------------------------------------- #
@@ -187,6 +410,12 @@ def export_to_json(output_path: Optional[str] = None) -> None:
         "exports": [],
         "elf_sections": [],
         "needed_libs": [],
+        "soname": None,
+        "rpath": None,
+        "runpath": None,
+        "compiler": None,
+        "format": "",
+        "hashes": {"sha256": "", "md5": "", "crc32": ""},
         "ida_info": {"kernel_version": kernel_version}
     }
 
@@ -294,7 +523,14 @@ def export_to_json(output_path: Optional[str] = None) -> None:
 
     # --- Зависимости (needed_libs) ---
     if is_elf and current_file_path and os.path.exists(current_file_path):
-        data["needed_libs"] = _get_elf_needed_libraries(current_file_path)
+        meta = _get_elf_metadata(current_file_path)
+        data["needed_libs"] = meta["needed_libs"]
+        data["soname"] = meta["soname"]
+        data["rpath"] = meta["rpath"]
+        data["runpath"] = meta["runpath"]
+        data["compiler"] = meta["compiler"]
+        data["format"] = meta["format"]
+        data["hashes"] = _compute_file_hashes(current_file_path)
     elif is_macho:
         # Для Mach-O: собираем имена модулей из таблицы импорта IDA и преобразуем их
         unique_modules = set()
@@ -304,6 +540,12 @@ def export_to_json(output_path: Optional[str] = None) -> None:
                 unique_modules.add(_extract_framework_name(mod))
         data["needed_libs"] = sorted(unique_modules)
         print(f"[IDAPython] Mach‑O зависимости (из IDA): {data['needed_libs']}")
+        if current_file_path and os.path.exists(current_file_path):
+            data["hashes"] = _compute_file_hashes(current_file_path)
+    else:
+        # PE и прочие форматы — хеши всё равно полезны для отчёта
+        if current_file_path and os.path.exists(current_file_path):
+            data["hashes"] = _compute_file_hashes(current_file_path)
 
     # Сортировка функций: экспортные первыми
     data["functions"].sort(

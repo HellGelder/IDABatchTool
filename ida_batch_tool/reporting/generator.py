@@ -299,6 +299,21 @@ class ELFReportGenerator(BaseReportGenerator):
         data["unknown_modules"] = sorted(unknown)
         data["elf_sections"] = []
 
+        # Подробная информация о зависимых библиотеках (SONAME → описание + категория)
+        detailed_libs = []
+        for lib in needed_libs:
+            cat_label, desc = self._classify_full(lib, internal_set)
+            detailed_libs.append({
+                "name": lib,
+                "display": self._normalize_display_name(lib),
+                "category": cat_label,
+                "description": desc,
+                "color": self.CATEGORY_COLORS.get(cat_label, "#9E9E9E"),
+            })
+        data["needed_libs_detailed"] = sorted(
+            detailed_libs, key=lambda x: (x["category"], x["name"])
+        )
+
         module_counts = {}
         for lib in needed_libs:
             short = self._normalize_display_name(lib)
@@ -310,6 +325,27 @@ class ELFReportGenerator(BaseReportGenerator):
             deps.append({"name": mod, "category": cat_label, "count": count,
                          "description": desc, "color": color})
         data["module_deps"] = sorted(deps, key=lambda x: (x["category"], x["name"]))
+
+        # Карточка «Информация о файле»: хеши, формат, компилятор, SONAME, RPATH/RUNPATH
+        hashes = data.get("hashes") or {}
+        file_info = [
+            ("Имя файла", data.get("file_name", "")),
+            ("Формат", data.get("format") or ""),
+            ("Компилятор", data.get("compiler") or ""),
+            ("Input SHA256", hashes.get("sha256", "")),
+            ("Input MD5", hashes.get("md5", "")),
+            ("Input CRC32", hashes.get("crc32", "")),
+        ]
+        soname = data.get("soname")
+        if soname:
+            file_info.append(("Shared Name (SONAME)", soname))
+        rpath = data.get("rpath")
+        runpath = data.get("runpath")
+        if runpath:
+            file_info.append(("Library RUNPATH", runpath))
+        if rpath:
+            file_info.append(("Library RPATH", rpath))
+        data["file_info"] = file_info
 
         for imp in data.get("imports", []):
             resolved = imp.get("resolved_libs", [])

@@ -537,11 +537,11 @@ class SfaPage(QWidget):
     def _on_html_progress(self, current: int, total: int, message: str):
         if total > 0:
             self.process_progress.setMaximum(total)
+            self.process_progress.setValue(current)
         if message:
             self.process_label.setText(f"Генерация HTML: {current}/{total} — {message}")
         else:
             self.process_label.setText(f"Генерация HTML: {current}/{total}")
-        self.process_progress.setValue(current)
 
     def _on_html_finished(self, result: object):
         # result — SfaHtmlGenerationResult (dataclass)
@@ -563,7 +563,7 @@ class SfaPage(QWidget):
             self.start_btn.setEnabled(True)
             self.cancel_btn.setEnabled(False)
             self.html_generate_btn.setEnabled(True)
-            self.process_progress.setValue(100)
+            self.process_progress.setValue(self.process_progress.maximum())
             self.process_label.setText("Готово")
             QMessageBox.information(self, "Готово",
                                     f"Отчёты СФ сохранены в {result.reports_dir}\nИндекс: {index_path}")
