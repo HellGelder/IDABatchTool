@@ -299,21 +299,6 @@ class ELFReportGenerator(BaseReportGenerator):
         data["unknown_modules"] = sorted(unknown)
         data["elf_sections"] = []
 
-        # Подробная информация о зависимых библиотеках (SONAME → описание + категория)
-        detailed_libs = []
-        for lib in needed_libs:
-            cat_label, desc = self._classify_full(lib, internal_set)
-            detailed_libs.append({
-                "name": lib,
-                "display": self._normalize_display_name(lib),
-                "category": cat_label,
-                "description": desc,
-                "color": self.CATEGORY_COLORS.get(cat_label, "#9E9E9E"),
-            })
-        data["needed_libs_detailed"] = sorted(
-            detailed_libs, key=lambda x: (x["category"], x["name"])
-        )
-
         module_counts = {}
         for lib in needed_libs:
             short = self._normalize_display_name(lib)

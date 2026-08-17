@@ -66,32 +66,6 @@
         </div>
     </div>
 
-    <!-- Зависимые библиотеки (DT_NEEDED) -->
-    {% if needed_libs_detailed %}
-    <h2>Зависимые библиотеки (DT_NEEDED) <span class="badge section-badge">{{ needed_libs_detailed|length }}</span></h2>
-    <div class="card accordion open" id="acc-needed">
-        <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
-            <span>Список зависимостей</span><span class="accordion-chevron">›</span>
-        </div>
-        <div class="accordion-body">
-            <div class="deps-grid searchable">
-                {% for lib in needed_libs_detailed %}
-                <div class="dep-item">
-                    <div class="dep-marker" style="background-color: {{ lib.color }};"></div>
-                    <div class="dep-info">
-                        <span class="dep-name">{{ lib.name }}</span>
-                        <span class="dep-category">{{ lib.category }}</span>
-                        {% if lib.description %}
-                        <span class="dep-desc" title="{{ lib.description }}">ℹ️</span>
-                        {% endif %}
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
     <!-- Импорты -->
     <h2>Импортируемые функции <span class="badge section-badge">{{ imports|length }}</span></h2>
     <div class="card accordion" id="acc-imports">
