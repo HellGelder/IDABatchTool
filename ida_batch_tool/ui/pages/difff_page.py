@@ -368,6 +368,13 @@ class DiffPage(QWidget):
             output_path = Path(left_dir) / "DiffResults"
         output_path.mkdir(parents=True, exist_ok=True)
 
+        # Папка для доанализа Diaphora (только для engine=bindiff)
+        engine = self._get_engine()
+        add_output_path = None
+        if engine == "bindiff":
+            add_output_path = output_path.parent / "AddDiffResults"
+            add_output_path.mkdir(parents=True, exist_ok=True)
+
         idat_path = get_ida_executable()
         if not Path(idat_path).is_file():
             QMessageBox.warning(self, "IDA не найдена",
@@ -375,7 +382,6 @@ class DiffPage(QWidget):
             return
 
         bindiff_path = get_bindiff_executable()
-        engine = self._get_engine()
         if engine in ("bindiff", "both") and not Path(bindiff_path).is_file():
             QMessageBox.warning(
                 self, "Утилита BinDiff не найдена",
@@ -430,16 +436,18 @@ class DiffPage(QWidget):
 
         # Очищаем колонки статусов BinDiff / Diaphora
         for row in range(1, self.pairs_table.rowCount()):
-            self.pairs_table.setItem(row, 4,
-                QTableWidgetItem("—" if use_bindiff else "—"))
-            self.pairs_table.setItem(row, 5,
-                QTableWidgetItem("—" if use_diaphora else "—"))
-        # Если движок не используется, прочерк так и останется
+            # BinDiff: всегда есть для engine=bindiff/both, прочерк для diaphora
+            bd_status = "" if engine in ("bindiff", "both") else "—"
+            self.pairs_table.setItem(row, 4, QTableWidgetItem(bd_status))
+            # Diaphora: прочерк для bindiff (обновится доанализом), иначе пусто
+            dp_status = "—" if engine == "bindiff" else ("" if engine in ("diaphora", "both") else "—")
+            self.pairs_table.setItem(row, 5, QTableWidgetItem(dp_status))
 
         self.error_text.clear()
 
         self._worker = DiffWorker(pairs, idat_path, bindiff_path, output_path,
-                                   engine=engine, left_dir=left_dir, right_dir=right_dir)
+                                   engine=engine, left_dir=left_dir, right_dir=right_dir,
+                                   add_output_dir=add_output_path)
         self._worker.stage_updated.connect(self._on_stage_updated)
         self._worker.global_progress_updated.connect(self._on_global_progress)
         self._worker.pair_status_updated.connect(self._on_pair_status)
@@ -497,21 +505,39 @@ class DiffPage(QWidget):
         # Обновляем статусы в таблице
         self._analyze_directories()
 
-        # Отчёты
+        # Отчёты: основной (DiffResults)
         reports_dir = self._output_dir / "Reports"
         index_html = reports_dir / "index.html"
-        if index_html.is_file():
+
+        # Отчёты: доанализ (AddDiffResults)
+        add_reports_dir = None
+        add_index_html = None
+        if self._output_dir:
+            add_dir = self._output_dir.parent / "AddDiffResults"
+            add_reports_dir = add_dir / "Reports"
+            add_index_html = add_reports_dir / "index.html"
+
+        has_main_reports = index_html.is_file()
+        has_add_reports = add_index_html and add_index_html.is_file()
+
+        if has_main_reports or has_add_reports:
             self.generate_report_btn.setEnabled(True)
             from PySide6.QtWidgets import QMessageBox
+            msg_lines = []
+            if has_main_reports:
+                msg_lines.append(f"Основные отчёты: {reports_dir}")
+            if has_add_reports:
+                msg_lines.append(f"Доанализ (Diaphora): {add_reports_dir}")
             msg = QMessageBox()
             msg.setWindowTitle("Сравнение завершено")
-            msg.setText(f"Все этапы завершены. HTML-отчёты сохранены в:\n{reports_dir}")
-            msg.setInformativeText(f"Открыть сводный отчёт?")
+            msg.setText(f"Все этапы завершены.\n" + "\n".join(msg_lines))
+            msg.setInformativeText(f"Открыть основной сводный отчёт?")
             msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             msg.setDefaultButton(QMessageBox.StandardButton.Yes)
             if msg.exec() == QMessageBox.StandardButton.Yes:
                 import subprocess
-                subprocess.Popen(["start", "", str(index_html)], shell=True)
+                target = str(index_html) if has_main_reports else str(add_index_html)
+                subprocess.Popen(["start", "", target], shell=True)
         else:
             any_json = bool(list(self._output_dir.glob("*.diff.json"))) if self._output_dir else False
             self.generate_report_btn.setEnabled(any_json)

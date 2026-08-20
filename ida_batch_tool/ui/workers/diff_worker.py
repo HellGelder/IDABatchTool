@@ -327,6 +327,7 @@ class DiffWorker(QThread):
                  max_workers: Optional[int] = None,
                  left_dir: Optional[str] = None,
                  right_dir: Optional[str] = None,
+                 add_output_dir: Optional[Path] = None,
                  parent=None):
         super().__init__(parent)
         self.file_pairs = file_pairs
@@ -336,6 +337,7 @@ class DiffWorker(QThread):
         self.engine = engine
         self.left_dir = Path(left_dir) if left_dir else None
         self.right_dir = Path(right_dir) if right_dir else None
+        self.add_output_dir = Path(add_output_dir) if add_output_dir else None
         # Максимум 6 потоков (жадный алгоритм не требует больше)
         self.max_workers = min(max_workers or 6, 6)
         self._cancel_event = threading.Event()
@@ -435,6 +437,10 @@ class DiffWorker(QThread):
         self._stage_current_stage = "Генерация HTML"
         self._generate_reports(all_pairs, total)
 
+        # ----- Доанализ: если выбран BinDiff и есть add_output_dir -----
+        if self.engine == "bindiff" and self.add_output_dir is not None:
+            self._run_add_analysis(all_pairs, total)
+
         logger.info(f"Завершено. Всего обработано: {total}")
         self._safe_emit(self.finished, total, total)
 
@@ -523,6 +529,323 @@ class DiffWorker(QThread):
             logger.info(f"HTML-отчёты сохранены в {reports_dir}")
         except Exception as e:
             logger.exception(f"Ошибка генерации отчётов: {e}")
+
+    # ----- ДОАНАЛИЗ: Diaphora для пар с similarity < 99% (engine=bindiff) -----
+
+    def _find_low_similarity_pairs(self, pairs: list) -> list:
+        """Находит пары, у которых BinDiff-similarity < 0.99.
+        Пропускает пары, для которых уже есть результат в add_output_dir."""
+        low_pairs = []
+        for p, s, r in pairs:
+            stem = _safe_filename(r)
+            diff_json = self.output_dir / f"{stem}.diff.json"
+            if not diff_json.is_file():
+                continue
+            # Если уже есть в add_output_dir — пропускаем
+            if self.add_output_dir is not None:
+                add_json = self.add_output_dir / f"{stem}.diff.json"
+                if add_json.is_file():
+                    logger.info(f"Доанализ: {r} уже есть в {self.add_output_dir}, пропускаем")
+                    continue
+            try:
+                with open(diff_json, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                similarity = float(data.get("similarity", 0.0))
+                if similarity < 0.99:
+                    low_pairs.append((p, s, r))
+            except (OSError, json.JSONDecodeError):
+                logger.warning(f"Не удалось прочитать {diff_json} для доанализа")
+        return low_pairs
+
+    def _prepare_add_diff_files(self, pairs: list) -> None:
+        """Копирует .diff.json из output_dir в add_output_dir."""
+        if self.add_output_dir is None:
+            return
+        self.add_output_dir.mkdir(parents=True, exist_ok=True)
+        for _p, _s, r in pairs:
+            stem = _safe_filename(r)
+            src = self.output_dir / f"{stem}.diff.json"
+            dst = self.add_output_dir / f"{stem}.diff.json"
+            if src.is_file():
+                shutil.copy2(str(src), str(dst))
+                logger.info(f"Доанализ: скопирован {src.name} -> {dst}")
+
+    def _run_add_analysis(self, all_pairs: list, total: int) -> None:
+        """Запускает доанализ Diaphora для пар с similarity < 99%."""
+        if not _DIAPHORA_SCRIPT.is_file():
+            logger.warning(f"Diaphora не найден ({_DIAPHORA_SCRIPT}), доанализ пропущен")
+            self._safe_emit(self.error_occurred,
+                            "Diaphora не найден — доанализ для пар <99% пропущен")
+            return
+
+        add_pairs = self._find_low_similarity_pairs(all_pairs)
+        if not add_pairs:
+            logger.info("Доанализ: нет пар с similarity < 99%")
+            return
+
+        logger.info(f"Доанализ: {len(add_pairs)} пар с similarity < 99%")
+        self._safe_emit(self.error_occurred,
+                        f"Доанализ Diaphora: {len(add_pairs)} пар с similarity < 99%")
+
+        # Копируем существующие .diff.json в add_output_dir
+        self._prepare_add_diff_files(add_pairs)
+
+        # Пересчитываем общее количество шагов с учётом доанализа
+        add_steps = len(add_pairs) * 3  # Diaphora + пост-анализ + HTML
+        self._total_steps += add_steps
+
+        add_total = len(add_pairs)
+
+        # Фаза 4: Diaphora (доанализ)
+        self._stage_current_stage = "Доанализ Diaphora"
+        self._run_pass_with_progress(
+            "AddDiaphora", self._process_add_diaphora_pair, add_pairs, add_total,
+            engine="diaphora", status_text="Доанализ (Diaphora)",
+        )
+
+        if self._cancel_event.is_set():
+            return
+
+        # Фаза 5: Пост-анализ (доанализ)
+        self._stage_current_stage = "Доанализ - Пост-анализ"
+        self._run_pass_with_progress(
+            "AddPost", self._process_add_post_pair, add_pairs, add_total,
+            engine="diaphora", status_text="Доанализ (пост-анализ)",
+        )
+
+        if self._cancel_event.is_set():
+            return
+
+        # Фаза 6: HTML-отчёты (доанализ)
+        self._stage_current_stage = "Доанализ - Генерация HTML"
+        self._generate_add_reports(add_pairs, add_total)
+
+    # ----- Фаза 4: Diaphora (доанализ) -----
+    def _process_add_diaphora_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str) -> bool:
+        """Diaphora-доанализ: reuse существующего .diff.json, добавляет source='diaphora'."""
+        stem = _safe_filename(rel_key)
+        if self._cancel_event.is_set():
+            return False
+        if not _DIAPHORA_SCRIPT.is_file():
+            return False
+        if self.add_output_dir is None:
+            return False
+        try:
+            json_output = self.add_output_dir / f"{stem}.diff.json"
+            diaphora_db_pr = self.add_output_dir / f"{stem}_primary.diaphora.sqlite"
+            diaphora_db_sc = self.add_output_dir / f"{stem}_secondary.diaphora.sqlite"
+            diaphora_result = self.add_output_dir / f"{stem}_diaphora_result.sqlite"
+
+            def _pulse(msg: str) -> None:
+                self._safe_emit_stage("AddDiaphora", self._pulse_counter, len(self.file_pairs),
+                                      primary_i64.name, msg)
+
+            if not self._run_diaphora_export(primary_i64, diaphora_db_pr, pulse_callback=_pulse):
+                self._safe_emit(self.error_occurred, f"Diaphora доанализ экспорт primary {stem}")
+                # Cleanup
+                for p in (diaphora_db_pr, diaphora_db_sc, diaphora_result):
+                    try: p.unlink(missing_ok=True)
+                    except OSError: pass
+                return False
+            if not self._run_diaphora_export(secondary_i64, diaphora_db_sc, pulse_callback=_pulse):
+                self._safe_emit(self.error_occurred, f"Diaphora доанализ экспорт secondary {stem}")
+                for p in (diaphora_db_pr, diaphora_db_sc, diaphora_result):
+                    try: p.unlink(missing_ok=True)
+                    except OSError: pass
+                return False
+
+            if diaphora_db_pr.is_file() and diaphora_db_sc.is_file():
+                if self._run_diaphora_diff(diaphora_db_pr, diaphora_db_sc, diaphora_result):
+                    self._merge_diaphora_into_json(json_output, diaphora_result, stem)
+
+            # Cleanup временных файлов Diaphora
+            for p in (diaphora_db_pr, diaphora_db_sc, diaphora_result):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return True
+        except Exception as e:
+            logger.exception(f"Ошибка Diaphora доанализ {stem}: {e}")
+            self._safe_emit(self.error_occurred, f"Ошибка Diaphora доанализ {stem}: {e}")
+            return False
+
+    # ----- Фаза 5: Пост-анализ (доанализ) -----
+    def _process_add_post_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str) -> bool:
+        """Пост-анализ для доанализа: обогащает .diff.json в add_output_dir."""
+        stem = _safe_filename(rel_key)
+        if self._cancel_event.is_set():
+            return False
+        if self.add_output_dir is None:
+            return False
+        try:
+            json_output = self.add_output_dir / f"{stem}.diff.json"
+            primary_json = self.add_output_dir / f"{stem}_primary.export.json"
+            secondary_json = self.add_output_dir / f"{stem}_secondary.export.json"
+            exported = self._export_json(primary_i64, primary_json, secondary_i64, secondary_json)
+            self._enrich_diff_json(json_output, exported["primary"], exported["secondary"])
+
+            # Hexdump diff (копируем из основного результата, если есть)
+            orig1 = _find_original_binary(primary_i64)
+            orig2 = _find_original_binary(secondary_i64)
+            if orig1 and orig2:
+                try:
+                    with open(json_output, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    hex_rows, hex_sim = _compute_hexdump_diff(orig1, orig2)
+                    data["global_hex_diff"] = [{
+                        "name1": orig1.name, "path1": str(orig1),
+                        "name2": orig2.name, "path2": str(orig2),
+                        "hex_rows": hex_rows, "hexdump_similarity": hex_sim,
+                    }]
+                    data["hexdump_similarity"] = hex_sim
+                    data["real_primary"] = str(orig1)
+                    data["real_secondary"] = str(orig2)
+                    with open(json_output, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+            # Unmatched из IDA-экспорта
+            try:
+                with open(json_output, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                matched_primary = set()
+                matched_secondary = set()
+                for mf in data.get("matched_functions", []):
+                    a1 = mf.get("address1", "")
+                    a2 = mf.get("address2", "")
+                    if a1: matched_primary.add(a1)
+                    if a2: matched_secondary.add(a2)
+
+                def _read_export(pj_path, matched_set):
+                    funcs = []
+                    if pj_path and pj_path.is_file():
+                        try:
+                            with open(pj_path, "r", encoding="utf-8") as pf:
+                                pdata = json.load(pf)
+                            for func in pdata.get("functions", []):
+                                raw_addr = func.get("start_ea", "")
+                                if not raw_addr: continue
+                                try:
+                                    addr_int = int(raw_addr, 16) if raw_addr.startswith("0x") else int(raw_addr)
+                                    addr_norm = f"0x{addr_int:X}"
+                                except (ValueError, TypeError):
+                                    addr_norm = raw_addr
+                                if addr_norm not in matched_set:
+                                    funcs.append({"address": addr_norm, "name": func.get("name", "<unnamed>")})
+                        except (OSError, json.JSONDecodeError):
+                            pass
+                    return funcs
+
+                un1 = _read_export(exported.get("primary"), matched_primary)
+                un2 = _read_export(exported.get("secondary"), matched_secondary)
+                if un1: data.setdefault("unmatched_functions1", un1)
+                if un2: data.setdefault("unmatched_functions2", un2)
+                total1 = data.get("total_functions1", 0)
+                unique_primary = len({
+                    m.get("address1", "") for m in data.get("matched_functions", [])
+                    if m.get("address1")
+                })
+                data["total_unmatched"] = max(0, total1 - unique_primary)
+                with open(json_output, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+            except (OSError, json.JSONDecodeError):
+                pass
+
+            # Cleanup
+            for p in (primary_json, secondary_json):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return True
+        except Exception as e:
+            logger.exception(f"Ошибка пост-анализа доанализ {stem}: {e}")
+            self._safe_emit(self.error_occurred, f"Ошибка пост-анализа доанализ {stem}: {e}")
+            return False
+
+    # ----- Фаза 6: HTML-отчёты (доанализ) -----
+    def _generate_add_reports(self, pairs: list, total: int) -> None:
+        """Генерирует HTML-отчёты для доанализа в add_output_dir/Reports/."""
+        if self.add_output_dir is None:
+            return
+        try:
+            from datetime import datetime
+            from ida_batch_tool.reporting.generator import DiffReportGenerator, _build_internal_set
+
+            json_files = list(self.add_output_dir.glob("*.diff.json"))
+            if not json_files:
+                logger.warning("Нет .diff.json для доанализа")
+                return
+
+            reports_dir = self.add_output_dir / "Reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+
+            gen = DiffReportGenerator()
+            left_dir = self.left_dir or Path(self.add_output_dir)
+            right_dir = self.right_dir or Path(self.add_output_dir)
+            internal_set = _build_internal_set(left_dir).union(_build_internal_set(right_dir))
+
+            # Маппинг stem -> rel_key для pair_status_updated
+            stem_to_rel = {_safe_filename(r): r for _, _, r in pairs}
+
+            # Сигнал начала
+            for _p, _s, r in pairs:
+                self._safe_emit(self.pair_status_updated, r, "diaphora", "Генерация HTML")
+
+            self._safe_emit_stage("AddReport", 0, total, "", "Генерация HTML-отчётов (доанализ)...")
+
+            for idx, jf in enumerate(json_files):
+                if self._cancel_event.is_set():
+                    break
+                html_path = reports_dir / (jf.stem.replace(".diff", "") + ".html")
+                logger.info(f"Генерация отчёта доанализ: {jf.name}")
+                try:
+                    gen.generate_from_json(
+                        jf,
+                        output_html=html_path,
+                        reports_dir=reports_dir,
+                        input_dir=left_dir,
+                        internal_set=internal_set,
+                    )
+                except Exception as e:
+                    logger.exception(f"Ошибка генерации отчёта доанализ {jf.name}: {e}")
+
+                stem = jf.stem.replace(".diff", "")
+                rel_key = stem_to_rel.get(stem, "")
+                if rel_key:
+                    self._safe_emit(self.pair_status_updated, rel_key, "diaphora", "\u2713")
+
+                with self._lock:
+                    self._global_step += 1
+                    self._safe_emit(self.global_progress_updated, self._global_step, self._total_steps,
+                                    "Генерация HTML (доанализ)")
+
+                self._safe_emit_stage("AddReport", idx + 1, total, jf.stem,
+                                      "Генерация HTML-отчётов (доанализ)...")
+
+            # Сводный индекс
+            generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ida_version = ""
+            try:
+                export_jsons = list(self.add_output_dir.glob("*_primary.export.json")) or list(self.add_output_dir.glob("*.export.json"))
+                if export_jsons:
+                    import json as jmod
+                    with open(export_jsons[0], "r", encoding="utf-8") as f:
+                        analysis_data = jmod.load(f)
+                    ida_version = analysis_data.get("ida_info", {}).get("kernel_version", "")
+            except Exception:
+                pass
+
+            gen.generate_diff_index(
+                reports_dir, json_files, left_dir, right_dir,
+                generation_time=generation_time,
+                ida_version=ida_version,
+            )
+            logger.info(f"HTML-отчёты доанализа сохранены в {reports_dir}")
+        except Exception as e:
+            logger.exception(f"Ошибка генерации отчётов доанализа: {e}")
 
     # Порог для крупных файлов: если .i64 больше этого — обрабатываем последовательно
     _LARGE_FILE_THRESHOLD = 100 * 1024 * 1024  # 100 MB
