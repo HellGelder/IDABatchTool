@@ -311,6 +311,27 @@ class ELFReportGenerator(BaseReportGenerator):
                          "description": desc, "color": color})
         data["module_deps"] = sorted(deps, key=lambda x: (x["category"], x["name"]))
 
+        # Карточка «Информация о файле»: хеши, формат, компилятор, SONAME, RPATH/RUNPATH
+        hashes = data.get("hashes") or {}
+        file_info = [
+            ("Имя файла", data.get("file_name", "")),
+            ("Формат", data.get("format") or ""),
+            ("Компилятор", data.get("compiler") or ""),
+            ("Input SHA256", hashes.get("sha256", "")),
+            ("Input MD5", hashes.get("md5", "")),
+            ("Input CRC32", hashes.get("crc32", "")),
+        ]
+        soname = data.get("soname")
+        if soname:
+            file_info.append(("Shared Name (SONAME)", soname))
+        rpath = data.get("rpath")
+        runpath = data.get("runpath")
+        if runpath:
+            file_info.append(("Library RUNPATH", runpath))
+        if rpath:
+            file_info.append(("Library RPATH", rpath))
+        data["file_info"] = file_info
+
         for imp in data.get("imports", []):
             resolved = imp.get("resolved_libs", [])
             if resolved:

@@ -20,6 +20,21 @@
 
     <input type="text" id="quickSearch" class="search-field" placeholder="Поиск по функциям, импортам, экспортам...">
 
+    <!-- Информация о файле -->
+    {% if file_info %}
+    <div class="card">
+        <h2 style="margin-top:0">Информация о файле</h2>
+        <ul class="grouped-list">
+            {% for label, value in file_info %}
+            <li class="grouped-row">
+                <span class="grouped-row-label">{{ label }}</span>
+                <span class="grouped-row-value">{{ value }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
     <!-- Зависимости -->
     <h2>Зависимости <span class="badge section-badge">{{ module_deps|length }}</span></h2>
     <div class="card accordion open" id="acc-deps">
