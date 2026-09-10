@@ -119,7 +119,9 @@ class SfaHtmlGeneratorWorker(QThread):
             try:
                 rel = source_full.relative_to(self.input_dir)
             except ValueError:
+                # fallback: берём имя файла как есть, но обязательно Path
                 rel = Path(local_file_name).name if local_file_name else json_path.stem
+                rel = Path(rel)
 
             out_rel = rel.with_suffix(".sfa.html")
             output_html = self.reports_dir / out_rel
