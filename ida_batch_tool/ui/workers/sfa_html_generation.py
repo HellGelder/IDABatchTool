@@ -78,9 +78,11 @@ class SfaHtmlGeneratorWorker(QThread):
         report_links: list = []
         ida_info: Dict[str, Any] = {}
         generated_count = 0
-        total_files = 0
         total_size_bytes = 0
         completed = 0
+
+        # total_files — количество обработанных файлов (не зависит от exists)
+        total_files = total
 
         # Устанавливаем максимум прогресс-бара = количество файлов
         self.progress_updated.emit(0, total, "Генерация HTML…")
@@ -128,15 +130,18 @@ class SfaHtmlGeneratorWorker(QThread):
             display = rel.as_posix()
 
             def on_func_progress(func_name: str, func_idx: int, total_in_file: int):
-                """Вызывается из generate_report_from_json для каждой функции.
-                Не влияет на основной прогресс-бар (он по файлам).
-                """
                 self.progress_updated.emit(
                     completed, total,
                     f"{display} → {func_name} ({func_idx + 1}/{total_in_file})"
                 )
 
-            report_result = self.generator.generate_report_from_json(
+            # Размер исходного исполняемого файла
+            if not self.reuse_cache or not function_index or not function_index.available:
+                file_size = source_full.stat().st_size if source_full.exists() else 0
+            else:
+                file_size = src_file_size
+
+            self.generator.generate_report_from_json(
                 json_path, output_html, self.reports_dir,
                 progress_callback=on_func_progress,
                 function_index=function_index,
@@ -145,21 +150,11 @@ class SfaHtmlGeneratorWorker(QThread):
                 file_name_hint=local_file_name,
             )
             link = out_rel.as_posix()
-            file_exists = 1 if source_full.exists() else 0
-            file_size = src_file_size
-
-            # Статистика из отчёта
-            found_count, notfound_count = 0, 0
-            if report_result is not None and len(report_result) >= 2:
-                found_count = report_result[0]
-                notfound_count = report_result[1]
-            else:
-                found_count, notfound_count = 0, 0
 
             if self.delete_json:
                 json_path.unlink(missing_ok=True)
 
-            return (link, display, local_ida, file_exists, file_size, found_count, notfound_count)
+            return (link, display, local_ida, file_size)
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_path = {executor.submit(process_one, p): p for p in jobs}
@@ -175,17 +170,14 @@ class SfaHtmlGeneratorWorker(QThread):
                 with lock:
                     completed += 1
                     if result is not None:
-                        link, display, local_ida, f_exists, f_size, f_found, f_notfound = result
+                        link, display, local_ida, f_size = result
                         report_links.append({
                             "filename": link,
                             "display_name": display,
-                            "found_count": f_found,
-                            "notfound_count": f_notfound,
                         })
                         generated_count += 1
                         if local_ida and not ida_info:
                             ida_info = local_ida
-                        total_files += f_exists
                         total_size_bytes += f_size
 
                 if result is not None:
@@ -196,9 +188,24 @@ class SfaHtmlGeneratorWorker(QThread):
         # Сортируем отчёты по пути
         report_links.sort(key=lambda r: r["display_name"])
 
-        # Суммарная статистика по всем файлам
-        total_found = sum(r.get("found_count", 0) for r in report_links)
-        total_notfound = sum(r.get("notfound_count", 0) for r in report_links)
+        # Вычисляем количество системных функций без документации
+        # total_system_functions — уникальные системные функции из индекса
+        # Вычитаем те, что есть в mslearn_cache (значит, npx вернул результат)
+        total_system_notfound = 0
+        if total_system_functions > 0:
+            try:
+                import sqlite3
+                cache_path = self.reports_dir / "mslearn_cache.db"
+                if cache_path.exists():
+                    conn = sqlite3.connect(str(cache_path))
+                    try:
+                        cur = conn.execute("SELECT COUNT(*) FROM functions")
+                        cached_count = cur.fetchone()[0] or 0
+                        total_system_notfound = max(0, total_system_functions - cached_count)
+                    finally:
+                        conn.close()
+            except Exception:
+                pass
 
         self.finished.emit(SfaHtmlGenerationResult(
             generated_count=generated_count,
@@ -210,6 +217,5 @@ class SfaHtmlGeneratorWorker(QThread):
             total_size_bytes=total_size_bytes,
             total_system_modules=total_system_modules,
             total_system_functions=total_system_functions,
-            total_found=total_found,
-            total_notfound=total_notfound,
+            total_system_notfound=total_system_notfound,
         ))

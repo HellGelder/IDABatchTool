@@ -441,8 +441,7 @@ class SfaReportGenerator:
                        total_files: int = 0, total_size_bytes: int = 0,
                        total_system_modules: int = 0,
                        total_system_functions: int = 0,
-                       total_found: int = 0,
-                       total_notfound: int = 0,
+                       total_system_notfound: int = 0,
                        generation_time: str = "") -> Path:
         if not generation_time:
             generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -452,8 +451,7 @@ class SfaReportGenerator:
             "total_size_bytes": total_size_bytes,
             "total_system_modules": total_system_modules,
             "total_system_functions": total_system_functions,
-            "total_found": total_found,
-            "total_notfound": total_notfound,
+            "total_system_notfound": total_system_notfound,
             "reports": reports,
             "generation_time": generation_time,
         }

@@ -557,8 +557,7 @@ class SfaPage(QWidget):
                 total_files=result.total_files, total_size_bytes=result.total_size_bytes,
                 total_system_modules=result.total_system_modules,
                 total_system_functions=result.total_system_functions,
-                total_found=result.total_found,
-                total_notfound=result.total_notfound,
+                total_system_notfound=result.total_system_notfound,
                 generation_time=gen_time
             )
             self.html_in_progress = False

@@ -44,12 +44,8 @@
                 <div class="stat-label">Уникальных системных функций</div>
             </div>
             <div class="stat-tile">
-                <div class="stat-value">{{ total_found }}</div>
-                <div class="stat-label">Документировано</div>
-            </div>
-            <div class="stat-tile">
-                <div class="stat-value">{{ total_notfound }}</div>
-                <div class="stat-label">Без документации</div>
+                <div class="stat-value">{{ total_system_notfound }}</div>
+                <div class="stat-label">Из них без документации</div>
             </div>
             <div class="stat-tile">
                 <div class="stat-value">{{ reports|length }}</div>
@@ -61,26 +57,11 @@
     <h2>Исследованные файлы</h2>
     <div class="card">
         {% if reports %}
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Файл</th>
-                    <th style="text-align:center;">Документировано</th>
-                    <th style="text-align:center;">Без документации</th>
-                    <th style="text-align:center;">Всего</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for report in reports %}
-                <tr>
-                    <td><a href="{{ report.filename }}">{{ report.display_name }}</a></td>
-                    <td style="text-align:center;">{{ report.get('found_count', 0) }}</td>
-                    <td style="text-align:center;">{{ report.get('notfound_count', 0) }}</td>
-                    <td style="text-align:center;">{{ report.get('found_count', 0) + report.get('notfound_count', 0) }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <ul class="file-list">
+            {% for report in reports %}
+            <li>📄 <a href="{{ report.filename }}">{{ report.display_name }}</a></li>
+            {% endfor %}
+        </ul>
         {% else %}
         <p class="empty-state">Нет доступных отчётов.</p>
         {% endif %}

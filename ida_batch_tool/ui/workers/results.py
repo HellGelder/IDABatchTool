@@ -37,5 +37,4 @@ class SfaHtmlGenerationResult:
     total_size_bytes: int
     total_system_modules: int = 0
     total_system_functions: int = 0
-    total_found: int = 0
-    total_notfound: int = 0
+    total_system_notfound: int = 0
