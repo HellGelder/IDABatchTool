@@ -43,6 +43,59 @@ def _decode_bytes(data: bytes) -> str:
     return data.decode("latin-1", errors="replace")
 
 
+def _normalize_func_name(func_name: str) -> str:
+    """Нормализует имя функции для поиска в Microsoft Learn.
+
+    Для C++ имён вида ``std::basic_streambuf<...>::sputc(char)``
+    извлекает последний сегмент верхнего уровня: ``sputc``.
+    Для операторов ``operator<<`` / ``operator>>`` сохраняет их как есть.
+    """
+    name = func_name.strip()
+    if not name:
+        return name
+
+    # Ищем последний :: на верхнем уровне (глубина 0 — не внутри <> или ())
+    depth = 0
+    last_top_level_sep = -1
+    for i, ch in enumerate(name):
+        if ch in ("<", "(", "{"):
+            depth += 1
+        elif ch in (">", ")", "}"):
+            depth -= 1
+        elif ch == ":" and depth == 0 and i + 1 < len(name) and name[i + 1] == ":":
+            last_top_level_sep = i
+
+    if last_top_level_sep >= 0:
+        # Берём сегмент после последнего :: верхнего уровня
+        rest = name[last_top_level_sep + 2:].strip()
+        # Убираем аргументы
+        paren_idx = rest.find("(")
+        if paren_idx >= 0:
+            rest = rest[:paren_idx].strip()
+        if rest:
+            return rest
+
+    # Не C++ имя или не получилось выделить — убираем аргументы
+    paren_idx = name.find("(")
+    if paren_idx >= 0:
+        name = name[:paren_idx].strip()
+
+    return name
+
+
+def _sanitize_for_shell(func_name: str) -> str:
+    """Экранирует имя функции для передачи npx через cmd.exe.
+
+    npx.cmd — это cmd.exe-скрипт, поэтому ``<< >> | & ;`` ломают парсинг.
+    Удаляем их полностью — для поиска это несущественно (Microsoft Learn
+    ищет по подстроке, ``operator`` найдет всё).
+    """
+    result = func_name.replace("<<", "").replace(">>", "")
+    result = result.replace("<", "").replace(">", "")
+    result = result.replace("|", "").replace("&", "").replace(";", "")
+    return result.strip()
+
+
 def _is_win32_system_module(module_name: str) -> bool:
     """Проверяет, является ли имя модуля системным Win32 на основе словаря WINDOWS_MODULES."""
     if not module_name:
@@ -124,13 +177,21 @@ class SfaReportGenerator:
         if not npx:
             self._log("[ERROR] npx not found. Please install Node.js and ensure it's in PATH.")
             return []
-        self._log(f"[DEBUG] Running: {npx} @microsoft/learn-cli search {func_name}")
+
+        # Нормализуем имя для поиска, экранируем спецсимволы для npx
+        search_name = _normalize_func_name(func_name)
+        safe_name = _sanitize_for_shell(search_name)
+        if not safe_name:
+            self._log(f"[WARN] {func_name}: пустое имя после нормализации")
+            return []
+
+        self._log(f"[INFO] Searching: {func_name} → {safe_name}")
         try:
             proc = subprocess.run(
-                [npx, "@microsoft/learn-cli", "search", func_name],
+                [npx, "@microsoft/learn-cli", "search", safe_name],
                 capture_output=True,
-                text=False,  # binary — сами декодируем
-                timeout=45,  # первый запуск npx качает пакет
+                text=False,
+                timeout=45,
             )
             # Декодируем с автоопределением кодировки
             stdout = _decode_bytes(proc.stdout)
@@ -202,7 +263,7 @@ class SfaReportGenerator:
         reuse_cache: bool = False,
         imports: Optional[list] = None,
         file_name_hint: str = "",
-    ) -> None:
+    ) -> tuple[int, int, int]:
         """Генерирует HTML-отчёт СФ.
 
         Args:
@@ -255,14 +316,14 @@ class SfaReportGenerator:
 
             # Фильтр 1: только системные Win32 DLL
             if not _is_win32_system_module(module):
-                self._log(f"[SKIP] {func_name} ({module}) — не Win32 системная DLL")
+                self._log(f"[DEBUG] {func_name} ({module}) — не Win32 системная DLL")
                 skipped += 1
                 continue
 
             # Фильтр 2: проверка по индексу системных функций (если доступен)
             if function_index and function_index.available:
                 if not function_index.is_known(func_name):
-                    self._log(f"[SKIP] {func_name} — нет в индексе системных функций")
+                    self._log(f"[DEBUG] {func_name} — нет в индексе системных функций")
                     skipped_not_in_index += 1
                     skipped += 1
                     continue
@@ -350,6 +411,11 @@ class SfaReportGenerator:
         output_html.write_text(html, encoding="utf-8")
         self._log(f"[INFO] Report saved to {output_html}")
 
+        # Возвращаем статистику для индексного отчёта
+        found_count = sum(1 for sc in system_calls if sc["found"])
+        notfound_count = len(system_calls) - found_count
+        return found_count, notfound_count, len(system_calls)
+
     def _generate_error_report(self, file_name: str, output_html: Path, error_msg: str, reports_dir: Path = None) -> None:
         if reports_dir:
             self._init_log(reports_dir)
@@ -375,6 +441,8 @@ class SfaReportGenerator:
                        total_files: int = 0, total_size_bytes: int = 0,
                        total_system_modules: int = 0,
                        total_system_functions: int = 0,
+                       total_found: int = 0,
+                       total_notfound: int = 0,
                        generation_time: str = "") -> Path:
         if not generation_time:
             generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -384,6 +452,8 @@ class SfaReportGenerator:
             "total_size_bytes": total_size_bytes,
             "total_system_modules": total_system_modules,
             "total_system_functions": total_system_functions,
+            "total_found": total_found,
+            "total_notfound": total_notfound,
             "reports": reports,
             "generation_time": generation_time,
         }

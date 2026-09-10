@@ -94,6 +94,7 @@ class SfaHtmlGeneratorWorker(QThread):
             if self.reuse_cache and function_index and function_index.available:
                 imports_data = function_index.get_file_imports(json_path)
                 local_file_name = function_index.get_file_name(json_path)
+                src_file_size = function_index.get_file_size(json_path)
                 if not imports_data:
                     self.error_occurred.emit(f"Нет импортов в индексе для {json_path.name}")
                     return None
@@ -107,6 +108,10 @@ class SfaHtmlGeneratorWorker(QThread):
                     return None
                 imports_data = data.get("imports", [])
                 local_file_name = data.get("file_name", "")
+                src_file = Path(local_file_name)
+                if not src_file.is_absolute():
+                    src_file = self.input_dir / src_file
+                src_file_size = src_file.stat().st_size if src_file.exists() else 0
                 local_ida = data.get("ida_info", {})
 
             original_file = Path(local_file_name).name
@@ -131,7 +136,7 @@ class SfaHtmlGeneratorWorker(QThread):
                     f"{display} → {func_name} ({func_idx + 1}/{total_in_file})"
                 )
 
-            self.generator.generate_report_from_json(
+            report_result = self.generator.generate_report_from_json(
                 json_path, output_html, self.reports_dir,
                 progress_callback=on_func_progress,
                 function_index=function_index,
@@ -140,13 +145,21 @@ class SfaHtmlGeneratorWorker(QThread):
                 file_name_hint=local_file_name,
             )
             link = out_rel.as_posix()
-            file_size = source_full.stat().st_size if source_full.exists() else 0
             file_exists = 1 if source_full.exists() else 0
+            file_size = src_file_size
+
+            # Статистика из отчёта
+            found_count, notfound_count = 0, 0
+            if report_result is not None and len(report_result) >= 2:
+                found_count = report_result[0]
+                notfound_count = report_result[1]
+            else:
+                found_count, notfound_count = 0, 0
 
             if self.delete_json:
                 json_path.unlink(missing_ok=True)
 
-            return (link, display, local_ida, file_exists, file_size)
+            return (link, display, local_ida, file_exists, file_size, found_count, notfound_count)
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_path = {executor.submit(process_one, p): p for p in jobs}
@@ -162,8 +175,13 @@ class SfaHtmlGeneratorWorker(QThread):
                 with lock:
                     completed += 1
                     if result is not None:
-                        link, display, local_ida, f_exists, f_size = result
-                        report_links.append({"filename": link, "display_name": display})
+                        link, display, local_ida, f_exists, f_size, f_found, f_notfound = result
+                        report_links.append({
+                            "filename": link,
+                            "display_name": display,
+                            "found_count": f_found,
+                            "notfound_count": f_notfound,
+                        })
                         generated_count += 1
                         if local_ida and not ida_info:
                             ida_info = local_ida
@@ -178,6 +196,10 @@ class SfaHtmlGeneratorWorker(QThread):
         # Сортируем отчёты по пути
         report_links.sort(key=lambda r: r["display_name"])
 
+        # Суммарная статистика по всем файлам
+        total_found = sum(r.get("found_count", 0) for r in report_links)
+        total_notfound = sum(r.get("notfound_count", 0) for r in report_links)
+
         self.finished.emit(SfaHtmlGenerationResult(
             generated_count=generated_count,
             report_links=report_links,
@@ -188,4 +210,6 @@ class SfaHtmlGeneratorWorker(QThread):
             total_size_bytes=total_size_bytes,
             total_system_modules=total_system_modules,
             total_system_functions=total_system_functions,
+            total_found=total_found,
+            total_notfound=total_notfound,
         ))

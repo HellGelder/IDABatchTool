@@ -81,10 +81,19 @@ CREATE TABLE IF NOT EXISTS file_imports (
     func_name TEXT NOT NULL,
     module_name TEXT NOT NULL DEFAULT '',
     address TEXT NOT NULL DEFAULT '',
+    file_size INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (json_path, func_name)
 );
 CREATE INDEX IF NOT EXISTS idx_fi_jp ON file_imports(json_path);
 """
+
+
+def _migrate_file_size(conn: sqlite3.Connection) -> None:
+    """Добавляет колонку file_size в file_imports, если её нет (старые БД)."""
+    cur = conn.execute("PRAGMA table_info(file_imports)")
+    cols = [row[1] for row in cur.fetchall()]
+    if "file_size" not in cols:
+        conn.execute("ALTER TABLE file_imports ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0")
 
 
 class SfaFunctionIndex:
@@ -142,6 +151,7 @@ class SfaFunctionIndex:
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA_SQL)
+            _migrate_file_size(conn)
 
             category_map = _build_dll_category_map()
 
@@ -163,6 +173,12 @@ class SfaFunctionIndex:
                 json_path_str = str(json_path)
                 file_name = data.get("file_name", "")
                 imports = data.get("imports", [])
+
+                # Размер исходного исполняемого файла (один для всех импортов)
+                src_path = Path(file_name)
+                if not src_path.is_absolute():
+                    src_path = json_path.parent.parent / src_path
+                file_size = src_path.stat().st_size if src_path.exists() else 0
 
                 # Удаляем старые импорты для этого json_path (на случай перезапуска)
                 conn.execute(
@@ -187,9 +203,9 @@ class SfaFunctionIndex:
                     # Всегда сохраняем импорт в file_imports (для перегенерации HTML)
                     conn.execute(
                         "INSERT OR REPLACE INTO file_imports "
-                        "(json_path, file_name, func_name, module_name, address) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (json_path_str, file_name, func_name, module, address),
+                        "(json_path, file_name, func_name, module_name, address, file_size) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (json_path_str, file_name, func_name, module, address, file_size),
                     )
 
                     # В system_functions — только системные
@@ -299,6 +315,32 @@ class SfaFunctionIndex:
             return row[0] if row else ""
         except Exception:
             return ""
+
+    def get_file_size(self, json_path: str | Path) -> int:
+        """Возвращает размер исходного файла (или 0)."""
+        if not self._available or not self._conn:
+            return 0
+        try:
+            cur = self._conn.execute(
+                "SELECT file_size FROM file_imports WHERE json_path = ? LIMIT 1",
+                (str(json_path),),
+            )
+            row = cur.fetchone()
+            return row[0] if row else 0
+        except Exception:
+            return 0
+
+    def get_all_json_paths(self) -> list[str]:
+        """Возвращает все json_path из индекса."""
+        if not self._available or not self._conn:
+            return []
+        try:
+            cur = self._conn.execute(
+                "SELECT DISTINCT json_path FROM file_imports ORDER BY json_path"
+            )
+            return [row[0] for row in cur.fetchall() if row[0]]
+        except Exception:
+            return []
 
     # ─── Свойства ───────────────────────────────────────────────────
 
