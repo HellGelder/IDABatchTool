@@ -11,6 +11,7 @@ from ida_batch_tool.database.sfa_doc_cache import DocCacheManager
 from ida_batch_tool.database.sfa_function_index import SfaFunctionIndex
 from ida_batch_tool.classifier.windows import WINDOWS_MODULES as _WINDOWS_MODULES
 from ida_batch_tool.reporting.utils import compute_back_link
+from ida_batch_tool.ui.constants import PLATFORM_EXTENSIONS
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -445,6 +446,26 @@ class SfaReportGenerator:
                        generation_time: str = "") -> Path:
         if not generation_time:
             generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Пересчитываем размер: суммируем stat() по всем исполняемым файлам
+        # в input_dir, отфильтрованным по расширениям из PLATFORM_EXTENSIONS
+        computed_size = 0
+        try:
+            all_exts: set[str] = set()
+            for info in PLATFORM_EXTENSIONS.values():
+                all_exts.update(info["exts"])
+            input_path = Path(input_dir)
+            if input_path.is_dir():
+                for ext in all_exts:
+                    if not ext:
+                        continue
+                    for f in input_path.rglob(f"*{ext}"):
+                        if f.is_file():
+                            computed_size += f.stat().st_size
+        except Exception:
+            computed_size = 0
+        # Если вручную переданный размер не 0 и вычисленный 0 — используем переданный
+        total_size_bytes = computed_size if computed_size > 0 else total_size_bytes
         data = {
             "input_dir": str(input_dir),
             "total_files": total_files,

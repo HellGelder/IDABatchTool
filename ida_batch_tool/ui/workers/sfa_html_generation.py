@@ -37,10 +37,9 @@ class SfaHtmlGeneratorWorker(QThread):
             ))
             return
 
-        # ─── Фаза 1: предварительное сканирование — строим индекс ──────
+        # ─── Фаза 1: индекс системных функций ─────────────────────────
         function_index_path = self.reports_dir / "sfa_function_index.db"
         if self.reuse_cache:
-            # Переиспользуем существующий индекс и кэш — только перегенерация HTML
             function_index = None
             if function_index_path.exists():
                 try:
@@ -55,8 +54,7 @@ class SfaHtmlGeneratorWorker(QThread):
             self.progress_updated.emit(0, 0, "Сканирование системных функций…")
             try:
                 function_index = SfaFunctionIndex.build_from_jsons(
-                    jobs, function_index_path,
-                    progress_callback=None,
+                    jobs, function_index_path, progress_callback=None,
                 )
                 total_system_modules = function_index.total_modules if function_index and function_index.available else 0
                 total_system_functions = function_index.total_functions if function_index and function_index.available else 0
@@ -70,7 +68,6 @@ class SfaHtmlGeneratorWorker(QThread):
                 total_system_modules = 0
                 total_system_functions = 0
 
-        # В reuse-режиме JSON нет — не сортируем по размеру
         if not self.reuse_cache:
             jobs.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
 
@@ -80,23 +77,18 @@ class SfaHtmlGeneratorWorker(QThread):
         generated_count = 0
         total_size_bytes = 0
         completed = 0
-
-        # total_files — количество обработанных файлов (не зависит от exists)
         total_files = total
 
-        # Устанавливаем максимум прогресс-бара = количество файлов
         self.progress_updated.emit(0, total, "Генерация HTML…")
 
         def process_one(json_path: Path):
-            # В reuse-режиме json_path может не существовать на диске
             if not self.reuse_cache and not json_path.exists():
                 return None
 
-            # Reuse-режим: импорты читаем из index БД, а не из JSON
+            # Reuse-режим: импорты из index БД
             if self.reuse_cache and function_index and function_index.available:
                 imports_data = function_index.get_file_imports(json_path)
                 local_file_name = function_index.get_file_name(json_path)
-                src_file_size = function_index.get_file_size(json_path)
                 if not imports_data:
                     self.error_occurred.emit(f"Нет импортов в индексе для {json_path.name}")
                     return None
@@ -110,20 +102,25 @@ class SfaHtmlGeneratorWorker(QThread):
                     return None
                 imports_data = data.get("imports", [])
                 local_file_name = data.get("file_name", "")
-                src_file = Path(local_file_name)
-                if not src_file.is_absolute():
-                    src_file = self.input_dir / src_file
-                src_file_size = src_file.stat().st_size if src_file.exists() else 0
                 local_ida = data.get("ida_info", {})
 
-            original_file = Path(local_file_name).name
+            # Путь к исходному исполняемому файлу — от него считаем размер
             source_full = Path(local_file_name)
             if not source_full.is_absolute():
                 source_full = self.input_dir / source_full
+
+            # Размер исполняемого файла через ОС
+            file_size = 0
+            if source_full.exists():
+                file_size = source_full.stat().st_size
+            elif self.reuse_cache and function_index and function_index.available:
+                file_size = function_index.get_file_size(json_path)
+
             try:
                 rel = source_full.relative_to(self.input_dir)
             except ValueError:
-                rel = Path(original_file)
+                rel = Path(local_file_name).name if local_file_name else json_path.stem
+
             out_rel = rel.with_suffix(".sfa.html")
             output_html = self.reports_dir / out_rel
             output_html.parent.mkdir(parents=True, exist_ok=True)
@@ -135,13 +132,8 @@ class SfaHtmlGeneratorWorker(QThread):
                     f"{display} → {func_name} ({func_idx + 1}/{total_in_file})"
                 )
 
-            # Размер исходного исполняемого файла
-            if not self.reuse_cache or not function_index or not function_index.available:
-                file_size = source_full.stat().st_size if source_full.exists() else 0
-            else:
-                file_size = src_file_size
-
-            self.generator.generate_report_from_json(
+            # generate_report_from_json возвращает (found_count, notfound_count, total_count)
+            report_result = self.generator.generate_report_from_json(
                 json_path, output_html, self.reports_dir,
                 progress_callback=on_func_progress,
                 function_index=function_index,
@@ -151,10 +143,15 @@ class SfaHtmlGeneratorWorker(QThread):
             )
             link = out_rel.as_posix()
 
+            found_count, notfound_count = 0, 0
+            if report_result and len(report_result) >= 2:
+                found_count = report_result[0]
+                notfound_count = report_result[1]
+
             if self.delete_json:
                 json_path.unlink(missing_ok=True)
 
-            return (link, display, local_ida, file_size)
+            return (link, display, local_ida, file_size, found_count, notfound_count)
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_path = {executor.submit(process_one, p): p for p in jobs}
@@ -170,10 +167,12 @@ class SfaHtmlGeneratorWorker(QThread):
                 with lock:
                     completed += 1
                     if result is not None:
-                        link, display, local_ida, f_size = result
+                        link, display, local_ida, f_size, f_found, f_notfound = result
                         report_links.append({
                             "filename": link,
                             "display_name": display,
+                            "found_count": f_found,
+                            "notfound_count": f_notfound,
                         })
                         generated_count += 1
                         if local_ida and not ida_info:
@@ -185,27 +184,7 @@ class SfaHtmlGeneratorWorker(QThread):
                 else:
                     self.progress_updated.emit(completed, total, f"{json_path.name} — ошибка")
 
-        # Сортируем отчёты по пути
         report_links.sort(key=lambda r: r["display_name"])
-
-        # Вычисляем количество системных функций без документации
-        # total_system_functions — уникальные системные функции из индекса
-        # Вычитаем те, что есть в mslearn_cache (значит, npx вернул результат)
-        total_system_notfound = 0
-        if total_system_functions > 0:
-            try:
-                import sqlite3
-                cache_path = self.reports_dir / "mslearn_cache.db"
-                if cache_path.exists():
-                    conn = sqlite3.connect(str(cache_path))
-                    try:
-                        cur = conn.execute("SELECT COUNT(*) FROM functions")
-                        cached_count = cur.fetchone()[0] or 0
-                        total_system_notfound = max(0, total_system_functions - cached_count)
-                    finally:
-                        conn.close()
-            except Exception:
-                pass
 
         self.finished.emit(SfaHtmlGenerationResult(
             generated_count=generated_count,
@@ -217,5 +196,4 @@ class SfaHtmlGeneratorWorker(QThread):
             total_size_bytes=total_size_bytes,
             total_system_modules=total_system_modules,
             total_system_functions=total_system_functions,
-            total_system_notfound=total_system_notfound,
         ))

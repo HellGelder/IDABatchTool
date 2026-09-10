@@ -57,11 +57,26 @@
     <h2>Исследованные файлы</h2>
     <div class="card">
         {% if reports %}
-        <ul class="file-list">
-            {% for report in reports %}
-            <li>📄 <a href="{{ report.filename }}">{{ report.display_name }}</a></li>
-            {% endfor %}
-        </ul>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Файл</th>
+                    <th style="text-align:center;">Функций всего</th>
+                    <th style="text-align:center;">С документацией</th>
+                    <th style="text-align:center;">Без документации</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for report in reports %}
+                <tr>
+                    <td><a href="{{ report.filename }}">{{ report.display_name }}</a></td>
+                    <td style="text-align:center;">{{ report.get('found_count', 0) + report.get('notfound_count', 0) }}</td>
+                    <td style="text-align:center;">{{ report.get('found_count', 0) }}</td>
+                    <td style="text-align:center;">{{ report.get('notfound_count', 0) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         {% else %}
         <p class="empty-state">Нет доступных отчётов.</p>
         {% endif %}
