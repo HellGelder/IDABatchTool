@@ -369,14 +369,24 @@ class SfaReportGenerator:
                 continue
             module = imp.get("module", "") or ""
 
-            # Фильтр 1: только системные библиотеки выбранной платформы
-            if not is_system_module(module, platform):
+            # Определяем, является ли модуль псевдо-модулем ELF (.dynsym).
+            # Для таких функций библиотека неизвестна — системность
+            # определяется по наличию документации в БД man-pages.
+            is_pseudo_module = module.strip().lower() in (".dynsym", ".dynsec", "unknown", "")
+
+            # Фильтр 1: только системные библиотеки выбранной платформы.
+            #
+            # Для ELF IDA иногда не может определить библиотеку и ставит
+            # псевдо-модуль (.dynsym, .dynsec, unknown). Такие импорты
+            # не отсекаются здесь — мы проверим их по man-pages позже.
+            if not is_system_module(module, platform) and not is_pseudo_module:
                 self._log(f"[DEBUG] {func_name} ({module}) — не системная библиотека ({platform})")
                 skipped += 1
                 continue
 
-            # Фильтр 2: проверка по индексу системных функций (если доступен)
-            if function_index and function_index.available:
+            # Фильтр 2: проверка по индексу системных функций (если доступен).
+            # Для псевдо-модулей индекс не хранит функции.
+            if function_index and function_index.available and not is_pseudo_module:
                 if not function_index.is_known(func_name):
                     self._log(f"[DEBUG] {func_name} — нет в индексе системных функций")
                     skipped_not_in_index += 1
@@ -389,8 +399,12 @@ class SfaReportGenerator:
             if progress_callback:
                 progress_callback(func_name, idx, total_imports)
 
-            # Пытаемся взять dll_name из импорта JSON-экспорта IDA
+            # Пытаемся взять dll_name из импорта JSON-экспорта IDA.
+            # Для ELF-псевдо-модулей (.dynsym) пишем «—», так как
+            # библиотека неизвестна.
             dll_name = imp.get("module", "") or "—"
+            if dll_name.strip().lower() in (".dynsym", ".dynsec", "unknown"):
+                dll_name = "—"
 
             # Получаем результаты поиска (из кэша, man-pages или Microsoft Learn).
             # Для Linux/Android документация берётся из локальной БД man-pages;
@@ -443,6 +457,13 @@ class SfaReportGenerator:
                             self._log(f"[WARN] Failed to save cache: {e}")
                 else:
                     self._log(f"[ERROR] No results for {func_name}")
+
+            # Для псевдо-модулей (.dynsym): если БД не знает функцию,
+            # она не является системной — не добавляем в отчёт.
+            if is_pseudo_module and not found:
+                self._log(f"[INFO] {func_name}: не подтверждена как системная (нет в БД man-pages)")
+                skipped += 1
+                continue
 
             system_calls.append({
                 "name": func_name,
