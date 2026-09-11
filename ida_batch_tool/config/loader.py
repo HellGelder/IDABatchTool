@@ -31,6 +31,7 @@ def _default_config() -> Dict[str, Any]:
         "default_inputdir": ".",
         "log_level": "INFO",
         "theme": "light",
+        "manpages_db_path": "",
     }
 
 
@@ -304,3 +305,27 @@ def get_bindiff_executable() -> str:
         return str(found)
 
     return name
+
+
+def get_manpages_db_path() -> Path | None:
+    """Возвращает путь к файлу manpages.db из настроек.
+
+    В конфиге хранится папка; имя файла фиксировано (``manpages.db``).
+    Возвращает ``None``, если путь не задан.
+    """
+    cfg = load_config()
+    raw = str(cfg.get("manpages_db_path", "") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    # Если указан сам файл БД — используем его как есть.
+    if path.suffix.lower() == ".db":
+        return path
+    return path / "manpages.db"
+
+
+def set_manpages_db_path(path: str) -> None:
+    """Сохраняет папку для manpages.db в config.yaml."""
+    cfg = load_config()
+    cfg["manpages_db_path"] = path
+    save_config(cfg)

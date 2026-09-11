@@ -20,13 +20,9 @@ from ida_batch_tool.database.man_pages_db import (
 
 logger = logging.getLogger(__name__)
 
-# Документация man-pages одна на весь проект (не зависит от входной папки).
+# Имя файла БД man-pages. Папка задаётся пользователем в настройках
+# (config.yaml: manpages_db_path) и читается через config.loader.
 MANPAGES_DB_FILENAME = "manpages.db"
-
-
-def get_manpages_db_path(reports_root: Path) -> Path:
-    """Путь к БД man-pages в корне отчётов."""
-    return Path(reports_root) / MANPAGES_DB_FILENAME
 
 
 class ManPagesSyncWorker(QThread):

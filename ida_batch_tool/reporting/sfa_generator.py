@@ -113,6 +113,7 @@ class SfaReportGenerator:
         self.index_template = self.env.get_template("sfa_index.html")
         self._doc_cache: DocCacheManager | None = None
         self._man_pages: ManPagesDatabase | None = None
+        self._man_pages_checked = False
         self._log_file = None
         self._npx_path = None
         # Загружаем marked.min.js один раз
@@ -148,9 +149,17 @@ class SfaReportGenerator:
     ) -> Optional[ManPagesDatabase]:
         """Открывает БД man-pages для платформы Linux/Android.
 
-        Порядок поиска: явно переданный путь, затем ``manpages.db`` рядом
-        с папкой отчётов, затем ``manpages.db`` в родительской папке.
+        Порядок поиска: явно переданный путь (из настроек), затем
+        ``manpages.db`` рядом с папкой отчётов, затем в родительской папке.
+        Результат поиска кэшируется: БД открывается один раз на весь прогон,
+        а не для каждого файла отчёта.
         """
+        # Повторный вызов (следующий файл) — возвращаем уже открытую БД.
+        if self._man_pages is not None:
+            return self._man_pages
+        if self._man_pages_checked:
+            return None
+
         candidates: list[Path] = []
         if manpages_db_path:
             candidates.append(Path(manpages_db_path))
@@ -166,8 +175,19 @@ class SfaReportGenerator:
                         f"[INFO] man-pages DB: {candidate} "
                         f"(функций: {db.count()}, версия: {db.version()})"
                     )
+                    self._man_pages = db
+                    self._man_pages_checked = True
                     return db
                 db.close()
+
+        # Не нашли — запоминаем, чтобы не повторять поиск и не спамить в лог.
+        self._man_pages_checked = True
+        searched = ", ".join(str(c) for c in candidates) or "пути не заданы"
+        self._log(
+            f"[WARN] БД man-pages не найдена (искали: {searched}). "
+            "Документация Linux недоступна. Укажите путь в настройках "
+            "и выполните синхронизацию man-pages."
+        )
         return None
 
     def close_log(self):
@@ -323,13 +343,8 @@ class SfaReportGenerator:
         use_manpages = platform == "Linux / Android"
 
         if use_manpages:
-            self._man_pages = self._open_manpages(reports_dir, manpages_db_path)
-            docs_available = bool(self._man_pages and self._man_pages.available())
-            if not docs_available:
-                self._log(
-                    "[WARN] БД man-pages не найдена — документация Linux недоступна. "
-                    "Выполните синхронизацию man-pages в настройках."
-                )
+            man_pages = self._open_manpages(reports_dir, manpages_db_path)
+            docs_available = bool(man_pages and man_pages.available())
         else:
             self._man_pages = None
             # Документация Microsoft Learn применима только к Windows API.

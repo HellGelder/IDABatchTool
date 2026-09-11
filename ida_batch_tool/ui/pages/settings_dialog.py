@@ -31,6 +31,11 @@ class SettingsPage(QWidget):
         self._init_ui()
         self._load_to_ui()
 
+    @property
+    def manpages_db_path(self) -> str:
+        """Выбранная папка для manpages.db."""
+        return self._man_path_edit.text().strip()
+
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(30, 30, 30, 30)
@@ -133,6 +138,15 @@ class SettingsPage(QWidget):
         man_hint.setStyleSheet("color: #8e8e93; font-size: 12px;")
         man_layout.addWidget(man_hint)
 
+        # Путь к БД
+        man_path_row = QHBoxLayout()
+        self._man_path_edit = QLineEdit()
+        self._man_path_edit.setPlaceholderText("Путь к папке с manpages.db...")
+        self._man_browse_btn = QPushButton("Обзор...")
+        man_path_row.addWidget(self._man_path_edit, 1)
+        man_path_row.addWidget(self._man_browse_btn)
+        man_layout.addLayout(man_path_row)
+
         self._man_status = QLabel("Статус: не проверено")
         self._man_status.setStyleSheet("font-size: 12px;")
         man_layout.addWidget(self._man_status)
@@ -170,6 +184,7 @@ class SettingsPage(QWidget):
         self._check_utils_btn.clicked.connect(self._check_utilities)
         self._man_check_btn.clicked.connect(self._check_manpages)
         self._man_sync_btn.clicked.connect(self._sync_manpages)
+        self._man_browse_btn.clicked.connect(self._browse_manpages_dir)
 
         self.theme_light_btn.clicked.connect(lambda: self._switch_theme("light"))
         self.theme_dark_btn.clicked.connect(lambda: self._switch_theme("dark"))
@@ -184,6 +199,10 @@ class SettingsPage(QWidget):
         theme = self.cfg.get("theme", "light")
         self.theme_light_btn.setChecked(theme == "light")
         self.theme_dark_btn.setChecked(theme == "dark")
+
+        self._man_path_edit.setText(str(self.cfg.get("manpages_db_path", "") or ""))
+        if self._man_path_edit.text().strip():
+            self._check_manpages()
 
     def _check_utilities(self):
         """Проверяет наличие 7z и npx через запуск в терминале."""
@@ -298,7 +317,7 @@ class SettingsPage(QWidget):
         self.theme_dark_btn.setChecked(theme == "dark")
         self.config_changed.emit(new_cfg)
 
-    def _save_settings(self):
+    def _save_settings(self, show_message: bool = True):
         new_cfg = {
             **self.cfg,
             "ida": {
@@ -307,11 +326,13 @@ class SettingsPage(QWidget):
             "bindiff": {
                 "executable": self.bindiff_edit.text().strip() or "bindiff"
             },
+            "manpages_db_path": self._man_path_edit.text().strip(),
         }
         try:
             save_config(new_cfg)
             self.cfg = new_cfg
-            QMessageBox.information(self, "Успех", "Настройки сохранены.")
+            if show_message:
+                QMessageBox.information(self, "Успех", "Настройки сохранены.")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
 
@@ -361,13 +382,29 @@ class SettingsPage(QWidget):
     # ─── man-pages ──────────────────────────────────────────────────
 
     def _manpages_db_path(self) -> Path:
-        """Путь к БД man-pages: папка отчётов рядом с входной директорией."""
-        from ida_batch_tool.config.loader import get_default_inputdir
-        from ida_batch_tool.database.man_pages_sync import get_manpages_db_path
+        """Путь к БД man-pages в выбранной пользователем папке."""
+        raw = self._man_path_edit.text().strip()
+        if not raw:
+            raw = str(self.cfg.get("manpages_db_path", "") or "").strip()
+        if not raw:
+            # Значение по умолчанию — папка отчётов входной директории.
+            from ida_batch_tool.config.loader import get_default_inputdir
+            input_dir = Path(self.cfg.get("default_inputdir") or get_default_inputdir())
+            return input_dir / "SFAReports" / "manpages.db"
+        path = Path(raw)
+        if path.suffix.lower() == ".db":
+            return path
+        return path / "manpages.db"
 
-        input_dir = Path(self.cfg.get("default_inputdir") or get_default_inputdir())
-        reports_root = input_dir / "SFAReports"
-        return get_manpages_db_path(reports_root)
+    def _browse_manpages_dir(self) -> None:
+        """Выбор папки, куда будет загружена БД man-pages."""
+        current = self._man_path_edit.text().strip() or str(Path.home())
+        path = QFileDialog.getExistingDirectory(
+            self, "Выберите папку для базы man-pages", current
+        )
+        if path:
+            self._man_path_edit.setText(path)
+            self._check_manpages()
 
     def _check_manpages(self) -> None:
         """Показывает состояние локальной БД man-pages."""
@@ -398,6 +435,11 @@ class SettingsPage(QWidget):
             return
 
         db_path = self._manpages_db_path()
+        if not self._man_path_edit.text().strip():
+            # Запоминаем выбранный по умолчанию путь, чтобы анализ его нашёл.
+            self._man_path_edit.setText(str(db_path.parent))
+            self._save_settings(show_message=False)
+
         self._man_sync_btn.setEnabled(False)
         self._man_check_btn.setEnabled(False)
         self._man_status.setText("Статус: загрузка архива man-pages…")
@@ -413,6 +455,8 @@ class SettingsPage(QWidget):
         self._man_sync_btn.setEnabled(True)
         self._man_check_btn.setEnabled(True)
         if success:
+            # Фиксируем путь в конфиге, чтобы анализ использовал эту БД.
+            self._save_settings(show_message=False)
             QMessageBox.information(self, "Готово", f"Документация man-pages импортирована:\n{message}")
             self._check_manpages()
         else:

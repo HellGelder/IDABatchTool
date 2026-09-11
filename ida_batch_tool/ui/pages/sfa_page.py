@@ -530,13 +530,17 @@ class SfaPage(QWidget):
             self.process_label.setText(
                 f"Генерация HTML-отчётов СФ…\nРезультаты: {sfa_reports}"
             )
+        # Путь к БД man-pages: из настроек; если не задан — рядом с отчётами.
+        from ida_batch_tool.config.loader import get_manpages_db_path
+        manpages_path = get_manpages_db_path() or (sfa_reports / "manpages.db")
+
         self.html_worker = SfaHtmlGeneratorWorker(
             {json_path: True for json_path in json_files},
             generator, sfa_reports, input_dir,
             delete_json=self.delete_json_check.isChecked(),
             reuse_cache=reuse_cache,
             platform=self._selected_platform(),
-            manpages_db_path=sfa_reports / "manpages.db",
+            manpages_db_path=manpages_path,
         )
         self.html_worker.progress_updated.connect(self._on_html_progress)
         self.html_worker.error_occurred.connect(self._on_error)
