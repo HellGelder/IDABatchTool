@@ -174,3 +174,42 @@ def get_module_category_and_description(module_name: str) -> Tuple[str, str]:
             if norm in [_normalize_name(k) for k in d.keys()]:
                 return category, info["description"]
     return "Неопознанные модули", ""
+
+
+# Кэш: нормализованный ключ модуля → название категории.
+_CATEGORY_KEY_MAP: dict[str, str] | None = None
+
+
+def _build_category_key_map() -> dict[str, str]:
+    """Строит и кэширует отображение «ключ модуля → категория».
+
+    Приоритет задаётся порядком ``_CATEGORIES`` — то же поведение, что и
+    у ``get_module_category_and_description``, но за один lookup вместо
+    перебора всех словарей.
+    """
+    global _CATEGORY_KEY_MAP
+    if _CATEGORY_KEY_MAP is not None:
+        return _CATEGORY_KEY_MAP
+
+    from .naming import normalize_module_name
+
+    mapping: dict[str, str] = {}
+    for category, info in _CATEGORIES.items():
+        for d in info["dicts"]:
+            for key in d:
+                mapping.setdefault(normalize_module_name(key), category)
+    _CATEGORY_KEY_MAP = mapping
+    return mapping
+
+
+def get_module_category(module_name: str) -> str:
+    """Возвращает короткое название категории модуля (или пустую строку).
+
+    Быстрая кэшированная альтернатива ``get_module_category_and_description``,
+    когда нужно только название категории.
+    """
+    from .naming import normalize_module_name
+
+    if not module_name:
+        return ""
+    return _build_category_key_map().get(normalize_module_name(module_name), "")

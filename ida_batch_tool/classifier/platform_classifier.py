@@ -9,6 +9,7 @@ from .windows import WINDOWS_MODULES
 from .linux import LINUX_MODULES
 from .android import ANDROID_MODULES
 from .macos import MACOS_MODULES
+from .naming import normalize_module_name
 from .third_party_platforms import (
     THIRD_PARTY_WINDOWS,
     THIRD_PARTY_LINUX,
@@ -17,26 +18,9 @@ from .third_party_platforms import (
 
 logger = logging.getLogger(__name__)
 
-
-def _normalize_name(name: str) -> str:
-    """Нормализация имени модуля: обрезает путь, расширение, приводит к нижнему регистру."""
-    if not name:
-        return ""
-    # Убираем путь
-    if '\\' in name or '/' in name:
-        name = name.replace('\\', '/').split('/')[-1]
-    # Убираем расширения (важно: без пустой строки!)
-    for ext in ('.dll', '.so', '.dylib', '.drv', '.sys', '.exe', '.framework'):
-        if name.endswith(ext):
-            name = name[:-len(ext)]
-            break
-    # Убираем версионные суффиксы .1.dylib, .2.dylib (если остались)
-    if '.dylib' in name:
-        name = name.split('.dylib')[0]
-    # Убираем @rpath/
-    if name.startswith('@rpath/'):
-        name = name[7:]
-    return name.lower()
+# Единая точка нормализации имён модулей (используется и классификатором,
+# и индексом системных функций, и генераторами отчётов).
+_normalize_name = normalize_module_name
 
 
 class BasePlatformClassifier:

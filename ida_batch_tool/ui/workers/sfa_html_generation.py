@@ -17,7 +17,7 @@ class SfaHtmlGeneratorWorker(QThread):
 
     def __init__(self, json_files: dict, generator: SfaReportGenerator,
                  reports_dir: Path, input_dir: Path, delete_json: bool,
-                 reuse_cache: bool = False):
+                 reuse_cache: bool = False, platform: str = "Windows"):
         super().__init__()
         self.json_files = json_files
         self.generator = generator
@@ -25,6 +25,7 @@ class SfaHtmlGeneratorWorker(QThread):
         self.input_dir = input_dir
         self.delete_json = delete_json
         self.reuse_cache = reuse_cache
+        self.platform = platform
 
     def run(self):
         jobs: List[Path] = [p for p in self.json_files if p.exists() or self.reuse_cache]
@@ -34,6 +35,7 @@ class SfaHtmlGeneratorWorker(QThread):
                 generated_count=0, report_links=[], ida_info={},
                 reports_dir=self.reports_dir, input_dir=self.input_dir,
                 total_files=0, total_size_bytes=0,
+                platform=self.platform,
             ))
             return
 
@@ -49,12 +51,17 @@ class SfaHtmlGeneratorWorker(QThread):
                     pass
             total_system_modules = function_index.total_modules if function_index and function_index.available else 0
             total_system_functions = function_index.total_functions if function_index and function_index.available else 0
+            # Платформа анализа берётся из индекса: при перегенерации HTML
+            # из кэша должны использоваться те же словари, что и в анализе.
+            if function_index and function_index.available:
+                self.platform = function_index.platform
             self.progress_updated.emit(0, 0, "Перегенерация HTML из кэша…")
         else:
             self.progress_updated.emit(0, 0, "Сканирование системных функций…")
             try:
                 function_index = SfaFunctionIndex.build_from_jsons(
                     jobs, function_index_path, progress_callback=None,
+                    platform=self.platform,
                 )
                 total_system_modules = function_index.total_modules if function_index and function_index.available else 0
                 total_system_functions = function_index.total_functions if function_index and function_index.available else 0
@@ -78,6 +85,8 @@ class SfaHtmlGeneratorWorker(QThread):
         total_size_bytes = 0
         completed = 0
         total_files = total
+        # Уникальные функции без документации по всем модулям.
+        global_notfound: Set[str] = set()
 
         self.progress_updated.emit(0, total, "Генерация HTML…")
 
@@ -134,26 +143,27 @@ class SfaHtmlGeneratorWorker(QThread):
                     f"{display} → {func_name} ({func_idx + 1}/{total_in_file})"
                 )
 
-            # generate_report_from_json возвращает (found_count, notfound_count, total_count)
-            report_result = self.generator.generate_report_from_json(
+            # generate_report_from_json возвращает SfaReportStats
+            stats = self.generator.generate_report_from_json(
                 json_path, output_html, self.reports_dir,
                 progress_callback=on_func_progress,
                 function_index=function_index,
                 reuse_cache=self.reuse_cache,
                 imports=imports_data,
                 file_name_hint=local_file_name,
+                platform=self.platform,
             )
             link = out_rel.as_posix()
 
-            found_count, notfound_count = 0, 0
-            if report_result and len(report_result) >= 2:
-                found_count = report_result[0]
-                notfound_count = report_result[1]
+            found_count = stats.found_count if stats else 0
+            notfound_count = stats.notfound_count if stats else 0
+            notfound_names = stats.notfound_names if stats else frozenset()
 
             if self.delete_json:
                 json_path.unlink(missing_ok=True)
 
-            return (link, display, local_ida, file_size, found_count, notfound_count)
+            return (link, display, local_ida, file_size, found_count,
+                    notfound_count, notfound_names)
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_path = {executor.submit(process_one, p): p for p in jobs}
@@ -169,7 +179,8 @@ class SfaHtmlGeneratorWorker(QThread):
                 with lock:
                     completed += 1
                     if result is not None:
-                        link, display, local_ida, f_size, f_found, f_notfound = result
+                        (link, display, local_ida, f_size,
+                         f_found, f_notfound, f_notfound_names) = result
                         report_links.append({
                             "filename": link,
                             "display_name": display,
@@ -180,6 +191,7 @@ class SfaHtmlGeneratorWorker(QThread):
                         if local_ida and not ida_info:
                             ida_info = local_ida
                         total_size_bytes += f_size
+                        global_notfound.update(f_notfound_names)
 
                 if result is not None:
                     self.progress_updated.emit(completed, total, f"{result[1]} — готов")
@@ -198,4 +210,6 @@ class SfaHtmlGeneratorWorker(QThread):
             total_size_bytes=total_size_bytes,
             total_system_modules=total_system_modules,
             total_system_functions=total_system_functions,
+            total_system_notfound=len(global_notfound),
+            platform=self.platform,
         ))

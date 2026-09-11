@@ -200,6 +200,13 @@ class SfaPage(QWidget):
             all_exts.extend(info["exts"])
         return all_exts
 
+    def _selected_platform(self) -> str:
+        """Возвращает ключ выбранной целевой платформы."""
+        checked = self.platform_buttons.checkedButton()
+        if checked and checked in self.radio_to_platform:
+            return self.radio_to_platform[checked]
+        return "Windows"
+
     def _detect_platform_by_files(self, files: List[Path]) -> str:
         if not files:
             return "Windows"
@@ -528,6 +535,7 @@ class SfaPage(QWidget):
             generator, sfa_reports, input_dir,
             delete_json=self.delete_json_check.isChecked(),
             reuse_cache=reuse_cache,
+            platform=self._selected_platform(),
         )
         self.html_worker.progress_updated.connect(self._on_html_progress)
         self.html_worker.error_occurred.connect(self._on_error)
@@ -558,7 +566,8 @@ class SfaPage(QWidget):
                 total_system_modules=result.total_system_modules,
                 total_system_functions=result.total_system_functions,
                 total_system_notfound=result.total_system_notfound,
-                generation_time=gen_time
+                generation_time=gen_time,
+                platform=getattr(result, "platform", "Windows"),
             )
             self.html_in_progress = False
             self.start_btn.setEnabled(True)

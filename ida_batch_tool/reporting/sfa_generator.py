@@ -2,30 +2,35 @@ import json
 import subprocess
 import re
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime
-from typing import Callable, Optional, List as TypedList
+from typing import Callable, Optional, List as TypedList, FrozenSet
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from ida_batch_tool.database.sfa_doc_cache import DocCacheManager
 from ida_batch_tool.database.sfa_function_index import SfaFunctionIndex
-from ida_batch_tool.classifier.windows import WINDOWS_MODULES as _WINDOWS_MODULES
-from ida_batch_tool.reporting.utils import compute_back_link
-from ida_batch_tool.ui.constants import PLATFORM_EXTENSIONS
+from ida_batch_tool.classifier.system_modules import is_system_module, normalize_platform
+from ida_batch_tool.reporting.utils import compute_back_link, compute_executables_size
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-# Нормализованный список системных Win32 DLL (без расширения, нижний регистр)
-_WIN32_SYSTEM_DLLS_NORMALIZED: set[str] = {
-    dll.replace(".dll", "").lower()
-    for dll in _WINDOWS_MODULES
-}
 
-# API Sets — проверяем по префиксу
-_API_SET_PREFIXES: tuple[str, ...] = (
-    "api-ms-win-",
-    "ext-ms-win-",
-)
+@dataclass(frozen=True)
+class SfaReportStats:
+    """Статистика одного отчёта СФ для сводного индексного отчёта.
+
+    Attributes:
+        found_count: функций с найденной документацией.
+        notfound_count: функций без документации.
+        total_count: всего системных функций в отчёте.
+        notfound_names: имена функций без документации (для агрегации
+            уникального количества по всем модулям).
+    """
+    found_count: int
+    notfound_count: int
+    total_count: int
+    notfound_names: FrozenSet[str] = field(default_factory=frozenset)
 
 
 def _decode_bytes(data: bytes) -> str:
@@ -95,20 +100,6 @@ def _sanitize_for_shell(func_name: str) -> str:
     result = result.replace("<", "").replace(">", "")
     result = result.replace("|", "").replace("&", "").replace(";", "")
     return result.strip()
-
-
-def _is_win32_system_module(module_name: str) -> bool:
-    """Проверяет, является ли имя модуля системным Win32 на основе словаря WINDOWS_MODULES."""
-    if not module_name:
-        return False
-    name = module_name.strip().lower()
-    name = Path(name).stem  # убираем расширение
-    if name in _WIN32_SYSTEM_DLLS_NORMALIZED:
-        return True
-    for prefix in _API_SET_PREFIXES:
-        if name.startswith(prefix):
-            return True
-    return False
 
 
 class SfaReportGenerator:
@@ -264,8 +255,14 @@ class SfaReportGenerator:
         reuse_cache: bool = False,
         imports: Optional[list] = None,
         file_name_hint: str = "",
-    ) -> tuple[int, int, int]:
+        platform: str = "Windows",
+    ) -> SfaReportStats:
         """Генерирует HTML-отчёт СФ.
+
+        Отбор функций ведётся по системным библиотекам указанной платформы.
+        Поиск документации через Microsoft Learn выполняется только для
+        Windows: база Microsoft Learn описывает Win32 API, поэтому для
+        Linux/macOS вызов внешнего поиска не даёт корректной документации.
 
         Args:
             json_path: путь к .export.json (используется для адресации).
@@ -276,10 +273,18 @@ class SfaReportGenerator:
             reuse_cache: если True — не вызывать npx, только mslearn_cache.db.
             imports: список импортов (если None — читается из json_path).
             file_name_hint: отображаемое имя файла (если imports передан).
+            platform: целевая платформа анализа (ключ ``PLATFORM_EXTENSIONS``).
+
+        Returns:
+            Статистика отчёта, включая имена недокументированных функций.
         """
         if reports_dir:
             self._init_log(reports_dir)
         self._log(f"[INFO] Processing {json_path}")
+
+        platform = normalize_platform(platform)
+        # Документация Microsoft Learn применима только к Windows API.
+        docs_available = platform == "Windows"
 
         if imports is not None:
             # Reuse-режим: импорты переданы из index БД
@@ -315,9 +320,9 @@ class SfaReportGenerator:
                 continue
             module = imp.get("module", "") or ""
 
-            # Фильтр 1: только системные Win32 DLL
-            if not _is_win32_system_module(module):
-                self._log(f"[DEBUG] {func_name} ({module}) — не Win32 системная DLL")
+            # Фильтр 1: только системные библиотеки выбранной платформы
+            if not is_system_module(module, platform):
+                self._log(f"[DEBUG] {func_name} ({module}) — не системная библиотека ({platform})")
                 skipped += 1
                 continue
 
@@ -338,7 +343,9 @@ class SfaReportGenerator:
             # Пытаемся взять dll_name из импорта JSON-экспорта IDA
             dll_name = imp.get("module", "") or "—"
 
-            # Получаем результаты поиска (из кэша или Microsoft Learn)
+            # Получаем результаты поиска (из кэша или Microsoft Learn).
+            # Для не-Windows платформ внешний поиск не выполняется: Microsoft
+            # Learn описывает Win32 API и не даёт корректной документации.
             results = []
             found = False
             if self._doc_cache and self._doc_cache.has_function(func_name):
@@ -352,6 +359,8 @@ class SfaReportGenerator:
             elif reuse_cache:
                 # Режим reuse: не вызываем npx, функция остаётся not-found
                 self._log(f"[INFO] {func_name} не в кэше (reuse_cache=True) — пропуск")
+            elif not docs_available:
+                self._log(f"[INFO] {func_name}: поиск документации недоступен для {platform}")
             else:
                 results = self._search_function(func_name)
                 if results:
@@ -408,14 +417,23 @@ class SfaReportGenerator:
             error=None,
             back_link=back_link,
             marked_js=self._marked_js,
+            platform=platform,
+            docs_available=docs_available,
         )
         output_html.write_text(html, encoding="utf-8")
         self._log(f"[INFO] Report saved to {output_html}")
 
         # Возвращаем статистику для индексного отчёта
         found_count = sum(1 for sc in system_calls if sc["found"])
-        notfound_count = len(system_calls) - found_count
-        return found_count, notfound_count, len(system_calls)
+        notfound_names = frozenset(
+            sc["name"] for sc in system_calls if not sc["found"]
+        )
+        return SfaReportStats(
+            found_count=found_count,
+            notfound_count=len(system_calls) - found_count,
+            total_count=len(system_calls),
+            notfound_names=notfound_names,
+        )
 
     def _generate_error_report(self, file_name: str, output_html: Path, error_msg: str, reports_dir: Path = None) -> None:
         if reports_dir:
@@ -433,6 +451,8 @@ class SfaReportGenerator:
             error=error_msg,
             back_link=back_link,
             marked_js=self._marked_js,
+            platform="Windows",
+            docs_available=True,
         )
         output_html.write_text(html, encoding="utf-8")
         self._log(f"[INFO] Error report saved to {output_html}")
@@ -443,31 +463,20 @@ class SfaReportGenerator:
                        total_system_modules: int = 0,
                        total_system_functions: int = 0,
                        total_system_notfound: int = 0,
-                       generation_time: str = "") -> Path:
+                       generation_time: str = "",
+                       platform: str = "Windows") -> Path:
         if not generation_time:
             generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Пересчитываем размер: суммируем stat() по всем исполняемым файлам
-        # в input_dir, отфильтрованным по расширениям из PLATFORM_EXTENSIONS
-        computed_size = 0
-        try:
-            all_exts: set[str] = set()
-            for info in PLATFORM_EXTENSIONS.values():
-                all_exts.update(info["exts"])
-            input_path = Path(input_dir)
-            if input_path.is_dir():
-                for ext in all_exts:
-                    if not ext:
-                        continue
-                    for f in input_path.rglob(f"*{ext}"):
-                        if f.is_file():
-                            computed_size += f.stat().st_size
-        except Exception:
-            computed_size = 0
-        # Если вручную переданный размер не 0 и вычисленный 0 — используем переданный
-        total_size_bytes = computed_size if computed_size > 0 else total_size_bytes
+        # Размер считаем только по исполняемым модулям. Приоритет — значение,
+        # накопленное воркером по реально проанализированным файлам (оно точнее
+        # всего соответствует числу файлов в отчёте). Пересчёт по директории
+        # используется лишь как запасной вариант.
+        if total_size_bytes <= 0:
+            total_size_bytes = compute_executables_size(input_dir)
         data = {
             "input_dir": str(input_dir),
+            "platform": normalize_platform(platform),
             "total_files": total_files,
             "total_size_bytes": total_size_bytes,
             "total_system_modules": total_system_modules,

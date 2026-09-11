@@ -73,7 +73,7 @@
     <div class="app-header">
         <div><a class="btn-back" href="{{ back_link }}">← Назад</a></div>
         <div class="title">{{ file_name }}</div>
-        <div></div>
+        <div class="title" style="font-weight:400;color:var(--text-secondary);">{{ platform }}</div>
     </div>
 
     {% set found_calls = system_calls | selectattr("found", "equalto", true) | list %}
@@ -86,6 +86,14 @@
         <button class="filter-btn" data-filter="notfound" id="filter-notfound">Без документации <span class="count">{{ notfound_calls|length }}</span></button>
         <button class="filter-clear" id="filter-clear" style="display:none;">✕ сбросить</button>
     </div>
+
+    {% if not docs_available %}
+    <p class="empty-state">
+        Для платформы {{ platform }} внешний поиск документации Microsoft Learn
+        не выполняется: эта база описывает Win32 API. Список системных функций
+        ниже приведён без документации.
+    </p>
+    {% endif %}
 
     <table id="sfa-table">
         <thead>

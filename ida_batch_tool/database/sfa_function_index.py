@@ -1,8 +1,12 @@
-"""Индекс системных Win32 функций: предварительный проход по JSON-файлам.
+"""Индекс системных функций: предварительный проход по JSON-файлам.
 
-Строит SQLite-БД уникальных функций, относящихся к системным DLL
-по классификатору WINDOWS_MODULES. Используется для отсева неподходящих
-функций перед вызовом npx @microsoft/learn-cli search.
+Строит SQLite-БД уникальных функций, относящихся к системным библиотекам
+выбранной платформы (по словарям классификатора). Используется для отсева
+неподходящих функций перед обращением к базе знаний.
+
+Платформа анализа сохраняется в таблице ``meta``, поэтому режим
+перегенерации HTML из кэша использует тот же набор словарей, что и
+исходный анализ.
 """
 from __future__ import annotations
 
@@ -12,66 +16,30 @@ import logging
 from pathlib import Path
 from typing import List, Callable, Optional
 
-from ida_batch_tool.classifier.windows import WINDOWS_MODULES as _WINDOWS_MODULES
-from ida_batch_tool.reporting.utils import normalize_display_name
+from ida_batch_tool.classifier.categories import get_module_category
+from ida_batch_tool.classifier.naming import normalize_module_name
+from ida_batch_tool.classifier.system_modules import (
+    is_system_module,
+    normalize_platform,
+)
 
 logger = logging.getLogger(__name__)
 
-# Нормализованный набор системных DLL (нижний регистр, без .dll)
-_WIN32_SYSTEM_MODULES_NORMALIZED: set[str] = {
-    dll.replace(".dll", "").lower()
-    for dll in _WINDOWS_MODULES
-}
-
-# Маппинг внутренних имён переменных модуля windows.py → категории
-_CATEGORY_NAMES = {
-    "_WINDOWS_HAL": "HAL",
-    "_WINDOWS_NATIVE_API": "Native API",
-    "_WINDOWS_KERNEL_SUBSYSTEM": "Kernel subsystem",
-    "_WINDOWS_USER_SUBSYSTEM": "User subsystem",
-    "_WINDOWS_SECURITY_CRYPTO": "Security/Crypto",
-    "_WINDOWS_NETWORK": "Network",
-    "_WINDOWS_GRAPHICS": "Graphics",
-    "_WINDOWS_MULTIMEDIA": "Multimedia",
-    "_WINDOWS_RUNTIME": "Runtime libraries",
-    "_WINDOWS_DOTNET": ".NET",
-    "_WINDOWS_SYSTEM_SERVICES": "System services",
-    "_WINDOWS_USB_DEVICE": "USB/HID",
-    "_WINDOWS_API_SETS": "API Sets",
-    "_WINDOWS_REMOTE": "Remote/Virtualization",
-    "_WINDOWS_DATA_SERVICES": "ODBC/ADSI",
-}
-
-# Reverse-map: dll_name(lower, no-ext) → category (заполняется лениво)
-_DLL_CATEGORY_MAP: dict[str, str] = {}
-
-
-def _build_dll_category_map() -> dict[str, str]:
-    """Строит reverse-map: dll_name(lower,no-ext) → category_name.
-
-    Пробегает по внутренним словарям модуля windows.py, чтобы определить
-    категорию каждой DLL. Результат кэшируется.
-    """
-    if _DLL_CATEGORY_MAP:
-        return _DLL_CATEGORY_MAP
-
-    import ida_batch_tool.classifier.windows as _win_mod
-
-    for var_name, category in _CATEGORY_NAMES.items():
-        dll_dict = getattr(_win_mod, var_name, {})
-        if not isinstance(dll_dict, dict):
-            continue
-        for dll_name in dll_dict:
-            key = dll_name.replace(".dll", "").lower()
-            _DLL_CATEGORY_MAP[key] = category
-
-    return _DLL_CATEGORY_MAP
+# Значение по умолчанию, если платформа не задана (обратная совместимость).
+_DEFAULT_PLATFORM = "Windows"
 
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS system_functions (
     func_name TEXT PRIMARY KEY,
     module_name TEXT NOT NULL,
+    module_key TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS system_modules (
+    module_key TEXT PRIMARY KEY,
+    module_name TEXT NOT NULL DEFAULT '',
     category TEXT NOT NULL DEFAULT ''
 );
 
@@ -85,15 +53,50 @@ CREATE TABLE IF NOT EXISTS file_imports (
     PRIMARY KEY (json_path, func_name)
 );
 CREATE INDEX IF NOT EXISTS idx_fi_jp ON file_imports(json_path);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 """
 
 
-def _migrate_file_size(conn: sqlite3.Connection) -> None:
-    """Добавляет колонку file_size в file_imports, если её нет (старые БД)."""
-    cur = conn.execute("PRAGMA table_info(file_imports)")
-    cols = [row[1] for row in cur.fetchall()]
-    if "file_size" not in cols:
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Добавляет отсутствующие колонки/таблицы в БД старых версий."""
+    def _columns(table: str) -> list[str]:
+        cur = conn.execute(f"PRAGMA table_info({table})")
+        return [row[1] for row in cur.fetchall()]
+
+    if "file_size" not in _columns("file_imports"):
         conn.execute("ALTER TABLE file_imports ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0")
+
+    if "module_key" not in _columns("system_functions"):
+        conn.execute("ALTER TABLE system_functions ADD COLUMN module_key TEXT NOT NULL DEFAULT ''")
+        rows = conn.execute("SELECT func_name, module_name FROM system_functions").fetchall()
+        for func_name, module_name in rows:
+            conn.execute(
+                "UPDATE system_functions SET module_key = ? WHERE func_name = ?",
+                (normalize_module_name(module_name or ""), func_name),
+            )
+
+    # Заполняем system_modules из уже собранных функций (старые БД).
+    if conn.execute("SELECT COUNT(*) FROM system_modules").fetchone()[0] == 0:
+        rows = conn.execute(
+            "SELECT DISTINCT module_key, module_name, category FROM system_functions "
+            "WHERE module_key <> ''"
+        ).fetchall()
+        for module_key, module_name, category in rows:
+            conn.execute(
+                "INSERT OR IGNORE INTO system_modules "
+                "(module_key, module_name, category) VALUES (?, ?, ?)",
+                (module_key, module_name, category),
+            )
+
+    # Старые БД собирались только для Windows.
+    conn.execute(
+        "INSERT OR IGNORE INTO meta (key, value) VALUES ('platform', ?)",
+        (_DEFAULT_PLATFORM,),
+    )
 
 
 class SfaFunctionIndex:
@@ -119,44 +122,56 @@ class SfaFunctionIndex:
         json_files: List[Path],
         db_path: str | Path,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        platform: str = _DEFAULT_PLATFORM,
     ) -> "SfaFunctionIndex":
         """Сканирует JSON-файлы, собирает уникальные системные функции.
 
         Для каждого JSON читает ``imports[].module`` и ``imports[].name``.
-        Если module относится к системной DLL (по ``WINDOWS_MODULES``),
-        пара (name, module) сохраняется в SQLite-индекс.
+        Если module относится к системной библиотеке указанной платформы
+        (по словарям классификатора), пара (name, module) сохраняется
+        в SQLite-индекс.
 
         Args:
             json_files: список путей к .export.json.
             db_path: путь к файлу SQLite БД (будет создан).
             progress_callback: (current, total) после каждого файла.
+            platform: целевая платформа анализа. По умолчанию Windows
+                (обратная совместимость с прежним поведением).
 
         Returns:
             Экземпляр SfaFunctionIndex с заполненной БД.
         """
         instance = cls(db_path)
-        instance._build(json_files, progress_callback)
+        instance._build(json_files, progress_callback, platform)
         return instance
 
     def _build(
         self,
         json_files: List[Path],
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        platform: str = _DEFAULT_PLATFORM,
     ) -> None:
         """Внутренний метод сборки индекса."""
         total = len(json_files)
+        platform = normalize_platform(platform)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
         conn = sqlite3.connect(str(self._db_path))
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA_SQL)
-            _migrate_file_size(conn)
+            _migrate_schema(conn)
 
-            category_map = _build_dll_category_map()
+            # Пересборка всегда актуализирует платформу и результаты.
+            conn.execute("DELETE FROM system_functions")
+            conn.execute("DELETE FROM system_modules")
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('platform', ?)",
+                (platform,),
+            )
 
-            # Множество для дедупликации: (func_name, module_name_lower)
-            seen: set[tuple[str, str]] = set()
+            # Множество для дедупликации функций (одна функция — один раз).
+            seen: set[str] = set()
 
             for idx, json_path in enumerate(json_files):
                 if not json_path.exists():
@@ -193,12 +208,11 @@ class SfaFunctionIndex:
                     if not func_name or not module:
                         continue
 
-                    # Нормализуем имя модуля
-                    mod_clean = normalize_display_name(module).lower()
-                    mod_stem = Path(mod_clean).stem
-
-                    # Проверяем по набору системных DLL — только для system_functions
-                    is_system = mod_stem in _WIN32_SYSTEM_MODULES_NORMALIZED
+                    # Канонический ключ модуля: без расширения, нижний регистр.
+                    # Позволяет не считать KERNEL32.dll и kernel32.dll разными.
+                    module_key = normalize_module_name(module)
+                    if not module_key:
+                        continue
 
                     # Всегда сохраняем импорт в file_imports (для перегенерации HTML)
                     conn.execute(
@@ -208,23 +222,30 @@ class SfaFunctionIndex:
                         (json_path_str, file_name, func_name, module, address, file_size),
                     )
 
-                    # В system_functions — только системные
-                    if not is_system:
+                    # Системность определяют словари выбранной платформы.
+                    if not is_system_module(module, platform):
                         continue
 
-                    # Дедупликация
-                    key = (func_name, mod_stem)
-                    if key in seen:
-                        continue
-                    seen.add(key)
+                    category = get_module_category(module)
 
-                    # Определяем категорию DLL
-                    category = category_map.get(mod_stem, "")
+                    # Учёт системной библиотеки независимо от дедупликации
+                    # функций: модуль должен попасть в счётчик, даже если все
+                    # его функции совпали по имени с функциями других модулей.
+                    conn.execute(
+                        "INSERT OR IGNORE INTO system_modules "
+                        "(module_key, module_name, category) VALUES (?, ?, ?)",
+                        (module_key, module, category),
+                    )
+
+                    # Дедупликация функций: одна функция учитывается один раз.
+                    if func_name in seen:
+                        continue
+                    seen.add(func_name)
 
                     conn.execute(
                         "INSERT OR IGNORE INTO system_functions "
-                        "(func_name, module_name, category) VALUES (?, ?, ?)",
-                        (func_name, module, category),
+                        "(func_name, module_name, module_key, category) VALUES (?, ?, ?, ?)",
+                        (func_name, module, module_key, category),
                     )
 
                 if progress_callback:
@@ -243,10 +264,17 @@ class SfaFunctionIndex:
         )
 
     def open_readonly(self) -> None:
-        """Открывает read-only SQLite-соединение для уже существующей БД."""
+        """Открывает read-only SQLite-соединение для уже существующей БД.
+
+        Если БД создана старой версией (нет таблицы ``system_modules`` или
+        колонки ``module_key``), схема сначала доводится до актуальной:
+        миграция выполняется в отдельном writable-соединении, после чего
+        БД открывается только для чтения.
+        """
         if not self._db_path.exists():
             self._available = False
             return
+        self._ensure_schema()
         try:
             conn = sqlite3.connect(f"file:{self._db_path.resolve()}?mode=ro", uri=True)
             conn.execute("PRAGMA query_only=1")
@@ -255,6 +283,23 @@ class SfaFunctionIndex:
         except Exception as e:
             logger.warning("Cannot open function index: %s", e)
             self._available = False
+
+    def _ensure_schema(self) -> None:
+        """Приводит схему существующей БД к актуальной версии (если нужно)."""
+        try:
+            conn = sqlite3.connect(str(self._db_path))
+        except Exception as e:
+            logger.warning("Cannot open function index for migration: %s", e)
+            return
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(_SCHEMA_SQL)
+            _migrate_schema(conn)
+            conn.commit()
+        except Exception as e:
+            logger.warning("Schema migration failed: %s", e)
+        finally:
+            conn.close()
 
     # ─── Фаза запросов ──────────────────────────────────────────────
 
@@ -360,16 +405,44 @@ class SfaFunctionIndex:
 
     @property
     def total_modules(self) -> int:
-        """Количество уникальных системных DLL в индексе."""
+        """Количество уникальных системных библиотек в индексе.
+
+        Уникальность определяется каноническим ключом модуля
+        (``normalize_module_name``), поэтому ``KERNEL32.dll`` и
+        ``kernel32.dll`` считаются одной библиотекой.
+
+        Для БД, созданных старой версией (без таблицы ``system_modules``),
+        используется резервный подсчёт по ``system_functions``.
+        """
         if not self._available or not self._conn:
             return 0
+        for query in (
+            "SELECT COUNT(*) FROM system_modules",
+            "SELECT COUNT(DISTINCT module_key) FROM system_functions WHERE module_key <> ''",
+            "SELECT COUNT(DISTINCT module_name) FROM system_functions",
+        ):
+            try:
+                return self._conn.execute(query).fetchone()[0]
+            except Exception:
+                continue
+        return 0
+
+    @property
+    def platform(self) -> str:
+        """Платформа, для которой построен индекс.
+
+        Читается из таблицы ``meta``; для старых БД возвращается Windows
+        (индекс исторически собирался только по словарю Windows).
+        """
+        if not self._available or not self._conn:
+            return _DEFAULT_PLATFORM
         try:
-            cur = self._conn.execute(
-                "SELECT COUNT(DISTINCT module_name) FROM system_functions"
-            )
-            return cur.fetchone()[0]
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'platform'"
+            ).fetchone()
+            return normalize_platform(row[0]) if row and row[0] else _DEFAULT_PLATFORM
         except Exception:
-            return 0
+            return _DEFAULT_PLATFORM
 
     def close(self) -> None:
         """Закрывает соединение с БД."""
