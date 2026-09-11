@@ -17,7 +17,8 @@ class SfaHtmlGeneratorWorker(QThread):
 
     def __init__(self, json_files: dict, generator: SfaReportGenerator,
                  reports_dir: Path, input_dir: Path, delete_json: bool,
-                 reuse_cache: bool = False, platform: str = "Windows"):
+                 reuse_cache: bool = False, platform: str = "Windows",
+                 manpages_db_path: Optional[Path] = None):
         super().__init__()
         self.json_files = json_files
         self.generator = generator
@@ -26,6 +27,7 @@ class SfaHtmlGeneratorWorker(QThread):
         self.delete_json = delete_json
         self.reuse_cache = reuse_cache
         self.platform = platform
+        self.manpages_db_path = manpages_db_path
 
     def run(self):
         jobs: List[Path] = [p for p in self.json_files if p.exists() or self.reuse_cache]
@@ -152,6 +154,7 @@ class SfaHtmlGeneratorWorker(QThread):
                 imports=imports_data,
                 file_name_hint=local_file_name,
                 platform=self.platform,
+                manpages_db_path=self.manpages_db_path,
             )
             link = out_rel.as_posix()
 

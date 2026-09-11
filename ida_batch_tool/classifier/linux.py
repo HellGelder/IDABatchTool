@@ -5,11 +5,47 @@
 2. Группы соответствуют структуре LSB (Linux Standard Base), glibc,
    freedesktop.org, systemd, X.Org и другим компонентам Linux.
 3. Описания — на русском, подробные, технически точные.
+
+Классификация выверена по официальным источникам (2026-09):
+* LSB 5.0 Core / LSB Desktop — обязательные библиотеки стандарта
+  (refspecs.linuxfoundation.org/LSB_5.0.0/). Стандарт не обновляется
+  с 2015 года, поэтому используется как нижняя граница, а не как
+  единственный критерий.
+* Состав пакета glibc (Debian libc6, glibc manual) — какие soname
+  поставляет именно glibc, а какие лишь используют её ABI.
+* man-pages (kernel.org/pub/linux/docs/man-pages/) — проект документирует
+  API glibc, системные вызовы и POSIX. Библиотеки, для которых man-pages
+  дают страницы, отмечены в MANPAGES_DOCUMENTED_LIBS.
 """
 
+# Библиотеки, для которых man-pages содержат API-страницы (man2/man3).
+# Используется для отличия «man-страница отсутствует» от «функция
+# недокументирована» при интеграции man-pages в отчёты анализа СФ.
+MANPAGES_DOCUMENTED_LIBS = {
+    "libc.so.6",        # Standard C library (man3: printf, malloc, ...)
+    "libm.so.6",        # Math library (man3: sin, sqrt, pow, ...)
+    "libpthread.so.0",  # POSIX threads library (man3: pthread_create, ...)
+    "librt.so.1",       # Real-time library (man3: aio_*, mq_*, ...)
+    "libdl.so.2",       # Dynamic linking library (man3: dlopen, dlsym, ...)
+    "libutil.so.1",     # System utilities library (man3: openpty, ...)
+    "libcrypt.so.1",    # Password hashing library (man3: crypt, ...)
+    "libcrypt.so.2",    # libxcrypt — надмножество libcrypt (man3: crypt, ...)
+    "libresolv.so.2",   # Resolver library (man3: resolver, ...)
+    "libanl.so.1",      # Asynchronous name lookup (man3: getaddrinfo_a)
+    "libnsl.so.1",      # Network services library (man3: xdr_*, ...)
+    "libnuma.so.1",     # NUMA policy library (man3: numa.3, man2: mbind)
+    "libkeyutils.so.1", # Key management (man2: add_key, keyctl, request_key)
+    "libaio.so.1",      # Asynchronous I/O (man3: io_setup, io_submit)
+    "libBrokenLocale.so.1",
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
-# 1. CORE — GNU C Library (glibc) и базовые компоненты пользовательского
-#    пространства, специфицированные в LSB (Linux Standard Base).
+# 1. CORE — GNU C Library (glibc) и подключённые NSS-провайдеры.
+#    Собственно glibc поставляет: libc, libm, libmvec, libpthread, libdl,
+#    librt, libresolv, libnsl, libutil, libanl, libBrokenLocale, libpcprofile,
+#    libnss_compat/files/dns/hesiod/db, ld-linux*. Прочие libnss_* приходят
+#    из отдельных проектов (systemd, SSSD, nss-mdns, nss-pam-ldapd) и
+#    отмечены в своих описаниях.
 # ═══════════════════════════════════════════════════════════════════════════
 
 _LINUX_CORE_LIBS = {
@@ -770,6 +806,13 @@ _LINUX_CRYPTO = {
 # ═══════════════════════════════════════════════════════════════════════════
 
 _LINUX_SYSTEM = {
+    "libaio.so.1": (
+        "Linux Asynchronous I/O Library — интерфейс к "
+        "асинхронному вводу/выводу ядра Linux (io_setup, "
+        "io_submit, io_getevents). Позволяет инициировать "
+        "несколько операций I/O параллельно без блокировки "
+        "потоков. Документируется в man-pages (aio.7, io_submit.2)."
+    ),
     "libsystemd.so.0": (
         "Systemd Client Library — интерфейс для взаимодействия "
         "с системным менеджером systemd. Управление службами, "

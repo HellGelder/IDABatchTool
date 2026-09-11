@@ -10,6 +10,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from ida_batch_tool.database.sfa_doc_cache import DocCacheManager
 from ida_batch_tool.database.sfa_function_index import SfaFunctionIndex
+from ida_batch_tool.database.man_pages_db import ManPagesDatabase
 from ida_batch_tool.classifier.system_modules import is_system_module, normalize_platform
 from ida_batch_tool.reporting.utils import compute_back_link, compute_executables_size
 
@@ -111,6 +112,7 @@ class SfaReportGenerator:
         self.report_template = self.env.get_template("sfa_report.html")
         self.index_template = self.env.get_template("sfa_index.html")
         self._doc_cache: DocCacheManager | None = None
+        self._man_pages: ManPagesDatabase | None = None
         self._log_file = None
         self._npx_path = None
         # Загружаем marked.min.js один раз
@@ -138,6 +140,35 @@ class SfaReportGenerator:
         if self._log_file:
             self._log_file.write(message + "\n")
             self._log_file.flush()
+
+    def _open_manpages(
+        self,
+        reports_dir: Optional[Path],
+        manpages_db_path: Optional[Path],
+    ) -> Optional[ManPagesDatabase]:
+        """Открывает БД man-pages для платформы Linux/Android.
+
+        Порядок поиска: явно переданный путь, затем ``manpages.db`` рядом
+        с папкой отчётов, затем ``manpages.db`` в родительской папке.
+        """
+        candidates: list[Path] = []
+        if manpages_db_path:
+            candidates.append(Path(manpages_db_path))
+        if reports_dir:
+            candidates.append(Path(reports_dir) / "manpages.db")
+            candidates.append(Path(reports_dir).parent / "manpages.db")
+
+        for candidate in candidates:
+            if candidate.is_file():
+                db = ManPagesDatabase(candidate)
+                if db.open():
+                    self._log(
+                        f"[INFO] man-pages DB: {candidate} "
+                        f"(функций: {db.count()}, версия: {db.version()})"
+                    )
+                    return db
+                db.close()
+        return None
 
     def close_log(self):
         if self._log_file:
@@ -256,13 +287,16 @@ class SfaReportGenerator:
         imports: Optional[list] = None,
         file_name_hint: str = "",
         platform: str = "Windows",
+        manpages_db_path: Optional[Path] = None,
     ) -> SfaReportStats:
         """Генерирует HTML-отчёт СФ.
 
         Отбор функций ведётся по системным библиотекам указанной платформы.
-        Поиск документации через Microsoft Learn выполняется только для
-        Windows: база Microsoft Learn описывает Win32 API, поэтому для
-        Linux/macOS вызов внешнего поиска не даёт корректной документации.
+        Источник документации зависит от платформы:
+
+        * Windows — Microsoft Learn (``npx @microsoft/learn-cli``);
+        * Linux / Android — локальная БД man-pages (``manpages.db``),
+          подготовленная офлайн-импортёром. Сеть при генерации не нужна.
 
         Args:
             json_path: путь к .export.json (используется для адресации).
@@ -274,6 +308,8 @@ class SfaReportGenerator:
             imports: список импортов (если None — читается из json_path).
             file_name_hint: отображаемое имя файла (если imports передан).
             platform: целевая платформа анализа (ключ ``PLATFORM_EXTENSIONS``).
+            manpages_db_path: путь к БД man-pages (для Linux/Android). Если не
+                задан, ищется ``manpages.db`` рядом с папкой отчётов.
 
         Returns:
             Статистика отчёта, включая имена недокументированных функций.
@@ -283,8 +319,21 @@ class SfaReportGenerator:
         self._log(f"[INFO] Processing {json_path}")
 
         platform = normalize_platform(platform)
-        # Документация Microsoft Learn применима только к Windows API.
-        docs_available = platform == "Windows"
+        # Источник документации определяется платформой.
+        use_manpages = platform == "Linux / Android"
+
+        if use_manpages:
+            self._man_pages = self._open_manpages(reports_dir, manpages_db_path)
+            docs_available = bool(self._man_pages and self._man_pages.available())
+            if not docs_available:
+                self._log(
+                    "[WARN] БД man-pages не найдена — документация Linux недоступна. "
+                    "Выполните синхронизацию man-pages в настройках."
+                )
+        else:
+            self._man_pages = None
+            # Документация Microsoft Learn применима только к Windows API.
+            docs_available = platform == "Windows"
 
         if imports is not None:
             # Reuse-режим: импорты переданы из index БД
@@ -343,9 +392,9 @@ class SfaReportGenerator:
             # Пытаемся взять dll_name из импорта JSON-экспорта IDA
             dll_name = imp.get("module", "") or "—"
 
-            # Получаем результаты поиска (из кэша или Microsoft Learn).
-            # Для не-Windows платформ внешний поиск не выполняется: Microsoft
-            # Learn описывает Win32 API и не даёт корректной документации.
+            # Получаем результаты поиска (из кэша, man-pages или Microsoft Learn).
+            # Для Linux/Android документация берётся из локальной БД man-pages;
+            # для Windows — из Microsoft Learn (внешний вызов npx).
             results = []
             found = False
             if self._doc_cache and self._doc_cache.has_function(func_name):
@@ -356,6 +405,18 @@ class SfaReportGenerator:
                     dll_name = cached_dll
                 found = bool(results)
                 self._log(f"[INFO] Using cached results for {func_name} (count: {len(results)})")
+            elif use_manpages:
+                # man-pages: локальный поиск, без сети.
+                if self._man_pages and self._man_pages.available():
+                    page = self._man_pages.get_page(func_name)
+                    if page:
+                        results = [page]
+                        found = True
+                        self._log(f"[INFO] man-pages: {func_name} → {page['title']}")
+                    else:
+                        self._log(f"[INFO] man-pages: страница для {func_name} не найдена")
+                else:
+                    self._log(f"[INFO] {func_name}: БД man-pages недоступна")
             elif reuse_cache:
                 # Режим reuse: не вызываем npx, функция остаётся not-found
                 self._log(f"[INFO] {func_name} не в кэше (reuse_cache=True) — пропуск")

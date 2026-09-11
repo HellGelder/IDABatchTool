@@ -536,6 +536,7 @@ class SfaPage(QWidget):
             delete_json=self.delete_json_check.isChecked(),
             reuse_cache=reuse_cache,
             platform=self._selected_platform(),
+            manpages_db_path=sfa_reports / "manpages.db",
         )
         self.html_worker.progress_updated.connect(self._on_html_progress)
         self.html_worker.error_occurred.connect(self._on_error)

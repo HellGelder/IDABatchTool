@@ -120,11 +120,37 @@ class SettingsPage(QWidget):
         check_btn_row.addWidget(self._check_utils_btn)
         utils_layout.addLayout(check_btn_row)
 
+        # --- Группа документации man-pages (Linux) ---
+        man_group = QGroupBox("Документация man-pages (Linux)")
+        man_layout = QVBoxLayout(man_group)
+        man_layout.setSpacing(8)
+
+        man_hint = QLabel(
+            "Загружает официальный архив man-pages и сохраняет его локально. "
+            "После этого документация Linux-функций доступна офлайн."
+        )
+        man_hint.setWordWrap(True)
+        man_hint.setStyleSheet("color: #8e8e93; font-size: 12px;")
+        man_layout.addWidget(man_hint)
+
+        self._man_status = QLabel("Статус: не проверено")
+        self._man_status.setStyleSheet("font-size: 12px;")
+        man_layout.addWidget(self._man_status)
+
+        man_btn_row = QHBoxLayout()
+        self._man_check_btn = QPushButton("Проверить")
+        self._man_sync_btn = QPushButton("Скачать и импортировать")
+        man_btn_row.addWidget(self._man_check_btn)
+        man_btn_row.addWidget(self._man_sync_btn)
+        man_btn_row.addStretch()
+        man_layout.addLayout(man_btn_row)
+
         # Добавляем все группы
         main_layout.addWidget(ida_group)
         main_layout.addWidget(bindiff_group)
         main_layout.addWidget(theme_group)
         main_layout.addWidget(utils_group)
+        main_layout.addWidget(man_group)
 
         # Кнопка сохранения
         btn_layout = QHBoxLayout()
@@ -142,6 +168,8 @@ class SettingsPage(QWidget):
         self.auto_bindiff_btn.clicked.connect(self._autodetect_bindiff)
         self.save_btn.clicked.connect(self._save_settings)
         self._check_utils_btn.clicked.connect(self._check_utilities)
+        self._man_check_btn.clicked.connect(self._check_manpages)
+        self._man_sync_btn.clicked.connect(self._sync_manpages)
 
         self.theme_light_btn.clicked.connect(lambda: self._switch_theme("light"))
         self.theme_dark_btn.clicked.connect(lambda: self._switch_theme("dark"))
@@ -329,3 +357,63 @@ class SettingsPage(QWidget):
             return
         self.bindiff_edit.setText(found)
         QMessageBox.information(self, "Найдено", f"BinDiff найден:\n{found}")
+
+    # ─── man-pages ──────────────────────────────────────────────────
+
+    def _manpages_db_path(self) -> Path:
+        """Путь к БД man-pages: папка отчётов рядом с входной директорией."""
+        from ida_batch_tool.config.loader import get_default_inputdir
+        from ida_batch_tool.database.man_pages_sync import get_manpages_db_path
+
+        input_dir = Path(self.cfg.get("default_inputdir") or get_default_inputdir())
+        reports_root = input_dir / "SFAReports"
+        return get_manpages_db_path(reports_root)
+
+    def _check_manpages(self) -> None:
+        """Показывает состояние локальной БД man-pages."""
+        from ida_batch_tool.database.man_pages_db import ManPagesDatabase
+
+        db_path = self._manpages_db_path()
+        if not db_path.is_file():
+            self._man_status.setText(
+                f"Статус: база не найдена ({db_path}). Нажмите «Скачать и импортировать»."
+            )
+            return
+        db = ManPagesDatabase(db_path)
+        if db.open():
+            self._man_status.setText(
+                f"Статус: база найдена — {db.count()} функций, "
+                f"man-pages {db.version()}, {db_path.stat().st_size / 1024 / 1024:.1f} МБ"
+            )
+            db.close()
+        else:
+            self._man_status.setText(f"Статус: файл есть, но не читается ({db_path}).")
+
+    def _sync_manpages(self) -> None:
+        """Запускает фоновую загрузку и импорт man-pages."""
+        from ida_batch_tool.database.man_pages_sync import ManPagesSyncWorker
+
+        if getattr(self, "_man_worker", None) is not None and self._man_worker.isRunning():
+            QMessageBox.information(self, "Синхронизация", "Загрузка уже выполняется.")
+            return
+
+        db_path = self._manpages_db_path()
+        self._man_sync_btn.setEnabled(False)
+        self._man_check_btn.setEnabled(False)
+        self._man_status.setText("Статус: загрузка архива man-pages…")
+
+        worker = ManPagesSyncWorker(db_path)
+        worker.progress.connect(lambda msg, pct: self._man_status.setText(f"Статус: {msg} ({pct}%)"))
+        worker.error.connect(lambda msg: self._man_status.setText(f"Статус: ошибка — {msg}"))
+        worker.finished.connect(self._on_manpages_finished)
+        self._man_worker = worker
+        worker.start()
+
+    def _on_manpages_finished(self, success: bool, message: str) -> None:
+        self._man_sync_btn.setEnabled(True)
+        self._man_check_btn.setEnabled(True)
+        if success:
+            QMessageBox.information(self, "Готово", f"Документация man-pages импортирована:\n{message}")
+            self._check_manpages()
+        else:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось импортировать man-pages:\n{message}")

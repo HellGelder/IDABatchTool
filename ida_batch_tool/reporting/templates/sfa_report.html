@@ -89,9 +89,13 @@
 
     {% if not docs_available %}
     <p class="empty-state">
-        Для платформы {{ platform }} внешний поиск документации Microsoft Learn
-        не выполняется: эта база описывает Win32 API. Список системных функций
-        ниже приведён без документации.
+        {% if platform == "Linux / Android" %}
+        База документации man-pages не найдена. Выполните синхронизацию
+        man-pages в настройках — после этого функции получат документацию.
+        {% else %}
+        Для платформы {{ platform }} внешний поиск документации
+        не выполняется. Список системных функций ниже приведён без документации.
+        {% endif %}
     </p>
     {% endif %}
 
@@ -100,7 +104,7 @@
             <tr>
                 <th style="width:160px;">Библиотека</th>
                 <th style="width:220px;">Функция</th>
-                <th>Информация (Microsoft Learn)</th>
+                <th>Информация ({{ 'man-pages' if platform == 'Linux / Android' else 'Microsoft Learn' }})</th>
             </tr>
         </thead>
         <tbody id="sfa-tbody">
@@ -113,6 +117,11 @@
                     {% if call.search_results and call.search_results|length > 0 %}
                     {% set result = call.search_results[0] %}
                     <div class="markdown-content" id="md-{{ loop.index0 }}">Загрузка...</div>
+                    {% if result.url %}
+                    <div style="margin-top:6px;font-size:12px;">
+                        <a href="{{ result.url }}" target="_blank" rel="noopener">Источник: {{ result.title }}</a>
+                    </div>
+                    {% endif %}
                     <script>
                         (function(){
                             const mdText = {{ result.markdown | tojson }};

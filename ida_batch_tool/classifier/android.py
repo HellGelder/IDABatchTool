@@ -31,9 +31,11 @@ _ANDROID_CORE = {
         "плагинов и интерпретируемых языков на Android."
     ),
     "libstdc++.so": (
-        "GNU libstdc++ для Android — реализация стандартной "
-        "библиотеки C++ для Android. Предоставляет STL "
-        "и потоки ввода-вывода для C++ приложений."
+        "libstdc++ (ABI-заглушка Android) — системная библиотека "
+        "предоставляет только операторы new/delete и базовые "
+        "исключения. Полноценный GNU libstdc++ на Android не "
+        "поддерживается (устаревшая, deprecated с NDK r18); "
+        "для C++ используется libc++_shared.so."
     ),
     "libc++_shared.so": (
         "LLVM libc++ (shared) — современная реализация "
@@ -197,17 +199,6 @@ _ANDROID_NATIVE_WINDOW = {
         "примитивы: управление регионами, форматами "
         "пикселей, объектами GraphicBuffer."
     ),
-    "libnativewindow.so": (
-        "Native Window Library — библиотека NDK для работы "
-        "с native окнами: ANativeWindow_lock/unlock, "
-        "получение буфера, настройка формата."
-    ),
-    "libsync.so": (
-        "Android Sync Library — библиотека синхронизации "
-        "графических буферов с использованием fence-"
-        "дескрипторов (sync_file). Обеспечивает координацию "
-        "между GPU и CPU."
-    ),
     "librenderengine.so": (
         "Render Engine Library — движок рендеринга Android. "
         "Используется SurfaceFlinger для композиции окон "
@@ -252,16 +243,6 @@ _ANDROID_GRAPHICS = {
         "Skia — библиотека 2D-графики, используемая в Android "
         "(Chrome, Flutter, Firefox). Аппаратно-ускоренный "
         "рендеринг текста, фигур, изображений."
-    ),
-    "libvulkan_loader.so": (
-        "Vulkan Loader (Android) — загрузчик Vulkan ICD. "
-        "Обнаружение и загрузка драйверов Vulkan от "
-        "производителей GPU (Qualcomm, ARM, Mali)."
-    ),
-    "libvulkan.so": (
-        "Vulkan API (Android) — низкоуровневый графический "
-        "и вычислительный API. Высокая производительность "
-        "в играх и требовательных приложениях."
     ),
     "libRS.so": (
         "RenderScript Runtime — библиотека для вычислительных "
@@ -502,19 +483,14 @@ _ANDROID_SECURITY = {
         "capabilities, пользователя/группу, namespace "
         "для изоляции процессов."
     ),
-    "libselinux-android.so": (
+    "libselinux.so": (
         "SELinux Android Library — интерфейс SELinux "
         "для Android. Управление контекстами безопасности "
         "и политиками на платформе Android."
     ),
-    "libsepol-android.so": (
+    "libsepol.so": (
         "SELinux Policy Library (Android) — библиотека "
         "для работы с SELinux-политиками на Android."
-    ),
-    "libtpm-android.so": (
-        "TPM Library (Android) — библиотека для "
-        "взаимодействия с TPM (Trusted Platform Module) "
-        "на устройствах Android с TPM-чипом."
     ),
 }
 
@@ -624,11 +600,6 @@ _ANDROID_JNI = {
         "Native Helper — вспомогательная библиотека JNI, "
         "упрощающая взаимодействие между Java и C/C++ "
         "кодом в Android Runtime."
-    ),
-    "libnativeloader.so": (
-        "Native Loader — библиотека для загрузки нативных "
-        "библиотек в контексте Android Runtime. Управляет "
-        "поиском и связыванием .so файлов."
     ),
 }
 
