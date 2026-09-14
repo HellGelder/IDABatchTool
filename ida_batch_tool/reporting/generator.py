@@ -13,7 +13,7 @@ from urllib.parse import quote
 from ida_batch_tool.classifier.platform_classifier import get_platform_classifier, classify_module
 from ida_batch_tool.classifier.categories import get_module_category_and_description
 from ida_batch_tool.reporting.elf_descriptions import describe_section, describe_segment
-from ida_batch_tool.reporting.utils import compute_back_link, normalize_display_name
+from ida_batch_tool.reporting.utils import compute_back_link, compute_executables_size, normalize_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -208,12 +208,10 @@ class BaseReportGenerator(ABC):
 
         if total_files is None:
             total_files = len(reports)
-        if total_size_bytes is None:
-            total_size_bytes = 0
-            for r in reports:
-                p = Path(r.get('display_name', ''))
-                if p.exists():
-                    total_size_bytes += p.stat().st_size
+        if total_size_bytes is None or total_size_bytes <= 0:
+            # Запасной вариант: суммарный размер исполняемых модулей в папке.
+            # Основной путь — значение, накопленное воркером по метаданным баз.
+            total_size_bytes = compute_executables_size(input_dir)
         if error_count is None:
             error_count = 0
         if generation_time is None:

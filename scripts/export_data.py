@@ -174,6 +174,28 @@ def _normalize_func_name(name: str) -> str:
     return name
 
 
+def _get_input_file_size(file_path: Optional[str]) -> int:
+    """Возвращает размер исходного модуля в байтах.
+
+    Приоритет — значение, сохранённое в базе IDA: оно не зависит от того,
+    доступен ли исходный файл по пути из ``file_name`` (для Windows там может
+    быть путь со сборочной машины). Если база размер не отдала, считаем по
+    файлу на диске.
+    """
+    try:
+        size = ida_nalt.retrieve_input_file_size()
+        if size:
+            return int(size)
+    except Exception:
+        pass
+    if file_path:
+        try:
+            return os.path.getsize(file_path)
+        except OSError:
+            return 0
+    return 0
+
+
 def _compute_file_hashes(file_path: str) -> Dict[str, str]:
     """Возвращает SHA256/MD5/CRC32 файла.
 
@@ -959,6 +981,7 @@ def export_to_json(output_path: Optional[str] = None) -> None:
 
     data: Dict[str, Any] = {
         "file_name": current_file_path,
+        "file_size": _get_input_file_size(current_file_path),
         "is_elf": is_elf,
         "is_macho": is_macho,
         "functions": [],

@@ -120,11 +120,20 @@ class SfaHtmlGeneratorWorker(QThread):
             if not source_full.is_absolute():
                 source_full = self.input_dir / source_full
 
-            # Размер исполняемого файла через ОС
+            # Размер модуля: приоритет — значение, сохранённое базой IDA
+            # (data["file_size"]), затем файл рядом с .i64, затем путь из
+            # file_name. Для Windows в file_name бывает путь со сборочной
+            # машины, которого на этом ПК нет.
             file_size = 0
-            if source_full.exists():
+            if not self.reuse_cache:
+                file_size = int(data.get("file_size") or 0)
+                if not file_size:
+                    alongside = json_path.parent / Path(local_file_name).name
+                    if alongside.exists():
+                        file_size = alongside.stat().st_size
+            if not file_size and source_full.exists():
                 file_size = source_full.stat().st_size
-            elif self.reuse_cache and function_index and function_index.available:
+            if not file_size and self.reuse_cache and function_index and function_index.available:
                 file_size = function_index.get_file_size(json_path)
 
             try:

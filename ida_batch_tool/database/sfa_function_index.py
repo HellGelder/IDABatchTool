@@ -189,11 +189,20 @@ class SfaFunctionIndex:
                 file_name = data.get("file_name", "")
                 imports = data.get("imports", [])
 
-                # Размер исходного исполняемого файла (один для всех импортов)
+                # Размер исходного модуля. Приоритет — значение из JSON (его
+                # сохранила база IDA): путь в file_name для Windows может
+                # указывать на сборочную машину и быть недоступным. Далее —
+                # файл рядом с .i64, затем путь из file_name.
+                file_size = int(data.get("file_size") or 0)
                 src_path = Path(file_name)
                 if not src_path.is_absolute():
                     src_path = json_path.parent.parent / src_path
-                file_size = src_path.stat().st_size if src_path.exists() else 0
+                if not file_size:
+                    alongside = json_path.parent / Path(file_name).name
+                    if alongside.exists():
+                        file_size = alongside.stat().st_size
+                if not file_size and src_path.exists():
+                    file_size = src_path.stat().st_size
 
                 # Удаляем старые импорты для этого json_path (на случай перезапуска)
                 conn.execute(

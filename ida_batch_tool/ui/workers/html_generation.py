@@ -119,13 +119,22 @@ class HtmlGeneratorWorker(QThread):
             link = out_rel.as_posix()
             display = rel.as_posix()
 
-            file_size = source_full.stat().st_size if source_full.exists() else 0
-            file_exists = 1 if source_full.exists() else 0
+            # Размер исходного модуля берём из JSON (сохранён базой IDA) — он не
+            # зависит от доступности файла по пути из file_name. Для Windows
+            # там бывает путь со сборочной машины, которого на этом ПК нет.
+            # Fallback: файл рядом с .i64, затем путь из file_name.
+            file_size = int(data.get("file_size") or 0)
+            if not file_size:
+                alongside = json_path.parent / original_file
+                if alongside.exists():
+                    file_size = alongside.stat().st_size
+                elif source_full.exists():
+                    file_size = source_full.stat().st_size
 
             if self.delete_json:
                 json_path.unlink(missing_ok=True)
 
-            return (link, display, modules, local_ida, file_exists, file_size)
+            return (link, display, modules, local_ida, file_size)
 
         # Многопоточная генерация индивидуальных отчётов
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -142,13 +151,16 @@ class HtmlGeneratorWorker(QThread):
                 with lock:
                     completed += 1
                     if result is not None:
-                        link, display, modules, local_ida, f_exists, f_size = result
+                        link, display, modules, local_ida, f_size = result
                         report_links.append({"filename": link, "display_name": display})
                         generated_count += 1
                         global_modules_set.update(modules)
                         if local_ida is not None and ida_info is None:
                             ida_info = local_ida
-                        total_files += f_exists
+                        # Файлов считаем по сгенерированным отчётам, а не по
+                        # наличию исходника: он мог быть недоступен по пути
+                        # из file_name (путь со сборочной машины).
+                        total_files += 1
                         total_size_bytes += f_size
 
                 self.progress_updated.emit(completed, total, "")
