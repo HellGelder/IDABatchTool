@@ -55,7 +55,7 @@ class HtmlGeneratorWorker(QThread):
         if total == 0:
             self.finished.emit(HtmlGenerationResult(
                 generated_count=0, report_links=[], global_modules_set=set(),
-                global_elf_set=set(), ida_info={}, reports_dir=self.reports_dir,
+                ida_info={}, reports_dir=self.reports_dir,
                 input_dir=self.input_dir, total_files=0, total_size_bytes=0,
             ))
             return
@@ -67,7 +67,6 @@ class HtmlGeneratorWorker(QThread):
         lock = threading.Lock()
         report_links: list = []
         global_modules_set: Set[str] = set()
-        global_elf_set: Set[str] = set()
         ida_info: Optional[Dict[str, Any]] = None
         generated_count = 0
         total_files = 0
@@ -88,23 +87,15 @@ class HtmlGeneratorWorker(QThread):
             local_ida = data.get("ida_info") if "ida_info" in data else None
 
             modules = set()
-            elf_sec = set()
             if data.get("is_elf") or data.get("is_macho"):
                 for needed in data.get("needed_libs", []):
                     modules.add(self._normalize_display_name(needed))
-                if data.get("is_elf"):
-                    for imp in data.get("imports", []):
-                        mod = imp.get("module", "")
-                        if mod.startswith("."):
-                            elf_sec.add(mod)
             else:
                 for imp in data.get("imports", []):
                     mod = imp.get("module")
                     if not mod or mod.lower() == "unknown":
                         continue
-                    if mod.startswith("."):
-                        elf_sec.add(mod)
-                    else:
+                    if not mod.startswith("."):
                         modules.add(self._normalize_display_name(mod))
 
             original_file = Path(data["file_name"]).name
@@ -134,7 +125,7 @@ class HtmlGeneratorWorker(QThread):
             if self.delete_json:
                 json_path.unlink(missing_ok=True)
 
-            return (link, display, modules, elf_sec, local_ida, file_exists, file_size)
+            return (link, display, modules, local_ida, file_exists, file_size)
 
         # Многопоточная генерация индивидуальных отчётов
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -151,11 +142,10 @@ class HtmlGeneratorWorker(QThread):
                 with lock:
                     completed += 1
                     if result is not None:
-                        link, display, modules, elf_sec, local_ida, f_exists, f_size = result
+                        link, display, modules, local_ida, f_exists, f_size = result
                         report_links.append({"filename": link, "display_name": display})
                         generated_count += 1
                         global_modules_set.update(modules)
-                        global_elf_set.update(elf_sec)
                         if local_ida is not None and ida_info is None:
                             ida_info = local_ida
                         total_files += f_exists
@@ -168,7 +158,6 @@ class HtmlGeneratorWorker(QThread):
             generated_count=generated_count,
             report_links=report_links,
             global_modules_set=global_modules_set,
-            global_elf_set=global_elf_set,
             ida_info=ida_info or {},
             reports_dir=self.reports_dir,
             input_dir=self.input_dir,

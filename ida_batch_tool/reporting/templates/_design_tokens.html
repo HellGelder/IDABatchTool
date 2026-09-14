@@ -106,9 +106,19 @@
     .table td {
         padding: 10px 12px; border-bottom: 1px solid var(--separator);
         vertical-align: top;
+        /* Длинные имена функций (C++-сигнатуры, mangled-имена) переносим,
+           чтобы строки не выходили за пределы окна и не давали прокрутку. */
+        word-break: break-word; overflow-wrap: anywhere; min-width: 0;
     }
     .table tbody tr:hover { background: var(--surface-secondary); }
     .table code { font-size: 12px; color: var(--text-secondary); }
+    /* Колонки с адресами/размерами — не переносим, держим одной строкой. */
+    .table .col-nowrap { white-space: nowrap; }
+    /* Моноширинный шрифт для имён функций и хешей. */
+    .table .col-mono { font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-size: 12px; }
+    /* Таблица секций/сегментов ELF: узкие технические колонки. */
+    .elf-table td { font-size: 12px; }
+    .elf-table .elf-name { font-family: ui-monospace, "SF Mono", "Consolas", monospace; }
 
     /* ▸ Кнопка «Назад» */
     .btn-back {

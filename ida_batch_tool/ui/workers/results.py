@@ -17,7 +17,6 @@ class HtmlGenerationResult:
     generated_count: int
     report_links: List[Dict[str, str]]
     global_modules_set: Set[str]
-    global_elf_set: Set[str]
     ida_info: Dict[str, Any]
     reports_dir: Path
     input_dir: Path

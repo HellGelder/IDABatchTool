@@ -144,18 +144,6 @@
         {% endif %}
     </div>
 
-    <!-- Секции ELF -->
-    {% if elf_sections %}
-    <div class="card">
-        <h2 style="margin-top:0">Обнаруженные секции ELF</h2>
-        <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
-            {% for sec in elf_sections %}
-            <span class="pill-tag">{{ sec }}</span>
-            {% endfor %}
-        </div>
-    </div>
-    {% endif %}
-
     <!-- Исследованные файлы -->
     <div class="card">
         <h2 style="margin-top:0">Исследованные файлы</h2>

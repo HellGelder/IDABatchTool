@@ -12,11 +12,22 @@ from urllib.parse import quote
 
 from ida_batch_tool.classifier.platform_classifier import get_platform_classifier, classify_module
 from ida_batch_tool.classifier.categories import get_module_category_and_description
+from ida_batch_tool.reporting.elf_descriptions import describe_section, describe_segment
 from ida_batch_tool.reporting.utils import compute_back_link, normalize_display_name
 
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+def _is_placeholder_section(name: str) -> bool:
+    """Проверяет, что имя секции — служебная заглушка (индекс 0 таблицы).
+
+    Парсер может вернуть пустое имя или ``<0>`` для секции-заглушки NULL,
+    у которой нет собственного имени в таблице строк.
+    """
+    stripped = (name or "").strip()
+    return not stripped or (stripped.startswith("<") and stripped.endswith(">"))
 
 
 def _build_internal_set(input_dir: Optional[Path]) -> Set[str]:
@@ -142,7 +153,6 @@ class BaseReportGenerator(ABC):
     def generate_index(self, reports_dir: Path, input_dir: Path,
                        reports: List[dict], unique_modules: List[str],
                        ida_info: Optional[Dict[str, Any]] = None,
-                       elf_sections: Optional[List[str]] = None,
                        internal_set: Optional[Set[str]] = None,
                        total_files: Optional[int] = None,
                        total_size_bytes: Optional[int] = None,
@@ -215,7 +225,6 @@ class BaseReportGenerator(ABC):
             "grouped_categories": grouped_list,
             "reports": reports,
             "ida_info": ida_info,
-            "elf_sections": sorted(elf_sections or []),
             "total_files": total_files,
             "total_size_bytes": total_size_bytes,
             "error_count": error_count,
@@ -256,7 +265,6 @@ class WindowsReportGenerator(BaseReportGenerator):
                 known.append(self._normalize_display_name(mod))
         data["known_modules"] = sorted(known)
         data["unknown_modules"] = sorted(unknown)
-        data["elf_sections"] = []
 
         module_counts = {}
         for imp in data.get("imports", []):
@@ -283,21 +291,75 @@ class ELFReportGenerator(BaseReportGenerator):
         super().__init__()
         self._classifier = get_platform_classifier("Linux / Android")
 
+    def _build_file_info(self, data: dict) -> list:
+        """Собирает карточку «Информация о файле» для ELF.
+
+        Порядок: идентификация → хеши → ELF-заголовок → динамическая
+        компоновка → notes (Build ID, ABI, Android API). Строки с пустыми
+        значениями пропускаются, чтобы карточка не засорялась.
+        """
+        hashes = data.get("hashes") or {}
+        header = data.get("elf_header") or {}
+        rows = [
+            ("Имя файла", data.get("file_name", "")),
+            ("Формат", data.get("format") or ""),
+            ("Компилятор", data.get("compiler") or ""),
+            ("Input SHA256", hashes.get("sha256", "")),
+            ("Input MD5", hashes.get("md5", "")),
+            ("Input CRC32", hashes.get("crc32", "")),
+        ]
+
+        # ELF-заголовок
+        if header:
+            rows.append(("Разрядность", header.get("class", "")))
+            rows.append(("Порядок байт", header.get("endianness", "")))
+            rows.append(("Тип файла", header.get("type", "")))
+            rows.append(("Архитектура", header.get("machine", "")))
+            rows.append(("Точка входа", header.get("entry", "")))
+            rows.append(("Флаги (e_flags)", header.get("flags", "")))
+            rows.append(("Сегментов", str(header.get("program_headers", ""))))
+            rows.append(("Секций", str(header.get("sections", ""))))
+
+        # Динамическая компоновка
+        rows.append(("Shared Name (SONAME)", data.get("soname") or ""))
+        rows.append(("Interpreter (PT_INTERP)", data.get("interpreter") or ""))
+        rows.append(("Library RPATH", data.get("rpath") or ""))
+        rows.append(("Library RUNPATH", data.get("runpath") or ""))
+
+        # Notes
+        rows.append(("Build ID (GNU)", data.get("build_id") or ""))
+        abi = data.get("abi_tag")
+        if abi:
+            rows.append(("ABI Tag (GNU)", abi))
+        api = data.get("android_api")
+        if api:
+            rows.append(("Android API Level", f"{api} (Android {self._api_to_release(api)})" if self._api_to_release(api) else str(api)))
+
+        return [(label, value) for label, value in rows if value]
+
+    @staticmethod
+    def _api_to_release(api: int) -> str:
+        """Сопоставляет уровень Android API кодовому имени релиза."""
+        mapping = {
+            21: "5.0 Lollipop", 22: "5.1 Lollipop", 23: "6.0 Marshmallow",
+            24: "7.0 Nougat", 25: "7.1 Nougat", 26: "8.0 Oreo",
+            27: "8.1 Oreo", 28: "9.0 Pie", 29: "10", 30: "11",
+            31: "12", 32: "12L", 33: "13", 34: "14", 35: "15",
+        }
+        return mapping.get(api, "")
+
     def prepare_report_data(self, data, internal_set):
         needed_libs = data.get("needed_libs", [])
         known = []
         unknown = []
         for lib in needed_libs:
             desc = self._classify_with_context(lib, internal_set)
-            if "Собственный модуль" in desc:
-                known.append(self._normalize_display_name(lib))
-            elif "Неопознанный" in desc:
+            if "Неопознанный" in desc:
                 unknown.append(self._normalize_display_name(lib))
             else:
                 known.append(self._normalize_display_name(lib))
         data["known_modules"] = sorted(known)
         data["unknown_modules"] = sorted(unknown)
-        data["elf_sections"] = []
 
         module_counts = {}
         for lib in needed_libs:
@@ -311,26 +373,34 @@ class ELFReportGenerator(BaseReportGenerator):
                          "description": desc, "color": color})
         data["module_deps"] = sorted(deps, key=lambda x: (x["category"], x["name"]))
 
-        # Карточка «Информация о файле»: хеши, формат, компилятор, SONAME, RPATH/RUNPATH
-        hashes = data.get("hashes") or {}
-        file_info = [
-            ("Имя файла", data.get("file_name", "")),
-            ("Формат", data.get("format") or ""),
-            ("Компилятор", data.get("compiler") or ""),
-            ("Input SHA256", hashes.get("sha256", "")),
-            ("Input MD5", hashes.get("md5", "")),
-            ("Input CRC32", hashes.get("crc32", "")),
-        ]
-        soname = data.get("soname")
-        if soname:
-            file_info.append(("Shared Name (SONAME)", soname))
-        rpath = data.get("rpath")
-        runpath = data.get("runpath")
-        if runpath:
-            file_info.append(("Library RUNPATH", runpath))
-        if rpath:
-            file_info.append(("Library RPATH", rpath))
-        data["file_info"] = file_info
+        # Карточка «Информация о файле»: хеши, ELF-заголовок, SONAME/RPATH, notes.
+        data["file_info"] = self._build_file_info(data)
+
+        # Секции ELF: имя, тип, флаги и словесное назначение (вместо адресов/размеров).
+        sections = []
+        for sec in data.get("elf_sections", []) or []:
+            name = sec.get("name", "")
+            sec_type = sec.get("type", "")
+            # Безымянная секция-заглушка приходит как пустое имя или "<0>".
+            display_name = name if name and not _is_placeholder_section(name) else "—"
+            sections.append({
+                "name": display_name,
+                "type": sec_type,
+                "flags": sec.get("flags", ""),
+                "description": describe_section(name, sec_type),
+            })
+        data["elf_section_rows"] = sections
+
+        # Сегменты ELF: тип, права и словесное назначение (вместо адресов/размеров).
+        segments = []
+        for seg in data.get("elf_segments", []) or []:
+            seg_type = seg.get("type", "")
+            segments.append({
+                "type": seg_type,
+                "flags": seg.get("flags", ""),
+                "description": describe_segment(seg_type),
+            })
+        data["elf_segment_rows"] = segments
 
         for imp in data.get("imports", []):
             resolved = imp.get("resolved_libs", [])
@@ -351,6 +421,7 @@ class ELFReportGenerator(BaseReportGenerator):
                 else:
                     imp["module_display"] = self._normalize_display_name(mod)
         return data
+
 
 
 class MachOReportGenerator(BaseReportGenerator):
@@ -380,7 +451,6 @@ class MachOReportGenerator(BaseReportGenerator):
                 known.append(mod)
         data["known_modules"] = sorted(known)
         data["unknown_modules"] = sorted(unknown)
-        data["elf_sections"] = []
 
         deps = []
         for mod, count in module_counts.items():
@@ -430,7 +500,6 @@ class ReportGenerator:
     def generate_index(self, reports_dir: Path, input_dir: Path,
                        reports: List[dict], unique_modules: List[str],
                        ida_info: Optional[Dict[str, Any]] = None,
-                       elf_sections: Optional[List[str]] = None,
                        internal_set: Optional[Set[str]] = None,
                        total_files: Optional[int] = None,
                        total_size_bytes: Optional[int] = None,
@@ -438,7 +507,7 @@ class ReportGenerator:
                        generation_time: Optional[str] = None) -> Path:
         return self._macho.generate_index(
             reports_dir, input_dir, reports, unique_modules,
-            ida_info, elf_sections, internal_set,
+            ida_info, internal_set,
             total_files, total_size_bytes, error_count, generation_time
         )
     

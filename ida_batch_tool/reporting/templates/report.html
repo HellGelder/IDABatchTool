@@ -85,8 +85,8 @@
                 <tbody>
                     {% for imp in imports %}
                     <tr class="searchable">
-                        <td>{{ imp.name }}</td>
-                        <td>{{ imp.address }}</td>
+                        <td class="col-mono">{{ imp.name }}</td>
+                        <td class="col-nowrap">{{ imp.address }}</td>
                         {% if not is_elf %}<td>{{ imp.module }}</td>{% endif %}
                     </tr>
                     {% endfor %}
@@ -114,8 +114,8 @@
                 <tbody>
                     {% for exp in exports %}
                     <tr class="searchable">
-                        <td>{{ exp.name }}</td>
-                        <td>{{ exp.address }}</td>
+                        <td class="col-mono">{{ exp.name }}</td>
+                        <td class="col-nowrap">{{ exp.address }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -124,19 +124,64 @@
         </div>
     </div>
 
-    <!-- ELF-секции -->
-    {% if elf_sections %}
-    <h2>Секции ELF <span class="badge section-badge">{{ elf_sections|length }}</span></h2>
-    <div class="card accordion" id="acc-elf">
+    <!-- Сегменты ELF -->
+    {% if elf_segment_rows %}
+    <h2>Сегменты ELF <span class="badge section-badge">{{ elf_segment_rows|length }}</span></h2>
+    <div class="card accordion" id="acc-elf-segments">
         <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
-            <span>Обнаруженные секции</span><span class="accordion-chevron">›</span>
+            <span>Программные заголовки (сегменты)</span><span class="accordion-chevron">›</span>
         </div>
         <div class="accordion-body">
-            <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-                {% for sec in elf_sections %}
-                <span class="pill-tag">{{ sec }}</span>
-                {% endfor %}
-            </div>
+            <table class="table elf-table">
+                <thead>
+                    <tr>
+                        <th>Тип</th>
+                        <th>Права</th>
+                        <th>Назначение</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for seg in elf_segment_rows %}
+                    <tr class="searchable">
+                        <td class="elf-name col-nowrap">{{ seg.type }}</td>
+                        <td class="col-nowrap">{{ seg.flags }}</td>
+                        <td>{{ seg.description }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Секции ELF -->
+    {% if elf_section_rows %}
+    <h2>Секции ELF <span class="badge section-badge">{{ elf_section_rows|length }}</span></h2>
+    <div class="card accordion" id="acc-elf">
+        <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
+            <span>Таблица секций</span><span class="accordion-chevron">›</span>
+        </div>
+        <div class="accordion-body">
+            <table class="table elf-table">
+                <thead>
+                    <tr>
+                        <th>Имя</th>
+                        <th>Тип</th>
+                        <th>Флаги</th>
+                        <th>Назначение</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sec in elf_section_rows %}
+                    <tr class="searchable">
+                        <td class="elf-name col-nowrap">{{ sec.name }}</td>
+                        <td class="col-nowrap">{{ sec.type }}</td>
+                        <td class="col-nowrap">{{ sec.flags }}</td>
+                        <td>{{ sec.description }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
     {% endif %}

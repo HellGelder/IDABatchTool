@@ -580,11 +580,10 @@ class AnalysisPage(QWidget):
         generator = ReportGenerator()
         try:
             sorted_mods = sorted(result.global_modules_set)
-            sorted_elf = sorted(result.global_elf_set)
             internal_set = getattr(self.html_worker, 'internal_set', None)
             index_path = generator.generate_index(
                 result.reports_dir, result.input_dir, result.report_links, sorted_mods,
-                result.ida_info, sorted_elf, internal_set=internal_set,
+                result.ida_info, internal_set=internal_set,
                 total_files=result.total_files, total_size_bytes=result.total_size_bytes,
                 error_count=0, generation_time=gen_time
             )
