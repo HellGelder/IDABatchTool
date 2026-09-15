@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import logging
+import threading
 from pathlib import Path
 from typing import List, Callable, Optional
 
@@ -53,6 +54,13 @@ CREATE TABLE IF NOT EXISTS file_imports (
     PRIMARY KEY (json_path, func_name)
 );
 CREATE INDEX IF NOT EXISTS idx_fi_jp ON file_imports(json_path);
+
+CREATE TABLE IF NOT EXISTS file_libs (
+    json_path TEXT NOT NULL,
+    lib_name TEXT NOT NULL,
+    PRIMARY KEY (json_path, lib_name)
+);
+CREATE INDEX IF NOT EXISTS idx_fl_jp ON file_libs(json_path);
 
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -104,14 +112,18 @@ class SfaFunctionIndex:
 
     Двухфазное использование:
     1. ``build_from_jsons()`` — предварительный проход, сбор уникальных функций.
-    2. ``is_known()`` — быстрая проверка наличия функции в индексе.
+    2. ``is_known()`` / ``get_file_imports()`` — быстрые запросы.
 
-    После сборки — read-only, потокобезопасен (WAL-mode).
+    После сборки — read-only. Запросы выполняются из пула потоков
+    (``ThreadPoolExecutor`` в воркере генерации HTML), поэтому соединение
+    открывается **на каждый поток**: SQLite запрещает использовать
+    соединение из чужого потока, а молчаливый ``except`` превращал это в
+    «нет импортов» — отчёт генерировался пустым.
     """
 
     def __init__(self, db_path: str | Path):
         self._db_path = Path(db_path)
-        self._conn: sqlite3.Connection | None = None
+        self._local = threading.local()
         self._available = False
 
     # ─── Фаза сборки ────────────────────────────────────────────────
@@ -209,6 +221,22 @@ class SfaFunctionIndex:
                     "DELETE FROM file_imports WHERE json_path = ?",
                     (json_path_str,),
                 )
+                conn.execute(
+                    "DELETE FROM file_libs WHERE json_path = ?",
+                    (json_path_str,),
+                )
+
+                # Список зависимостей модуля (ELF DT_NEEDED). Нужен для
+                # перегенерации HTML из кэша: в ELF импорты помечены
+                # псевдо-модулем (.dynsym), и без этого списка системные
+                # библиотеки модуля не восстановить.
+                for lib in data.get("needed_libs") or []:
+                    if lib:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO file_libs (json_path, lib_name) "
+                            "VALUES (?, ?)",
+                            (json_path_str, lib),
+                        )
 
                 for imp in imports:
                     func_name = imp.get("name", "")
@@ -272,26 +300,36 @@ class SfaFunctionIndex:
             total,
         )
 
+    def _connection(self) -> sqlite3.Connection | None:
+        """Возвращает read-only соединение, принадлежащее текущему потоку."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
+        if not self._db_path.exists():
+            return None
+        try:
+            conn = sqlite3.connect(f"file:{self._db_path.resolve()}?mode=ro", uri=True)
+            conn.execute("PRAGMA query_only=1")
+            conn.execute("PRAGMA busy_timeout=5000")
+        except Exception as e:
+            logger.warning("Cannot open function index: %s", e)
+            return None
+        self._local.conn = conn
+        return conn
+
     def open_readonly(self) -> None:
-        """Открывает read-only SQLite-соединение для уже существующей БД.
+        """Открывает read-only соединение для уже существующей БД.
 
         Если БД создана старой версией (нет таблицы ``system_modules`` или
         колонки ``module_key``), схема сначала доводится до актуальной:
         миграция выполняется в отдельном writable-соединении, после чего
-        БД открывается только для чтения.
+        БД доступна только для чтения.
         """
         if not self._db_path.exists():
             self._available = False
             return
         self._ensure_schema()
-        try:
-            conn = sqlite3.connect(f"file:{self._db_path.resolve()}?mode=ro", uri=True)
-            conn.execute("PRAGMA query_only=1")
-            self._conn = conn
-            self._available = True
-        except Exception as e:
-            logger.warning("Cannot open function index: %s", e)
-            self._available = False
+        self._available = self._connection() is not None
 
     def _ensure_schema(self) -> None:
         """Приводит схему существующей БД к актуальной версии (если нужно)."""
@@ -318,10 +356,13 @@ class SfaFunctionIndex:
         Быстрый lookup по PRIMARY KEY (O(log N)). Потокобезопасен.
         Если индекс недоступен — возвращает True (пропускаем фильтр).
         """
-        if not self._available or not self._conn:
+        if not self._available:
+            return True  # fallback: разрешаем
+        conn = self._connection()
+        if conn is None:
             return True  # fallback: разрешаем
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT 1 FROM system_functions WHERE func_name = ?",
                 (func_name,),
             )
@@ -334,10 +375,13 @@ class SfaFunctionIndex:
 
         Используется в reuse-режиме вместо повторного чтения JSON.
         """
-        if not self._available or not self._conn:
+        if not self._available:
+            return []
+        conn = self._connection()
+        if conn is None:
             return []
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT func_name, module_name, address, file_name "
                 "FROM file_imports WHERE json_path = ? ORDER BY rowid",
                 (str(json_path),),
@@ -356,12 +400,35 @@ class SfaFunctionIndex:
         except Exception:
             return []
 
+    def get_file_libs(self, json_path: str | Path) -> list[str]:
+        """Возвращает список зависимостей модуля (ELF DT_NEEDED).
+
+        Используется в reuse-режиме: индекс хранит их, потому что импорты
+        ELF помечены псевдо-модулем и библиотеку из них не узнать.
+        """
+        if not self._available:
+            return []
+        conn = self._connection()
+        if conn is None:
+            return []
+        try:
+            cur = conn.execute(
+                "SELECT lib_name FROM file_libs WHERE json_path = ? ORDER BY lib_name",
+                (str(json_path),),
+            )
+            return [row[0] for row in cur.fetchall() if row[0]]
+        except Exception:
+            return []
+
     def get_file_name(self, json_path: str | Path) -> str:
         """Возвращает file_name для указанного JSON-файла."""
-        if not self._available or not self._conn:
+        if not self._available:
+            return ""
+        conn = self._connection()
+        if conn is None:
             return ""
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT file_name FROM file_imports WHERE json_path = ? LIMIT 1",
                 (str(json_path),),
             )
@@ -372,10 +439,13 @@ class SfaFunctionIndex:
 
     def get_file_size(self, json_path: str | Path) -> int:
         """Возвращает размер исходного файла (или 0)."""
-        if not self._available or not self._conn:
+        if not self._available:
+            return 0
+        conn = self._connection()
+        if conn is None:
             return 0
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT file_size FROM file_imports WHERE json_path = ? LIMIT 1",
                 (str(json_path),),
             )
@@ -386,10 +456,13 @@ class SfaFunctionIndex:
 
     def get_all_json_paths(self) -> list[str]:
         """Возвращает все json_path из индекса."""
-        if not self._available or not self._conn:
+        if not self._available:
+            return []
+        conn = self._connection()
+        if conn is None:
             return []
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT DISTINCT json_path FROM file_imports ORDER BY json_path"
             )
             return [row[0] for row in cur.fetchall() if row[0]]
@@ -404,10 +477,11 @@ class SfaFunctionIndex:
 
     @property
     def total_functions(self) -> int:
-        if not self._available or not self._conn:
+        conn = self._connection() if self._available else None
+        if conn is None:
             return 0
         try:
-            cur = self._conn.execute("SELECT COUNT(*) FROM system_functions")
+            cur = conn.execute("SELECT COUNT(*) FROM system_functions")
             return cur.fetchone()[0]
         except Exception:
             return 0
@@ -423,7 +497,8 @@ class SfaFunctionIndex:
         Для БД, созданных старой версией (без таблицы ``system_modules``),
         используется резервный подсчёт по ``system_functions``.
         """
-        if not self._available or not self._conn:
+        conn = self._connection() if self._available else None
+        if conn is None:
             return 0
         for query in (
             "SELECT COUNT(*) FROM system_modules",
@@ -431,7 +506,7 @@ class SfaFunctionIndex:
             "SELECT COUNT(DISTINCT module_name) FROM system_functions",
         ):
             try:
-                return self._conn.execute(query).fetchone()[0]
+                return conn.execute(query).fetchone()[0]
             except Exception:
                 continue
         return 0
@@ -443,10 +518,11 @@ class SfaFunctionIndex:
         Читается из таблицы ``meta``; для старых БД возвращается Windows
         (индекс исторически собирался только по словарю Windows).
         """
-        if not self._available or not self._conn:
+        conn = self._connection() if self._available else None
+        if conn is None:
             return _DEFAULT_PLATFORM
         try:
-            row = self._conn.execute(
+            row = conn.execute(
                 "SELECT value FROM meta WHERE key = 'platform'"
             ).fetchone()
             return normalize_platform(row[0]) if row and row[0] else _DEFAULT_PLATFORM
@@ -454,14 +530,15 @@ class SfaFunctionIndex:
             return _DEFAULT_PLATFORM
 
     def close(self) -> None:
-        """Закрывает соединение с БД."""
-        if self._conn:
+        """Закрывает соединение текущего потока."""
+        conn = getattr(self._local, "conn", None)
+        if conn:
             try:
-                self._conn.close()
+                conn.close()
             except Exception:
                 pass
-            self._conn = None
-            self._available = False
+            self._local.conn = None
+        self._available = False
 
     def __del__(self):
         self.close()

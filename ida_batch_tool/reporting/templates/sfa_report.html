@@ -28,9 +28,11 @@
         tbody tr:hover { background: var(--surface-secondary); }
         tbody tr.not-found { opacity: 0.5; }
         tbody tr.not-found:hover { opacity: 0.75; }
+        tbody tr:not(.is-system) td { background: transparent; }
 
         .dll-cell { white-space: nowrap; font-family: ui-monospace, "SF Mono", "Consolas", monospace; color: var(--accent); width: 160px; }
         .func-cell { font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-weight: 500; width: 220px; }
+        .status-cell { width: 200px; white-space: nowrap; }
         .info-cell { min-width: 300px; }
         .info-cell .empty { color: var(--text-tertiary); font-style: italic; }
 
@@ -78,14 +80,35 @@
 
     {% set found_calls = system_calls | selectattr("found", "equalto", true) | list %}
     {% set notfound_calls = system_calls | selectattr("found", "equalto", false) | list %}
+    {% set system_calls_only = system_calls | selectattr("is_system", "equalto", true) | list %}
+    {% set non_system_calls = system_calls | selectattr("is_system", "equalto", false) | list %}
 
     <div class="summary-bar">
+        {% if list_all_imports %}
+        <span class="summary-item">Импортированных функций: <strong id="total-count">{{ system_calls|length }}</strong></span>
+        <span class="summary-item">Системных: <strong>{{ system_calls_only|length }}</strong></span>
+        <span class="summary-item">Не системных: <strong>{{ non_system_calls|length }}</strong></span>
+        <button class="filter-btn active" data-filter="all" id="filter-all">Все <span class="count">{{ system_calls|length }}</span></button>
+        <button class="filter-btn" data-filter="found" id="filter-found">С документацией <span class="count">{{ found_calls|length }}</span></button>
+        <button class="filter-btn" data-filter="notfound" id="filter-notfound">Без документации <span class="count">{{ notfound_calls|length }}</span></button>
+        <button class="filter-btn" data-filter="system" id="filter-system">Системные <span class="count">{{ system_calls_only|length }}</span></button>
+        <button class="filter-clear" id="filter-clear" style="display:none;"> сбросить</button>
+        {% else %}
         <span class="summary-item">Всего вызовов: <strong id="total-count">{{ system_calls|length }}</strong></span>
         <button class="filter-btn active" data-filter="all" id="filter-all">Все <span class="count">{{ system_calls|length }}</span></button>
         <button class="filter-btn" data-filter="found" id="filter-found">С документацией <span class="count">{{ found_calls|length }}</span></button>
         <button class="filter-btn" data-filter="notfound" id="filter-notfound">Без документации <span class="count">{{ notfound_calls|length }}</span></button>
         <button class="filter-clear" id="filter-clear" style="display:none;">✕ сбросить</button>
+        {% endif %}
     </div>
+
+    {% if list_all_imports %}
+    <p class="empty-state" style="font-style:normal;">
+        Приведён полный перечень импортированных функций. Системными признаны функции
+        известных системных библиотек и функции, для которых найдена документация
+        в базе man-pages. Остальные функции отмечены как «не определена как системная».
+    </p>
+    {% endif %}
 
     {% if not docs_available %}
     <p class="empty-state">
@@ -104,15 +127,25 @@
             <tr>
                 <th style="width:160px;">Библиотека</th>
                 <th style="width:220px;">Функция</th>
+                {% if list_all_imports %}<th style="width:200px;">Системность</th>{% endif %}
                 <th>Информация ({{ 'man-pages' if platform == 'Linux / Android' else 'Microsoft Learn' }})</th>
             </tr>
         </thead>
         <tbody id="sfa-tbody">
             {% for call in system_calls %}
-            {% set row_class = "not-found" if not call.found else "" %}
-            <tr class="{{ row_class }}" data-found="{{ 'true' if call.found else 'false' }}">
+            {% set row_class = ("" if call.is_system else "non-system") ~ (" not-found" if not call.found else "") %}
+            <tr class="{{ row_class }}" data-found="{{ 'true' if call.found else 'false' }}" data-system="{{ 'true' if call.is_system else 'false' }}">
                 <td class="dll-cell">{{ call.dll }}</td>
                 <td class="func-cell">{{ call.name }}</td>
+                {% if list_all_imports %}
+                <td class="status-cell">
+                    {% if call.is_system %}
+                    <span class="badge badge--success">Системная</span>
+                    {% else %}
+                    <span class="badge badge--neutral">Не определена как системная</span>
+                    {% endif %}
+                </td>
+                {% endif %}
                 <td class="info-cell">
                     {% if call.search_results and call.search_results|length > 0 %}
                     {% set result = call.search_results[0] %}
@@ -150,12 +183,14 @@
             const filterAll = document.getElementById('filter-all');
             const filterFound = document.getElementById('filter-found');
             const filterNotfound = document.getElementById('filter-notfound');
+            const filterSystem = document.getElementById('filter-system');
             const filterClear = document.getElementById('filter-clear');
             const rows = document.querySelectorAll('#sfa-tbody tr');
             const totalCount = document.getElementById('total-count');
+            const buttons = [filterAll, filterFound, filterNotfound, filterSystem].filter(Boolean);
 
             function setActive(btn) {
-                [filterAll, filterFound, filterNotfound].forEach(b => b.classList.remove('active'));
+                buttons.forEach(b => b.classList.remove('active'));
                 if (btn) btn.classList.add('active');
             }
 
@@ -163,10 +198,12 @@
                 let visible = 0;
                 rows.forEach(function(row) {
                     const found = row.getAttribute('data-found') === 'true';
+                    const isSystem = row.getAttribute('data-system') === 'true';
                     let show = false;
                     if (filter === 'all') show = true;
                     else if (filter === 'found') show = found;
                     else if (filter === 'notfound') show = !found;
+                    else if (filter === 'system') show = isSystem;
                     row.style.display = show ? '' : 'none';
                     if (show) visible++;
                 });
@@ -177,6 +214,9 @@
             filterAll.addEventListener('click', function() { setActive(filterAll); applyFilter('all'); });
             filterFound.addEventListener('click', function() { setActive(filterFound); applyFilter('found'); });
             filterNotfound.addEventListener('click', function() { setActive(filterNotfound); applyFilter('notfound'); });
+            if (filterSystem) {
+                filterSystem.addEventListener('click', function() { setActive(filterSystem); applyFilter('system'); });
+            }
             filterClear.addEventListener('click', function() { setActive(filterAll); applyFilter('all'); });
         })();
     </script>

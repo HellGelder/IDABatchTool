@@ -87,8 +87,14 @@ class SfaHtmlGeneratorWorker(QThread):
         total_size_bytes = 0
         completed = 0
         total_files = total
-        # Уникальные функции без документации по всем модулям.
-        global_notfound: Set[str] = set()
+        # Уникальные системные функции без документации: именно этот набор
+        # показывает счётчик «из них без документации» в индексном отчёте
+        # (для Linux/Android отчёт содержит и несистемные импорты).
+        global_system_notfound: Set[str] = set()
+        # Уникальные системные функции и системные библиотеки по всем модулям.
+        global_system_functions: Set[str] = set()
+        global_system_libs: Set[str] = set()
+        total_imports_all = 0
 
         self.progress_updated.emit(0, total, "Генерация HTML…")
 
@@ -100,6 +106,7 @@ class SfaHtmlGeneratorWorker(QThread):
             if self.reuse_cache and function_index and function_index.available:
                 imports_data = function_index.get_file_imports(json_path)
                 local_file_name = function_index.get_file_name(json_path)
+                needed_libs_data = function_index.get_file_libs(json_path)
                 if not imports_data:
                     self.error_occurred.emit(f"Нет импортов в индексе для {json_path.name}")
                     return None
@@ -114,6 +121,7 @@ class SfaHtmlGeneratorWorker(QThread):
                 imports_data = data.get("imports", [])
                 local_file_name = data.get("file_name", "")
                 local_ida = data.get("ida_info", {})
+                needed_libs_data = data.get("needed_libs") or []
 
             # Путь к исходному исполняемому файлу — от него считаем размер
             source_full = Path(local_file_name)
@@ -162,6 +170,7 @@ class SfaHtmlGeneratorWorker(QThread):
                 reuse_cache=self.reuse_cache,
                 imports=imports_data,
                 file_name_hint=local_file_name,
+                needed_libs_hint=needed_libs_data,
                 platform=self.platform,
                 manpages_db_path=self.manpages_db_path,
             )
@@ -169,13 +178,18 @@ class SfaHtmlGeneratorWorker(QThread):
 
             found_count = stats.found_count if stats else 0
             notfound_count = stats.notfound_count if stats else 0
-            notfound_names = stats.notfound_names if stats else frozenset()
+            total_imports = stats.total_imports if stats else 0
+            system_count = stats.system_count if stats else 0
+            system_names = stats.system_names if stats else frozenset()
+            system_libs = stats.system_libs if stats else frozenset()
+            system_notfound = stats.system_notfound_names if stats else frozenset()
 
             if self.delete_json:
                 json_path.unlink(missing_ok=True)
 
             return (link, display, local_ida, file_size, found_count,
-                    notfound_count, notfound_names)
+                    notfound_count, total_imports,
+                    system_count, system_names, system_libs, system_notfound)
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_path = {executor.submit(process_one, p): p for p in jobs}
@@ -192,18 +206,25 @@ class SfaHtmlGeneratorWorker(QThread):
                     completed += 1
                     if result is not None:
                         (link, display, local_ida, f_size,
-                         f_found, f_notfound, f_notfound_names) = result
+                         f_found, f_notfound, f_total_imports,
+                         f_system_count, f_system_names, f_system_libs,
+                         f_system_notfound) = result
                         report_links.append({
                             "filename": link,
                             "display_name": display,
                             "found_count": f_found,
                             "notfound_count": f_notfound,
+                            "total_imports": f_total_imports,
+                            "system_count": f_system_count,
                         })
                         generated_count += 1
                         if local_ida and not ida_info:
                             ida_info = local_ida
                         total_size_bytes += f_size
-                        global_notfound.update(f_notfound_names)
+                        total_imports_all += f_total_imports
+                        global_system_functions.update(f_system_names)
+                        global_system_libs.update(f_system_libs)
+                        global_system_notfound.update(f_system_notfound)
 
                 if result is not None:
                     self.progress_updated.emit(completed, total, f"{result[1]} — готов")
@@ -220,8 +241,11 @@ class SfaHtmlGeneratorWorker(QThread):
             input_dir=self.input_dir,
             total_files=total_files,
             total_size_bytes=total_size_bytes,
-            total_system_modules=total_system_modules,
-            total_system_functions=total_system_functions,
-            total_system_notfound=len(global_notfound),
+            total_system_modules=(len(global_system_libs)
+                                  if global_system_libs else total_system_modules),
+            total_system_functions=(len(global_system_functions)
+                                    if global_system_functions else total_system_functions),
+            total_system_notfound=len(global_system_notfound),
+            total_imports=total_imports_all,
             platform=self.platform,
         ))

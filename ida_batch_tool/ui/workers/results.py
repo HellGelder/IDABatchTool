@@ -37,4 +37,5 @@ class SfaHtmlGenerationResult:
     total_system_modules: int = 0
     total_system_functions: int = 0
     total_system_notfound: int = 0
+    total_imports: int = 0
     platform: str = "Windows"

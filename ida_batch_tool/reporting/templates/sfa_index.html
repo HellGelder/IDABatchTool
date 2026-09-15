@@ -43,6 +43,12 @@
                 <div class="stat-value">{{ total_system_modules }}</div>
                 <div class="stat-label">Системных библиотек</div>
             </div>
+            {% if platform == "Linux / Android" %}
+            <div class="stat-tile">
+                <div class="stat-value">{{ total_imports }}</div>
+                <div class="stat-label">Импортированных функций</div>
+            </div>
+            {% endif %}
             <div class="stat-tile">
                 <div class="stat-value">{{ total_system_functions }}</div>
                 <div class="stat-label">Уникальных системных функций</div>
@@ -65,7 +71,10 @@
             <thead>
                 <tr>
                     <th>Файл</th>
-                    <th style="text-align:center;">Функций всего</th>
+                    {% if platform == "Linux / Android" %}
+                    <th style="text-align:center;">Импортировано функций</th>
+                    <th style="text-align:center;">Из них системных</th>
+                    {% endif %}
                     <th style="text-align:center;">С документацией</th>
                     <th style="text-align:center;">Без документации</th>
                 </tr>
@@ -74,7 +83,10 @@
                 {% for report in reports %}
                 <tr>
                     <td><a href="{{ report.filename }}">{{ report.display_name }}</a></td>
-                    <td style="text-align:center;">{{ report.get('found_count', 0) + report.get('notfound_count', 0) }}</td>
+                    {% if platform == "Linux / Android" %}
+                    <td style="text-align:center;">{{ report.get('total_imports', report.get('found_count', 0) + report.get('notfound_count', 0)) }}</td>
+                    <td style="text-align:center;">{{ report.get('system_count', report.get('found_count', 0) + report.get('notfound_count', 0)) }}</td>
+                    {% endif %}
                     <td style="text-align:center;">{{ report.get('found_count', 0) }}</td>
                     <td style="text-align:center;">{{ report.get('notfound_count', 0) }}</td>
                 </tr>

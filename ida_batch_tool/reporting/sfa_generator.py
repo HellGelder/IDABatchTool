@@ -2,6 +2,7 @@ import json
 import subprocess
 import re
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime
@@ -21,17 +22,32 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 class SfaReportStats:
     """Статистика одного отчёта СФ для сводного индексного отчёта.
 
+    Разделение счётчиков нужно потому, что для Linux/Android в отчёт
+    попадает полный список импортов, а системными из них признаются лишь
+    те, чья системность подтверждена (известная системная библиотека или
+    документация в БД man-pages).
+
     Attributes:
+        total_imports: всего импортированных функций в модуле.
+        system_count: из них признанных системными.
         found_count: функций с найденной документацией.
+        total_count: всего строк в отчёте (для Linux равно total_imports).
         notfound_count: функций без документации.
-        total_count: всего системных функций в отчёте.
         notfound_names: имена функций без документации (для агрегации
             уникального количества по всем модулям).
+        system_names: имена системных функций (для уникального подсчёта).
+        system_notfound_names: системные функции без документации.
+        system_libs: системные библиотеки модуля (из ELF ``DT_NEEDED``).
     """
     found_count: int
     notfound_count: int
     total_count: int
     notfound_names: FrozenSet[str] = field(default_factory=frozenset)
+    total_imports: int = 0
+    system_count: int = 0
+    system_names: FrozenSet[str] = field(default_factory=frozenset)
+    system_notfound_names: FrozenSet[str] = field(default_factory=frozenset)
+    system_libs: FrozenSet[str] = field(default_factory=frozenset)
 
 
 def _decode_bytes(data: bytes) -> str:
@@ -114,6 +130,13 @@ class SfaReportGenerator:
         self._doc_cache: DocCacheManager | None = None
         self._man_pages: ManPagesDatabase | None = None
         self._man_pages_checked = False
+        # Генерация идёт в ThreadPoolExecutor: поиск БД и лог защищаем
+        # блокировками, иначе потоки наперегонки открывают man-pages БД
+        # и перемешивают строки в журнале.
+        self._man_pages_lock = threading.Lock()
+        # RLock, а не Lock: _init_log удерживает его и внутри вызывает _log,
+        # который берёт ту же блокировку повторно.
+        self._log_lock = threading.RLock()
         self._log_file = None
         self._npx_path = None
         # Загружаем marked.min.js один раз
@@ -131,16 +154,18 @@ class SfaReportGenerator:
         return ""
 
     def _init_log(self, reports_dir: Path):
-        if self._log_file is None:
-            log_path = reports_dir / "sfa_debug.log"
-            self._log_file = open(log_path, "w", encoding="utf-8")
-            self._log(f"=== SFA Debug Log started at {datetime.now().isoformat()} ===\n")
+        with self._log_lock:
+            if self._log_file is None:
+                log_path = reports_dir / "sfa_debug.log"
+                self._log_file = open(log_path, "w", encoding="utf-8")
+                self._log(f"=== SFA Debug Log started at {datetime.now().isoformat()} ===\n")
 
     def _log(self, message: str):
         print(message)
-        if self._log_file:
-            self._log_file.write(message + "\n")
-            self._log_file.flush()
+        with self._log_lock:
+            if self._log_file:
+                self._log_file.write(message + "\n")
+                self._log_file.flush()
 
     def _open_manpages(
         self,
@@ -153,42 +178,48 @@ class SfaReportGenerator:
         ``manpages.db`` рядом с папкой отчётов, затем в родительской папке.
         Результат поиска кэшируется: БД открывается один раз на весь прогон,
         а не для каждого файла отчёта.
+
+        Метод вызывается из нескольких потоков ``ThreadPoolExecutor``
+        одновременно, поэтому поиск и открытие защищены блокировкой:
+        иначе потоки наперегонки создавали по экземпляру БД.
         """
-        # Повторный вызов (следующий файл) — возвращаем уже открытую БД.
-        if self._man_pages is not None:
-            return self._man_pages
-        if self._man_pages_checked:
+        with self._man_pages_lock:
+            # Повторный вызов (следующий файл) — возвращаем уже открытую БД.
+            if self._man_pages is not None:
+                return self._man_pages
+            if self._man_pages_checked:
+                return None
+
+            candidates: list[Path] = []
+            if manpages_db_path:
+                candidates.append(Path(manpages_db_path))
+            if reports_dir:
+                candidates.append(Path(reports_dir) / "manpages.db")
+                candidates.append(Path(reports_dir).parent / "manpages.db")
+
+            for candidate in candidates:
+                if candidate.is_file():
+                    db = ManPagesDatabase(candidate)
+                    if db.open():
+                        self._man_pages = db
+                        self._man_pages_checked = True
+                        self._log(
+                            f"[INFO] man-pages DB: {candidate} "
+                            f"(функций: {db.count()}, версия: {db.version()})"
+                        )
+                        return db
+                    db.close()
+
+            # Не нашли — запоминаем, чтобы не повторять поиск и не спамить в лог.
+            self._man_pages_checked = True
+            searched = ", ".join(str(c) for c in candidates) or "пути не заданы"
+            with self._log_lock:
+                self._log(
+                    f"[WARN] БД man-pages не найдена (искали: {searched}). "
+                    "Документация Linux недоступна. Укажите путь в настройках "
+                    "и выполните синхронизацию man-pages."
+                )
             return None
-
-        candidates: list[Path] = []
-        if manpages_db_path:
-            candidates.append(Path(manpages_db_path))
-        if reports_dir:
-            candidates.append(Path(reports_dir) / "manpages.db")
-            candidates.append(Path(reports_dir).parent / "manpages.db")
-
-        for candidate in candidates:
-            if candidate.is_file():
-                db = ManPagesDatabase(candidate)
-                if db.open():
-                    self._log(
-                        f"[INFO] man-pages DB: {candidate} "
-                        f"(функций: {db.count()}, версия: {db.version()})"
-                    )
-                    self._man_pages = db
-                    self._man_pages_checked = True
-                    return db
-                db.close()
-
-        # Не нашли — запоминаем, чтобы не повторять поиск и не спамить в лог.
-        self._man_pages_checked = True
-        searched = ", ".join(str(c) for c in candidates) or "пути не заданы"
-        self._log(
-            f"[WARN] БД man-pages не найдена (искали: {searched}). "
-            "Документация Linux недоступна. Укажите путь в настройках "
-            "и выполните синхронизацию man-pages."
-        )
-        return None
 
     def close_log(self):
         if self._log_file:
@@ -306,6 +337,7 @@ class SfaReportGenerator:
         reuse_cache: bool = False,
         imports: Optional[list] = None,
         file_name_hint: str = "",
+        needed_libs_hint: Optional[list] = None,
         platform: str = "Windows",
         manpages_db_path: Optional[Path] = None,
     ) -> SfaReportStats:
@@ -327,6 +359,9 @@ class SfaReportGenerator:
             reuse_cache: если True — не вызывать npx, только mslearn_cache.db.
             imports: список импортов (если None — читается из json_path).
             file_name_hint: отображаемое имя файла (если imports передан).
+            needed_libs_hint: список зависимостей модуля (для ELF, когда
+                импорты переданы из индекса — там DT_NEEDED хранится
+                отдельно, так как импорты помечены псевдо-модулем).
             platform: целевая платформа анализа (ключ ``PLATFORM_EXTENSIONS``).
             manpages_db_path: путь к БД man-pages (для Linux/Android). Если не
                 задан, ищется ``manpages.db`` рядом с папкой отчётов.
@@ -346,19 +381,22 @@ class SfaReportGenerator:
             man_pages = self._open_manpages(reports_dir, manpages_db_path)
             docs_available = bool(man_pages and man_pages.available())
         else:
-            self._man_pages = None
             # Документация Microsoft Learn применима только к Windows API.
             docs_available = platform == "Windows"
 
         if imports is not None:
-            # Reuse-режим: импорты переданы из index БД
+            # Reuse-режим: импорты переданы из index БД. Список зависимостей
+            # (DT_NEEDED) приходит отдельным параметром — в ELF импорты
+            # помечены псевдо-модулем и библиотеку из них не узнать.
             file_name = file_name_hint or json_path.stem
             all_imports = imports
+            needed_libs = list(needed_libs_hint or [])
         else:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             file_name = data.get("file_name", "")
             all_imports = data.get("imports", [])
+            needed_libs = data.get("needed_libs") or []
 
         total_imports = len(all_imports)
         self._log(f"[INFO] Found {total_imports} imports in {file_name}")
@@ -375,9 +413,16 @@ class SfaReportGenerator:
         else:
             self._doc_cache = None
 
-        system_calls = []
+        entries: list = []
         skipped = 0
         skipped_not_in_index = 0
+        # Для Linux/Android отчёт содержит полный перечень импортированных
+        # функций: часть из них не подтверждается как системная (нет
+        # документации, неизвестная библиотека) — такие строки помечаются,
+        # но из отчёта не исчезают.
+        list_all_imports = use_manpages
+        valid_imports = sum(1 for imp in all_imports if imp.get("name"))
+
         for idx, imp in enumerate(all_imports):
             func_name = imp.get("name")
             if not func_name:
@@ -388,20 +433,21 @@ class SfaReportGenerator:
             # Для таких функций библиотека неизвестна — системность
             # определяется по наличию документации в БД man-pages.
             is_pseudo_module = module.strip().lower() in (".dynsym", ".dynsec", "unknown", "")
+            module_is_system = is_system_module(module, platform)
 
-            # Фильтр 1: только системные библиотеки выбранной платформы.
-            #
-            # Для ELF IDA иногда не может определить библиотеку и ставит
-            # псевдо-модуль (.dynsym, .dynsec, unknown). Такие импорты
-            # не отсекаются здесь — мы проверим их по man-pages позже.
-            if not is_system_module(module, platform) and not is_pseudo_module:
+            # Фильтр 1 (только Windows): системные библиотеки выбранной
+            # платформы. Для псевдо-модулей ELF проверка откладывается до
+            # поиска документации. Для Linux/Android фильтр не применяется —
+            # список импортов выводится целиком.
+            if not list_all_imports and not module_is_system and not is_pseudo_module:
                 self._log(f"[DEBUG] {func_name} ({module}) — не системная библиотека ({platform})")
                 skipped += 1
                 continue
 
-            # Фильтр 2: проверка по индексу системных функций (если доступен).
-            # Для псевдо-модулей индекс не хранит функции.
-            if function_index and function_index.available and not is_pseudo_module:
+            # Фильтр 2 (только Windows): проверка по индексу системных
+            # функций. Для псевдо-модулей индекс не хранит функции.
+            if (not list_all_imports and function_index and function_index.available
+                    and not is_pseudo_module):
                 if not function_index.is_known(func_name):
                     self._log(f"[DEBUG] {func_name} — нет в индексе системных функций")
                     skipped_not_in_index += 1
@@ -473,14 +519,24 @@ class SfaReportGenerator:
                 else:
                     self._log(f"[ERROR] No results for {func_name}")
 
-            # Для псевдо-модулей (.dynsym): если БД не знает функцию,
-            # она не является системной — не добавляем в отчёт.
-            if is_pseudo_module and not found:
+            # Признак системности функции: либо известная системная
+            # библиотека, либо функция псевдо-модуля, для которой нашлась
+            # документация в БД man-pages (тогда она системная по факту).
+            if module_is_system:
+                is_system_call = True
+            elif is_pseudo_module:
+                is_system_call = found
+            else:
+                is_system_call = False
+
+            # Для псевдо-модулей (.dynsym) в Windows-режиме функция без
+            # документации системной не признаётся и в отчёт не попадает.
+            if not list_all_imports and is_pseudo_module and not found:
                 self._log(f"[INFO] {func_name}: не подтверждена как системная (нет в БД man-pages)")
                 skipped += 1
                 continue
 
-            system_calls.append({
+            entries.append({
                 "name": func_name,
                 "dll": dll_name,
                 "return_type": "—",
@@ -491,10 +547,13 @@ class SfaReportGenerator:
                 "warning": None,
                 "search_results": results,
                 "found": found,
+                "is_system": is_system_call,
             })
 
-        self._log(f"[INFO] Generated {len(system_calls)} system calls "
-                  f"(skipped {skipped} non-Win32, {skipped_not_in_index} not in index)")
+        system_calls = entries
+        self._log(f"[INFO] Generated {len(system_calls)} rows "
+                  f"({sum(1 for e in system_calls if e['is_system'])} system; "
+                  f"skipped {skipped} as non-system, {skipped_not_in_index} not in index)")
 
         back_link = "index.html"
         if reports_dir:
@@ -508,30 +567,66 @@ class SfaReportGenerator:
         if self._doc_cache:
             self._doc_cache.flush()
 
+        system_entries = [e for e in entries if e["is_system"]]
+        # Счётчики для индексного отчёта ведутся по системным функциям: для
+        # Linux/Android в частном отчёте перечислены все импорты, и без этого
+        # «документация не найдена» смешивало бы системные функции с чужими.
+        # Для Windows все строки отчёта системные, поэтому значения прежние.
+        system_found = [e for e in system_entries if e["found"]]
+        found_count = len(system_found)
+        notfound_count = len(system_entries) - found_count
+        notfound_names = frozenset(e["name"] for e in entries if not e["found"])
+        system_notfound_names = frozenset(
+            e["name"] for e in system_entries if not e["found"]
+        )
+        # Системные библиотеки модуля. Для ELF импорты часто помечены
+        # псевдо-модулем (.dynsym), поэтому источник — список зависимостей
+        # (DT_NEEDED), как и в отчёте анализа ПО.
+        system_libs_set = {
+            lib for lib in needed_libs if is_system_module(lib, platform)
+        }
+        if list_all_imports:
+            # Reuse-режим не хранит DT_NEEDED: дополняем библиотеками,
+            # которые встретились в подтверждённых системных строках.
+            for e in system_entries:
+                dll = e["dll"]
+                if dll and dll != "—" and is_system_module(dll, platform):
+                    system_libs_set.add(dll)
+        system_libs = frozenset(system_libs_set)
+
         html = self.report_template.render(
             file_name=file_name,
-            system_calls=system_calls,
+            system_calls=entries,
             error=None,
             back_link=back_link,
             marked_js=self._marked_js,
             platform=platform,
             docs_available=docs_available,
+            # Для Linux/Android отчёт перечисляет все импорты, поэтому
+            # шаблон показывает статус системности и уточняет итоги.
+            list_all_imports=list_all_imports,
+            total_imports=valid_imports,
+            system_count=len(system_entries),
+            non_system_count=len(entries) - len(system_entries),
+            found_count=found_count,
+            notfound_count=len(entries) - found_count,
+            has_library_info=any(e["dll"] != "—" for e in entries),
         )
         output_html.write_text(html, encoding="utf-8")
         self._log(f"[INFO] Report saved to {output_html}")
 
         # Возвращаем статистику для индексного отчёта
-        found_count = sum(1 for sc in system_calls if sc["found"])
-        notfound_names = frozenset(
-            sc["name"] for sc in system_calls if not sc["found"]
-        )
         return SfaReportStats(
             found_count=found_count,
-            notfound_count=len(system_calls) - found_count,
-            total_count=len(system_calls),
+            notfound_count=notfound_count,
+            total_count=len(entries),
             notfound_names=notfound_names,
+            total_imports=valid_imports,
+            system_count=len(system_entries),
+            system_names=frozenset(e["name"] for e in system_entries),
+            system_notfound_names=system_notfound_names,
+            system_libs=system_libs,
         )
-
     def _generate_error_report(self, file_name: str, output_html: Path, error_msg: str, reports_dir: Path = None) -> None:
         if reports_dir:
             self._init_log(reports_dir)
@@ -560,6 +655,7 @@ class SfaReportGenerator:
                        total_system_modules: int = 0,
                        total_system_functions: int = 0,
                        total_system_notfound: int = 0,
+                       total_imports: int = 0,
                        generation_time: str = "",
                        platform: str = "Windows") -> Path:
         if not generation_time:
@@ -571,6 +667,14 @@ class SfaReportGenerator:
         # используется лишь как запасной вариант.
         if total_size_bytes <= 0:
             total_size_bytes = compute_executables_size(input_dir)
+
+        # Для Linux/Android частные отчёты перечисляют все импорты, поэтому
+        # индекс показывает их общее число отдельно от числа системных.
+        if not total_imports:
+            total_imports = sum(
+                int(r.get("total_imports", 0) or 0) for r in reports
+            )
+
         data = {
             "input_dir": str(input_dir),
             "platform": normalize_platform(platform),
@@ -579,6 +683,7 @@ class SfaReportGenerator:
             "total_system_modules": total_system_modules,
             "total_system_functions": total_system_functions,
             "total_system_notfound": total_system_notfound,
+            "total_imports": total_imports,
             "reports": reports,
             "generation_time": generation_time,
         }

@@ -571,6 +571,7 @@ class SfaPage(QWidget):
                 total_system_modules=result.total_system_modules,
                 total_system_functions=result.total_system_functions,
                 total_system_notfound=result.total_system_notfound,
+                total_imports=getattr(result, "total_imports", 0),
                 generation_time=gen_time,
                 platform=getattr(result, "platform", "Windows"),
             )

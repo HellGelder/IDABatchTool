@@ -16,6 +16,7 @@ import logging
 import re
 import sqlite3
 import tarfile
+import threading
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -57,38 +58,69 @@ CREATE TABLE IF NOT EXISTS meta (
 
 
 class ManPagesDatabase:
-    """SQLite-хранилище документации man-pages с офлайн-поиском."""
+    """SQLite-хранилище документации man-pages с офлайн-поиском.
+
+    Соединение SQLite открывается **на каждый поток** (thread-local):
+    генерация отчётов СФ выполняется параллельно в ``ThreadPoolExecutor``,
+    а SQLite запрещает использовать соединение из чужого потока. При одном
+    общем соединении все запросы, кроме потока-владельца, падали с
+    ``ProgrammingError`` — исключение проглатывалось, и функция с реально
+    существующей документацией считалась недокументированной.
+    """
 
     def __init__(self, db_path: str | Path):
         self._db_path = Path(db_path)
-        self._conn: Optional[sqlite3.Connection] = None
+        self._local = threading.local()
         self._available = False
 
     # ─── жизненный цикл ─────────────────────────────────────────────
 
-    def open(self) -> bool:
-        """Открывает существующую БД. Возвращает True, если она пригодна."""
+    def _connection(self) -> Optional[sqlite3.Connection]:
+        """Возвращает соединение SQLite, принадлежащее текущему потоку.
+
+        Соединение создаётся лениво при первом обращении из потока и
+        переиспользуется последующими запросами этого же потока.
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
         if not self._db_path.exists():
-            self._available = False
-            return False
+            return None
         try:
             conn = sqlite3.connect(str(self._db_path))
             conn.execute("PRAGMA query_only=1")
-            self._conn = conn
+            conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error as e:
+            logger.warning("Cannot open man-pages DB %s: %s", self._db_path, e)
+            return None
+        self._local.conn = conn
+        return conn
+
+    def open(self) -> bool:
+        """Открывает БД и проверяет её пригодность (есть ли страницы)."""
+        if not self._db_path.exists():
+            self._available = False
+            return False
+        if self._connection() is None:
+            self._available = False
+            return False
+        try:
             self._available = self.count() > 0
-        except Exception as e:
-            logger.warning("Cannot open man-pages DB: %s", e)
+        except sqlite3.Error as e:
+            logger.warning("Cannot read man-pages DB %s: %s", self._db_path, e)
             self._available = False
         return self._available
 
     def close(self) -> None:
-        if self._conn:
+        """Закрывает соединение текущего потока."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
             try:
-                self._conn.close()
+                conn.close()
             except Exception:
                 pass
-            self._conn = None
-            self._available = False
+            self._local.conn = None
+        self._available = False
 
     def __del__(self):
         self.close()
@@ -235,26 +267,30 @@ class ManPagesDatabase:
 
     def count(self) -> int:
         """Количество имён функций в индексе."""
-        if not self._conn:
+        conn = self._connection()
+        if conn is None:
             return 0
         try:
-            return self._conn.execute(
+            return conn.execute(
                 "SELECT COUNT(*) FROM function_index"
             ).fetchone()[0]
-        except Exception:
+        except sqlite3.Error:
             return 0
 
     def has_function(self, func_name: str) -> bool:
         """Есть ли документация для функции (с учётом алиасов)."""
-        if not self._available or not self._conn:
+        if not self._available:
+            return False
+        conn = self._connection()
+        if conn is None:
             return False
         for candidate in self._candidates(func_name):
             try:
-                row = self._conn.execute(
+                row = conn.execute(
                     "SELECT 1 FROM function_index WHERE func_name = ?",
                     (candidate,),
                 ).fetchone()
-            except Exception:
+            except sqlite3.Error:
                 return False
             if row:
                 return True
@@ -266,17 +302,20 @@ class ManPagesDatabase:
         Возвращаемый словарь совместим с форматом MS Learn-провайдера:
         ``title``, ``url``, ``markdown``, ``markdown_html``.
         """
-        if not self._available or not self._conn:
+        if not self._available:
+            return None
+        conn = self._connection()
+        if conn is None:
             return None
         for candidate in self._candidates(func_name):
             try:
-                row = self._conn.execute(
+                row = conn.execute(
                     "SELECT p.page_name, p.section, p.title, p.library, p.markdown "
                     "FROM function_index f JOIN pages p ON p.page_name = f.page_name "
                     "WHERE f.func_name = ?",
                     (candidate,),
                 ).fetchone()
-            except Exception:
+            except sqlite3.Error:
                 return None
             if row:
                 page_name, section, title, library, markdown = row
@@ -312,12 +351,13 @@ class ManPagesDatabase:
 
     def version(self) -> str:
         """Версия импортированного архива man-pages."""
-        if not self._conn:
+        conn = self._connection()
+        if conn is None:
             return ""
         try:
-            row = self._conn.execute(
+            row = conn.execute(
                 "SELECT value FROM meta WHERE key = 'manpages_version'"
             ).fetchone()
             return row[0] if row else ""
-        except Exception:
+        except sqlite3.Error:
             return ""
