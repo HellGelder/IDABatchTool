@@ -102,14 +102,6 @@
         {% endif %}
     </div>
 
-    {% if list_all_imports %}
-    <p class="empty-state" style="font-style:normal;">
-        Приведён полный перечень импортированных функций. Системными признаны функции
-        известных системных библиотек и функции, для которых найдена документация
-        в базе man-pages. Остальные функции отмечены как «не определена как системная».
-    </p>
-    {% endif %}
-
     {% if not docs_available %}
     <p class="empty-state">
         {% if platform == "Linux / Android" %}
