@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, Set, List
@@ -13,9 +12,6 @@ from PySide6.QtCore import QThread, Signal
 from ida_batch_tool.reporting.generator import ReportGenerator
 from ida_batch_tool.reporting.utils import normalize_display_name
 from ida_batch_tool.ui.workers.results import HtmlGenerationResult
-
-# Пути к вендоренным JS-библиотекам
-_VENDOR_DIR = Path(__file__).resolve().parent.parent.parent / "reporting" / "templates" / "vendor"
 
 
 class HtmlGeneratorWorker(QThread):
@@ -39,16 +35,6 @@ class HtmlGeneratorWorker(QThread):
         return normalize_display_name(module_name)
 
     def run(self):
-        # Копируем вендоренные JS-библиотеки в папку отчётов (offline)
-        vendor_dst = self.reports_dir / "vendor"
-        vendor_dst.mkdir(parents=True, exist_ok=True)
-        # chart.umd.min.js пока не используется (pie удалён), но оставляем на будущее
-        for fname in ():
-            src = _VENDOR_DIR / fname
-            dst = vendor_dst / fname
-            if src.is_file() and not dst.exists():
-                shutil.copy2(src, dst)
-
         # Собираем только реально существующие JSON
         jobs: List[Path] = [p for p, ok in self.json_files.items() if ok and p.exists()]
         total = len(jobs)
