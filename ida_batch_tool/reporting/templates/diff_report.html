@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Сравнение: {{ primary }} ↔ {{ secondary }}</title>
     {% include "_design_tokens.html" %}
+    {% include "_datatables.html" %}
     <style>
         .danger-block {
             background: var(--danger-tint); color: var(--danger);
@@ -39,16 +40,6 @@
             background: var(--warning-tint);
             border-left: 3px solid var(--warning);
         }
-        .shift-badge {
-            display: inline-block;
-            font-size: 9px; font-weight: 700;
-            color: var(--warning);
-            margin-right: 4px;
-            cursor: help;
-        }
-
-        .hex-sbs { display: flex; gap: 12px; margin: 8px 0; }
-        .hex-sbs > .code-block { flex: 1; min-width: 0; }
 
         .accordion-body > h4 { margin-top: 12px; }
         .no-data { color: var(--text-tertiary); font-style: italic; padding: 8px 0; }
@@ -86,6 +77,12 @@
 
         .pseudo-single { display: flex; gap: 12px; margin: 8px 0; }
         .pseudo-single > .code-block { flex: 1; min-width: 0; }
+
+        /* Длинные имена функций в таблице сопоставлений не раздувают столбцы. */
+        #match-table { table-layout: fixed; width: 100%; }
+        #match-table .dt-name {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -141,17 +138,10 @@
     <!-- Сравнение hex-дампов -->
     <h2>Сравнение hex-дампов</h2>
     <div class="card">
-        {% if not global_hex_diff or global_hex_diff|length == 0 or not global_hex_diff[0].hex_rows %}
+        {% if not global_hex_diff or global_hex_diff|length == 0 or global_hex_diff[0].hexdump_similarity is not defined %}
         <p class="empty-state">Сравнение hex-дампов не выполнено (нет данных).</p>
         {% else %}
             {% set hd = global_hex_diff[0] %}
-            {% set hdrows = hd.hex_rows %}
-            {% set meta = hdrows[-1] if hdrows and hdrows[-1].type == "_meta" else none %}
-            {% set total = meta.total_lines if meta else '?' %}
-            {% set has_diff = namespace(found=false) %}
-            {% for row in hdrows %}
-                {% if row.type in ("equal_shifted", "deleted", "inserted") %}{% set has_diff.found = true %}{% endif %}
-            {% endfor %}
             {% set hd_sim = hd.hexdump_similarity if hd.hexdump_similarity is defined else 0.0 %}
             <p class="meta-text" style="margin-bottom:4px;">
                 Схожесть hex-дампов: <strong>{{ "%.2f"|format(hd_sim * 100) }}%</strong>
@@ -162,36 +152,6 @@
                 Эталонный файл: <code>{{ hd.name1 }}</code><br>
                 Контрольный файл: <code>{{ hd.name2 }}</code>
             </p>
-            <div class="diff-sbs" style="max-height:600px; overflow-y:auto;">
-                <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Эталонный файл</div>
-                <div class="diff-cell" style="background:var(--surface-secondary); font-weight:600; color:var(--text-secondary); text-align:center;">Контрольный файл</div>
-                {% if not has_diff.found %}
-                <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… (всего {{ total }} строк, файлы идентичны) …</div>
-                {% else %}
-                {% for row in hdrows %}
-                    {% if row.type == "equal" %}
-                    <div class="diff-cell diff-equal" style="grid-column:1/-1; text-align:center; color:var(--text-tertiary); font-style:italic;">… ({{ row.count }} идентичных строк) …</div>
-                    {% elif row.type == "equal_shifted" %}
-                    {% set lb = row.left_bytes if row.left_bytes is defined else [] %}
-                    {% set rb = row.right_bytes if row.right_bytes is defined else [] %}
-                    <div class="diff-cell diff-shifted-left" title="Эталон: 0x{{ row.left_addr }} → Контроль: 0x{{ row.right_addr }}, сдвиг: {{ row.shift }}">
-                        <span class="shift-badge" title="Смещение: {{ row.shift }}">⤵ {{ row.shift }}</span>
-                        <span style="color:var(--text-tertiary);">{{ row.left_addr }}  </span>{%- for b in lb %}<span>{{ b.b }} </span>{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.left_ascii }}|</span>
-                    </div>
-                    <div class="diff-cell diff-shifted-right" title="Контроль: 0x{{ row.right_addr }} (сдвиг {{ row.shift }})">
-                        <span style="color:var(--text-tertiary);">{{ row.right_addr }}  </span>{%- for b in rb %}<span>{{ b.b }} </span>{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.right_ascii }}|</span>
-                    </div>
-                    {% elif row.type == "deleted" %}
-                    {% set lb = row.left_bytes if row.left_bytes is defined else [] %}
-                    <div class="diff-cell diff-deleted" style="grid-column:1/-1;"><span style="color:var(--text-tertiary);">{{ row.addr }}  </span>{%- for b in lb %}<span>{{ b.b }} </span>{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.left_ascii }}|</span></div>
-                    {% elif row.type == "inserted" %}
-                    {% set rb = row.right_bytes if row.right_bytes is defined else [] %}
-                    <div class="diff-cell diff-empty" style="text-align:center;"><span style="font-style:italic;">—</span></div>
-                    <div class="diff-cell diff-inserted"><span style="color:var(--text-tertiary);">{{ row.addr }}  </span>{%- for b in rb %}<span>{{ b.b }} </span>{%- endfor %}<span style="color:var(--text-tertiary);"> |{{ row.right_ascii }}|</span></div>
-                    {% endif %}
-                {% endfor %}
-                {% endif %}
-            </div>
         {% endif %}
     </div>
 
@@ -324,19 +284,8 @@
                 </span>
             </div>
             <div class="table-wrapper">
-                <table class="table" id="match-table" style="margin:0; table-layout:fixed; width:100%;">
-                    <colgroup>
-                        <col style="width:auto; min-width:80px;">
-                        <col style="width:90px;">
-                        <col style="width:auto; min-width:80px;">
-                        <col style="width:90px;">
-                        <col style="width:55px;">
-                        <col style="width:55px;">
-                        <col style="width:auto;">
-                        <col style="width:45px;">
-                        <col style="width:45px;">
-                        {% if engine == "bindiff+diaphora" %}<col style="width:65px;">{% endif %}
-                    </colgroup>
+                <table class="table dt" id="match-table" data-page-length="25"
+                       data-search-placeholder="Поиск по имени или адресу…">
                     <thead>
                         <tr>
                             <th>Имя (primary)</th>
@@ -348,23 +297,24 @@
                             <th title="Алгоритм/эвристика матчинга.">Алгоритм</th>
                             <th>Блоки</th>
                             <th>Инстр.</th>
-                            {% if engine == "bindiff+diaphora" %}<th style="cursor:pointer;">Источник</th>{% endif %}
+                            {% if engine == "bindiff+diaphora" %}<th>Источник</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
                         {% for f in matched_functions|sort(attribute='source') %}
                         <tr>
-                            <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ f.name1 }}">{{ f.name1 }}</td>
-                            <td><code>{{ f.address1 }}</code></td>
-                            <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ f.name2 }}">{{ f.name2 }}</td>
-                            <td><code>{{ f.address2 }}</code></td>
-                            <td>{{ "%.1f"|format(f.similarity * 100) }}%</td>
-                            <td>{{ "%.1f"|format(f.confidence * 100) }}%</td>
-                            <td style="font-size:11px; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ f.algorithm_name }}">{{ f.algorithm_name }}</td>
-                            <td>{{ f.basicblocks if f.basicblocks is defined else f.nodes1 if f.nodes1 is defined else '—' }}</td>
-                            <td>{{ f.instructions if f.instructions is defined else '—' }}</td>
+                            <td class="dt-name" title="{{ f.name1 }}">{{ f.name1 }}</td>
+                            <td class="col-nowrap"><code>{{ f.address1 }}</code></td>
+                            <td class="dt-name" title="{{ f.name2 }}">{{ f.name2 }}</td>
+                            <td class="col-nowrap"><code>{{ f.address2 }}</code></td>
+                            <td data-order="{{ f.similarity }}">{{ "%.1f"|format(f.similarity * 100) }}%</td>
+                            <td data-order="{{ f.confidence }}">{{ "%.1f"|format(f.confidence * 100) }}%</td>
+                            <td class="dt-name" style="font-size:11px; color:var(--text-secondary);" title="{{ f.algorithm_name }}">{{ f.algorithm_name }}</td>
+                            <td data-order="{{ f.basicblocks if f.basicblocks is defined else f.nodes1 if f.nodes1 is defined else -1 }}">{{ f.basicblocks if f.basicblocks is defined else f.nodes1 if f.nodes1 is defined else '—' }}</td>
+                            <td data-order="{{ f.instructions if f.instructions is defined else -1 }}">{{ f.instructions if f.instructions is defined else '—' }}</td>
                             {% if engine == "bindiff+diaphora" %}
-                            <td>
+                            {% set src_rank = 1 if f.source == "bindiff" else 2 if f.source == "both" else 3 %}
+                            <td data-order="{{ src_rank }}">
                                 {% if f.source == "bindiff" %}
                                 <span class="badge" style="background:var(--accent-tint);color:var(--accent);font-size:9px;">BinDiff</span>
                                 {% elif f.source == "diaphora" %}
@@ -381,28 +331,6 @@
             </div>
         </div>
         <script>
-            function sortTableBySource(tableId) {
-                var table = document.getElementById(tableId);
-                var tbody = table.querySelector('tbody');
-                var rows = Array.from(tbody.querySelectorAll('tr'));
-                var currentOrder = table.getAttribute('data-sort-order') || 'asc';
-                var newOrder = currentOrder === 'asc' ? 'desc' : 'asc';
-                table.setAttribute('data-sort-order', newOrder);
-                var sourceRank = {'bindiff': 1, 'both': 2, 'diaphora': 3};
-                rows.sort(function(a, b) {
-                    var srcA = a.cells[9].textContent.trim();
-                    var srcB = b.cells[9].textContent.trim();
-                    var rankA = sourceRank[srcA] || 0;
-                    var rankB = sourceRank[srcB] || 0;
-                    if (srcA === srcB) {
-                        rankA = a.cells[4].textContent.trim();
-                        rankB = b.cells[4].textContent.trim();
-                        return newOrder === 'asc' ? rankA.localeCompare(rankB) : rankB.localeCompare(rankA);
-                    }
-                    return newOrder === 'asc' ? rankA - rankB : rankB - rankA;
-                });
-                rows.forEach(function(row) { tbody.appendChild(row); });
-            }
             (function(){
                 var acc = document.getElementById('match-table-accordion');
                 if (acc && {{ matched_functions|length }} > 20) {
@@ -467,7 +395,6 @@
     {% for f in matched_functions %}
     {% if f.similarity < 1.0 %}
     {% set has_pseudo = (f.pseudocode1 is defined and f.pseudocode1 and f.pseudocode1 != "") or (f.pseudocode2 is defined and f.pseudocode2 and f.pseudocode2 != "") %}
-    {% set has_hex    = f.hexdump1 or f.hexdump2 %}
     {% set both_pseudo = (f.pseudocode1 is defined and f.pseudocode1 and f.pseudocode1 != "") and (f.pseudocode2 is defined and f.pseudocode2 and f.pseudocode2 != "") %}
     <div class="card accordion" id="func-{{ loop.index }}">
         <div class="accordion-header" onclick="this.closest('.accordion').classList.toggle('open')">
@@ -511,20 +438,6 @@
                     <div class="code-block">{{ f.pseudocode2 }}</div>
                 </div>
                 {% endif %}
-            </div>
-            {% endif %}
-
-            {% if has_hex and f.similarity < 1.0 %}
-            <h4>Сравнение Hex-дампа</h4>
-            <div class="hex-sbs">
-                <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Эталонный ({{ f.address1 }})</p>
-                    <div class="code-block">{{ f.hexdump1 if f.hexdump1 else '—' }}</div>
-                </div>
-                <div>
-                    <p class="meta-text" style="margin-bottom:4px;">Контрольный ({{ f.address2 }})</p>
-                    <div class="code-block">{{ f.hexdump2 if f.hexdump2 else '—' }}</div>
-                </div>
             </div>
             {% endif %}
 

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Отчёт: {{ file_name }}</title>
     {% include "_design_tokens.html" %}
+    {% include "_datatables.html" %}
     <style>
         .section-badge { margin-left: 8px; }
         .table td:nth-child(2) { font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-size: 12px; color: var(--text-secondary); }
@@ -74,7 +75,8 @@
         </div>
         <div class="accordion-body">
             {% if imports %}
-            <table class="table">
+            <table id="importsTable" class="table dt"
+                   data-page-length="50" data-search-placeholder="Поиск по импортам…">
                 <thead>
                     <tr>
                         <th>Имя</th>
@@ -84,7 +86,7 @@
                 </thead>
                 <tbody>
                     {% for imp in imports %}
-                    <tr class="searchable">
+                    <tr>
                         <td class="col-mono">{{ imp.name }}</td>
                         <td class="col-nowrap">{{ imp.address }}</td>
                         {% if not is_elf %}<td>{{ imp.module }}</td>{% endif %}
@@ -104,7 +106,8 @@
         </div>
         <div class="accordion-body">
             {% if exports %}
-            <table class="table">
+            <table id="exportsTable" class="table dt"
+                   data-page-length="50" data-search-placeholder="Поиск по экспортам…">
                 <thead>
                     <tr>
                         <th>Имя</th>
@@ -113,7 +116,7 @@
                 </thead>
                 <tbody>
                     {% for exp in exports %}
-                    <tr class="searchable">
+                    <tr>
                         <td class="col-mono">{{ exp.name }}</td>
                         <td class="col-nowrap">{{ exp.address }}</td>
                     </tr>
@@ -213,13 +216,22 @@
     {% endfor %}
 
     <script>
+        // Единое поле поиска: фильтрует и таблицы DataTables, и карточки функций.
         const searchInput = document.getElementById('quickSearch');
-        searchInput.addEventListener('input', function() {
-            const term = this.value.toLowerCase();
-            document.querySelectorAll('.searchable').forEach(function(el) {
-                el.style.display = el.textContent.toLowerCase().includes(term) ? '' : 'none';
+        if (searchInput) {
+            searchInput.addEventListener('input', function () {
+                const term = this.value.trim();
+                // Таблицы: поиск внутри DataTables (учитывает пагинацию).
+                Object.keys(window.__DT || {}).forEach(function (id) {
+                    window.__DT[id].search(term).draw();
+                });
+                // Карточки функций: по-прежнему скрываем/показываем целиком.
+                const lower = term.toLowerCase();
+                document.querySelectorAll('.searchable').forEach(function (el) {
+                    el.style.display = el.textContent.toLowerCase().includes(lower) ? '' : 'none';
+                });
             });
-        });
+        }
         // Авто‑открытие первой карточки
         var cards = document.querySelectorAll('.accordion');
         if (cards.length > 0) cards[0].classList.add('open');

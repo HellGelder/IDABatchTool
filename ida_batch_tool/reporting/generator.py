@@ -13,7 +13,12 @@ from urllib.parse import quote
 from ida_batch_tool.classifier.platform_classifier import get_platform_classifier, classify_module
 from ida_batch_tool.classifier.categories import get_module_category_and_description
 from ida_batch_tool.reporting.elf_descriptions import describe_section, describe_segment
-from ida_batch_tool.reporting.utils import compute_back_link, compute_executables_size, normalize_display_name
+from ida_batch_tool.reporting.utils import (
+    compute_back_link,
+    compute_executables_size,
+    normalize_display_name,
+    make_inline_vendor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +76,8 @@ class BaseReportGenerator(ABC):
             loader=FileSystemLoader(str(TEMPLATES_DIR)),
             autoescape=select_autoescape(['html', 'xml'])
         )
+        # Инлайн вендорных assets (DataTables) — см. _datatables.html.
+        self.env.globals['inline_vendor'] = make_inline_vendor(TEMPLATES_DIR)
         self.report_template = self.env.get_template("report.html")
         self.index_template = self.env.get_template("index.html")
         self._classifier = None  # будет установлен в наследниках

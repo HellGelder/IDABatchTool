@@ -1,0 +1,118 @@
+{# DataTables 3.0.3 (MIT) + стилизация под дизайн-токены.
+   Подключается через {% include "_datatables.html" %} — один раз, в <head>.
+   «Оживляет» таблицы с class="dt": поиск, сортировка по столбцу, пагинация. #}
+<style>{{ inline_vendor('datatables.min.css') | safe }}</style>
+<style>
+    /* ▸ DataTables под Apple-HIG токены */
+    .dt-container { font-size: 13px; }
+    .dt-container .dt-layout-row { margin: 0; align-items: center; }
+    .dt-container .dt-layout-row:first-child { margin-bottom: 12px; }
+    .dt-container .dt-layout-row:last-child { margin-top: 10px; }
+
+    .dt-container .dt-search,
+    .dt-container .dt-length { color: var(--text-secondary); font-size: 12px; }
+    .dt-container .dt-search input,
+    .dt-container .dt-length select {
+        border: 1px solid var(--separator-opaque);
+        border-radius: var(--radius-pill);
+        padding: 6px 14px;
+        font-size: 13px;
+        background: var(--surface-secondary);
+        color: var(--text);
+        outline: none;
+    }
+    .dt-container .dt-length select { border-radius: var(--radius-sm); padding: 5px 10px; }
+    .dt-container .dt-search input:focus {
+        background: var(--surface);
+        box-shadow: 0 0 0 3px var(--accent-tint);
+    }
+    .dt-container .dt-info { color: var(--text-secondary); font-size: 12px; }
+
+    .dt-container .dt-paging .dt-paging-button {
+        border: none !important;
+        border-radius: var(--radius-sm) !important;
+        color: var(--text-secondary) !important;
+        font-size: 13px !important;
+        padding: 5px 10px !important;
+        background: transparent !important;
+    }
+    .dt-container .dt-paging .dt-paging-button:hover:not(.disabled):not(.current) {
+        background: var(--separator) !important;
+        color: var(--text) !important;
+    }
+    .dt-container .dt-paging .dt-paging-button.current {
+        background: var(--accent) !important;
+        color: #fff !important;
+    }
+    .dt-container .dt-paging .dt-paging-button.disabled { opacity: .35 !important; }
+
+    /* Шапка таблицы — как в остальных таблицах отчёта */
+    table.dt { width: 100% !important; margin: 0; }
+    table.dt thead th {
+        background: var(--surface-secondary);
+        color: var(--text-secondary);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .5px;
+        border-bottom: 2px solid var(--separator-opaque) !important;
+        white-space: nowrap;
+    }
+    table.dt thead th.dt-orderable-asc,
+    table.dt thead th.dt-orderable-desc { cursor: pointer; }
+    table.dt tbody td { border-bottom: 1px solid var(--separator) !important; vertical-align: top; }
+    table.dt tbody tr:hover { background: var(--surface-secondary); }
+
+    /* Пустой результат поиска */
+    .dt-container .dt-empty { color: var(--text-tertiary); font-style: italic; }
+</style>
+<script>{{ inline_vendor('datatables.min.js') | safe }}</script>
+<script>
+    (function () {
+        'use strict';
+        // Реестр инициализированных таблиц: доступен шаблонам для фильтров.
+        var DT = {};
+        window.__DT = DT;
+
+        function initTables() {
+            document.querySelectorAll('table.dt').forEach(function (t) {
+                if (DT[t.id]) return;
+                DT[t.id] = new DataTable(t, {
+                    pageLength: parseInt(t.dataset.pageLength || '25', 10),
+                    lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, 'Все']],
+                    autoWidth: false,
+                    // Исходный порядок строк значим (сортировка по источнику,
+                    // порядок вызовов) — не переупорядочиваем при загрузке.
+                    order: [],
+                    language: {
+                        search: 'Поиск:',
+                        searchPlaceholder: t.dataset.searchPlaceholder || 'фильтр…',
+                        lengthMenu: 'Показать _MENU_',
+                        info: 'Показаны _START_–_END_ из _TOTAL_',
+                        infoEmpty: 'Нет записей',
+                        infoFiltered: '(отфильтровано из _MAX_)',
+                        zeroRecords: 'Ничего не найдено',
+                        paginate: { previous: 'Назад', next: 'Вперёд' }
+                    }
+                });
+            });
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initTables);
+        } else {
+            initTables();
+        }
+
+        // Таблицы внутри закрытых аккордеонов инициализируются скрытыми,
+        // из-за чего DataTables неверно считает ширины столбцов.
+        // Пересчитываем геометрию при раскрытии.
+        document.addEventListener('click', function (e) {
+            if (!e.target.closest('.accordion-header')) return;
+            setTimeout(function () {
+                Object.keys(DT).forEach(function (k) {
+                    try { DT[k].columns.adjust(); } catch (err) { /* таблица не готова */ }
+                });
+            }, 60);
+        });
+    })();
+</script>

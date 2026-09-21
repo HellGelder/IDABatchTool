@@ -70,6 +70,7 @@
         .filter-clear:hover { color: var(--text-secondary); }
     </style>
     <script>{{ marked_js | safe }}</script>
+    {% include "_datatables.html" %}
 </head>
 <body>
     <div class="app-header">
@@ -114,7 +115,8 @@
     </p>
     {% endif %}
 
-    <table id="sfa-table">
+    <table id="sfa-table" class="dt" data-page-length="50"
+           data-search-placeholder="Поиск по функции или библиотеке…">
         <thead>
             <tr>
                 <th style="width:160px;">Библиотека</th>
@@ -177,30 +179,41 @@
             const filterNotfound = document.getElementById('filter-notfound');
             const filterSystem = document.getElementById('filter-system');
             const filterClear = document.getElementById('filter-clear');
-            const rows = document.querySelectorAll('#sfa-tbody tr');
             const totalCount = document.getElementById('total-count');
             const buttons = [filterAll, filterFound, filterNotfound, filterSystem].filter(Boolean);
 
+            const tableId = 'sfa-table';
+            let filterName = 'all';
+
+            // Фильтр применяется на уровне DataTables (через ext.search), а не
+            // скрытием строк: иначе пагинация показывает неверные страницы.
+            // Предикат читает атрибуты <tr>, выставленные шаблоном.
+            const RESET = { all: null, found: 'true', notfound: 'false', system: 'true' };
+            const ATTR = { found: 'data-found', notfound: 'data-found', system: 'data-system' };
+
+            function predicate(settings, data, index) {
+                if (filterName === 'all') return true;
+                const api = new DataTable.Api(settings);
+                const node = api.row(index).node();
+                if (!node) return true;
+                return node.getAttribute(ATTR[filterName]) === RESET[filterName];
+            }
+
+            DataTable.ext.search.push(predicate);
+
             function setActive(btn) {
-                buttons.forEach(b => b.classList.remove('active'));
+                buttons.forEach(function(b) { b.classList.remove('active'); });
                 if (btn) btn.classList.add('active');
             }
 
             function applyFilter(filter) {
-                let visible = 0;
-                rows.forEach(function(row) {
-                    const found = row.getAttribute('data-found') === 'true';
-                    const isSystem = row.getAttribute('data-system') === 'true';
-                    let show = false;
-                    if (filter === 'all') show = true;
-                    else if (filter === 'found') show = found;
-                    else if (filter === 'notfound') show = !found;
-                    else if (filter === 'system') show = isSystem;
-                    row.style.display = show ? '' : 'none';
-                    if (show) visible++;
-                });
-                totalCount.textContent = visible;
-                filterClear.style.display = (filter === 'all') ? 'none' : '';
+                filterName = filter;
+                const dt = window.__DT && window.__DT[tableId];
+                if (dt) {
+                    dt.draw();
+                    totalCount.textContent = dt.rows({ filter: 'applied' }).count();
+                }
+                if (filterClear) filterClear.style.display = (filter === 'all') ? 'none' : '';
             }
 
             filterAll.addEventListener('click', function() { setActive(filterAll); applyFilter('all'); });
@@ -209,7 +222,9 @@
             if (filterSystem) {
                 filterSystem.addEventListener('click', function() { setActive(filterSystem); applyFilter('system'); });
             }
-            filterClear.addEventListener('click', function() { setActive(filterAll); applyFilter('all'); });
+            if (filterClear) {
+                filterClear.addEventListener('click', function() { setActive(filterAll); applyFilter('all'); });
+            }
         })();
     </script>
 </body>

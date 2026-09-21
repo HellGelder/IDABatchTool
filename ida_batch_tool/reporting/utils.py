@@ -121,6 +121,32 @@ def normalize_display_name(module_name: str) -> str:
     return module_name
 
 
+def make_inline_vendor(templates_dir: Path):
+    """Создаёт Jinja-глобал ``inline_vendor(name)`` для инлайн-встраивания
+    вендорных assets из ``<templates_dir>/vendor/``.
+
+    Возвращает функцию, читающую файл по имени и отдающую его содержимое как
+    строку (шаблон подставляет её через ``| safe``). Отсутствующий или
+    нечитаемый файл даёт пустую строку — отчёт останется работоспособным,
+    просто без соответствующей библиотеки.
+
+    Встраивание делается через контекст шаблона, а не ``{% include %}``:
+    в минифицированных JS/CSS встречаются последовательности ``{{``/``%}``,
+    которые Jinja приняла бы за собственный синтаксис.
+    """
+    vendor_dir = Path(templates_dir) / "vendor"
+
+    def inline_vendor(name: str) -> str:
+        path = vendor_dir / name
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning("Вендорный asset не найден: %s", path)
+            return ""
+
+    return inline_vendor
+
+
 def compute_back_link(report_rel_path: Path) -> str:
     """
     Вычисляет относительный путь к index.html из файла отчёта.

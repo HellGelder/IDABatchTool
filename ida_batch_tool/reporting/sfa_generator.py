@@ -13,7 +13,7 @@ from ida_batch_tool.database.sfa_doc_cache import DocCacheManager
 from ida_batch_tool.database.sfa_function_index import SfaFunctionIndex
 from ida_batch_tool.database.man_pages_db import ManPagesDatabase
 from ida_batch_tool.classifier.system_modules import is_system_module, normalize_platform
-from ida_batch_tool.reporting.utils import compute_back_link, compute_executables_size
+from ida_batch_tool.reporting.utils import compute_back_link, compute_executables_size, make_inline_vendor
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -125,6 +125,8 @@ class SfaReportGenerator:
             loader=FileSystemLoader(str(TEMPLATES_DIR)),
             autoescape=select_autoescape(['html', 'xml'])
         )
+        # Инлайн вендорных assets (DataTables) — см. _datatables.html.
+        self.env.globals['inline_vendor'] = make_inline_vendor(TEMPLATES_DIR)
         self.report_template = self.env.get_template("sfa_report.html")
         self.index_template = self.env.get_template("sfa_index.html")
         self._doc_cache: DocCacheManager | None = None

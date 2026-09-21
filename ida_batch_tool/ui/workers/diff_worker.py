@@ -692,11 +692,11 @@ class DiffWorker(QThread):
                 try:
                     with open(json_output, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    hex_rows, hex_sim = _compute_hexdump_diff(orig1, orig2)
+                    _, hex_sim = _compute_hexdump_diff(orig1, orig2)
                     data["global_hex_diff"] = [{
                         "name1": orig1.name, "path1": str(orig1),
                         "name2": orig2.name, "path2": str(orig2),
-                        "hex_rows": hex_rows, "hexdump_similarity": hex_sim,
+                        "hexdump_similarity": hex_sim,
                     }]
                     data["hexdump_similarity"] = hex_sim
                     data["real_primary"] = str(orig1)
@@ -1024,11 +1024,11 @@ class DiffWorker(QThread):
                 try:
                     with open(json_output, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    hex_rows, hex_sim = _compute_hexdump_diff(orig1, orig2)
+                    _, hex_sim = _compute_hexdump_diff(orig1, orig2)
                     data["global_hex_diff"] = [{
                         "name1": orig1.name, "path1": str(orig1),
                         "name2": orig2.name, "path2": str(orig2),
-                        "hex_rows": hex_rows, "hexdump_similarity": hex_sim,
+                        "hexdump_similarity": hex_sim,
                     }]
                     data["hexdump_similarity"] = hex_sim
                     data["real_primary"] = str(orig1)
@@ -1714,8 +1714,6 @@ class DiffWorker(QThread):
                         break
             mf["pseudocode1"] = f1["pseudocode"] if f1 else ""
             mf["pseudocode2"] = f2["pseudocode"] if f2 else ""
-            mf["hexdump1"] = f1["hexdump"] if f1 else ""
-            mf["hexdump2"] = f2["hexdump"] if f2 else ""
             if f1 and f2 and f1["pseudocode"] and f2["pseudocode"]:
                 lines1 = f1["pseudocode"].splitlines()
                 lines2 = f2["pseudocode"].splitlines()
