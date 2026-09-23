@@ -160,6 +160,16 @@
     {% set dp_only = ms.get('diaphora_only', 0) %}
     {% set both_cnt = ms.get('both', 0) %}
     {% set total_found = bd_only + dp_only + both_cnt %}
+    {# Несопоставлено — фактический список из экспорта IDA (перезаписывается
+       в пост-анализе); для старых JSON без списков — разность тоталов. #}
+    {% set un1_len = unmatched_functions1|length if unmatched_functions1 is defined else 0 %}
+    {% if unmatched_source is defined and unmatched_source == 'ida_export' or un1_len > 0 %}
+        {% set unmatched_display = un1_len %}
+    {% elif total_functions1 is defined and total_functions1 > 0 %}
+        {% set unmatched_display = total_functions1 - total_found %}
+    {% else %}
+        {% set unmatched_display = none %}
+    {% endif %}
 
     <!-- Движок сравнения (показываем только если bindiff+diaphora) -->
     {% if engine == "bindiff+diaphora" %}
@@ -189,7 +199,7 @@
                 <div class="stat-label">Общие</div>
             </div>
             <div class="stat-tile">
-                <div class="stat-value" style="font-size:20px; color:var(--danger);">{{ (total_functions1 - total_found) if total_functions1 > 0 else "—" }}</div>
+                <div class="stat-value" style="font-size:20px; color:var(--danger);">{{ unmatched_display if unmatched_display is not none else "—" }}</div>
                 <div class="stat-label">Не сопоставлено</div>
             </div>
         </div>
@@ -349,11 +359,7 @@
         {% set has_un1 = unmatched_functions1 is defined and unmatched_functions1|length > 0 %}
         {% set has_un2 = unmatched_functions2 is defined and unmatched_functions2|length > 0 %}
         {% set total_un = total_unmatched is defined and total_unmatched > 0 %}
-        {% if not has_un1 and not has_un2 and not total_un %}
-            <p class="empty-state">Все функции успешно сопоставлены. Несопоставленных функций нет.</p>
-        {% elif not has_un1 and not has_un2 and total_un %}
-            <p class="empty-state">{{ total_unmatched }} функций не имеют сопоставления (имена не определены).</p>
-        {% else %}
+        {% if has_un1 or has_un2 %}
         <div class="flex-row">
             {% if has_un1 %}
             <div class="import-col">
@@ -380,6 +386,10 @@
             </div>
             {% endif %}
         </div>
+        {% elif total_un %}
+            <p class="empty-state">{{ total_unmatched }} функций не имеют сопоставления (имена не определены).</p>
+        {% else %}
+            <p class="empty-state">Все функции успешно сопоставлены. Несопоставленных функций нет.</p>
         {% endif %}
     </div>
 

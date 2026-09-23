@@ -720,6 +720,7 @@ class DiffWorker(QThread):
 
                 def _read_export(pj_path, matched_set):
                     funcs = []
+                    seen = set()
                     if pj_path and pj_path.is_file():
                         try:
                             with open(pj_path, "r", encoding="utf-8") as pf:
@@ -732,22 +733,42 @@ class DiffWorker(QThread):
                                     addr_norm = f"0x{addr_int:X}"
                                 except (ValueError, TypeError):
                                     addr_norm = raw_addr
+                                if addr_norm in seen:
+                                    continue
+                                seen.add(addr_norm)
                                 if addr_norm not in matched_set:
                                     funcs.append({"address": addr_norm, "name": func.get("name", "<unnamed>")})
                         except (OSError, json.JSONDecodeError):
                             pass
-                    return funcs
+                    return funcs, len(seen)
 
-                un1 = _read_export(exported.get("primary"), matched_primary)
-                un2 = _read_export(exported.get("secondary"), matched_secondary)
-                if un1: data.setdefault("unmatched_functions1", un1)
-                if un2: data.setdefault("unmatched_functions2", un2)
-                total1 = data.get("total_functions1", 0)
-                unique_primary = len({
-                    m.get("address1", "") for m in data.get("matched_functions", [])
-                    if m.get("address1")
-                })
-                data["total_unmatched"] = max(0, total1 - unique_primary)
+                un1, real_total1 = _read_export(exported.get("primary"), matched_primary)
+                un2, real_total2 = _read_export(exported.get("secondary"), matched_secondary)
+                # Экспорт IDA — источник истины: полный перечень функций базы
+                # минус сопоставленные. Перезаписываем списки Diaphora и тоталы
+                # метаданных BinDiff (те завышены: включают функции без кода,
+                # отсутствующие в перечне IDA).
+                if exported.get("primary") is not None:
+                    data["unmatched_functions1"] = un1
+                    data["total_unmatched"] = len(un1)
+                    data["unmatched_source"] = "ida_export"
+                    if real_total1 > 0:
+                        data["total_functions1"] = real_total1
+                if exported.get("secondary") is not None and real_total2 > 0:
+                    data["unmatched_functions2"] = un2
+                    data["total_functions2"] = real_total2
+                if exported.get("primary") is None:
+                    if data.get("unmatched_functions1"):
+                        data["total_unmatched"] = len(data["unmatched_functions1"])
+                    else:
+                        total1 = data.get("total_functions1", 0)
+                        # Уникальные адреса primary — после дедупликации каждая
+                        # primary-функция сопоставлена не более чем с одной secondary.
+                        unique_primary = len({
+                            m.get("address1", "") for m in data.get("matched_functions", [])
+                            if m.get("address1")
+                        })
+                        data["total_unmatched"] = max(0, total1 - unique_primary)
                 with open(json_output, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
             except (OSError, json.JSONDecodeError):
@@ -1052,6 +1073,7 @@ class DiffWorker(QThread):
 
                 def _read_export(pj_path, matched_set):
                     funcs = []
+                    seen = set()
                     if pj_path and pj_path.is_file():
                         try:
                             with open(pj_path, "r", encoding="utf-8") as pf:
@@ -1064,24 +1086,42 @@ class DiffWorker(QThread):
                                     addr_norm = f"0x{addr_int:X}"
                                 except (ValueError, TypeError):
                                     addr_norm = raw_addr
+                                if addr_norm in seen:
+                                    continue
+                                seen.add(addr_norm)
                                 if addr_norm not in matched_set:
                                     funcs.append({"address": addr_norm, "name": func.get("name", "<unnamed>")})
                         except (OSError, json.JSONDecodeError):
                             pass
-                    return funcs
+                    return funcs, len(seen)
 
-                un1 = _read_export(exported.get("primary"), matched_primary)
-                un2 = _read_export(exported.get("secondary"), matched_secondary)
-                if un1: data.setdefault("unmatched_functions1", un1)
-                if un2: data.setdefault("unmatched_functions2", un2)
-                total1 = data.get("total_functions1", 0)
-                # Используем уникальные адреса primary-функций — после дедупликации
-                # каждая primary-функция сопоставлена не более чем с одной secondary.
-                unique_primary = len({
-                    m.get("address1", "") for m in data.get("matched_functions", [])
-                    if m.get("address1")
-                })
-                data["total_unmatched"] = max(0, total1 - unique_primary)
+                un1, real_total1 = _read_export(exported.get("primary"), matched_primary)
+                un2, real_total2 = _read_export(exported.get("secondary"), matched_secondary)
+                # Экспорт IDA — источник истины: полный перечень функций базы
+                # минус сопоставленные. Перезаписываем списки Diaphora и тоталы
+                # метаданных BinDiff (те завышены: включают функции без кода,
+                # отсутствующие в перечне IDA).
+                if exported.get("primary") is not None:
+                    data["unmatched_functions1"] = un1
+                    data["total_unmatched"] = len(un1)
+                    data["unmatched_source"] = "ida_export"
+                    if real_total1 > 0:
+                        data["total_functions1"] = real_total1
+                if exported.get("secondary") is not None and real_total2 > 0:
+                    data["unmatched_functions2"] = un2
+                    data["total_functions2"] = real_total2
+                if exported.get("primary") is None:
+                    if data.get("unmatched_functions1"):
+                        data["total_unmatched"] = len(data["unmatched_functions1"])
+                    else:
+                        total1 = data.get("total_functions1", 0)
+                        # Уникальные адреса primary — после дедупликации каждая
+                        # primary-функция сопоставлена не более чем с одной secondary.
+                        unique_primary = len({
+                            m.get("address1", "") for m in data.get("matched_functions", [])
+                            if m.get("address1")
+                        })
+                        data["total_unmatched"] = max(0, total1 - unique_primary)
                 with open(json_output, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
             except (OSError, json.JSONDecodeError):
