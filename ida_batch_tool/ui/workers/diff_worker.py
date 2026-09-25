@@ -310,14 +310,13 @@ def _parse_diaphora_results(sqlite_path: Path) -> dict:
 
 
 class DiffWorker(QThread):
-    progress_updated = Signal(int, int, str)
     stage_updated = Signal(str, int, int, str, str)
     # stage_updated(stage_name, current, total, file_stem, substage_description)
     pair_started = Signal(str)
     pair_completed = Signal(str)
     finished = Signal(int, int)
     error_occurred = Signal(str)
-    global_progress_updated = Signal(int, int, str)  # (step, total, description)
+    stage_changed = Signal(str, str)                  # (stage_name, "started" | "done")
     pair_status_updated = Signal(str, str, str)       # (rel_key, engine, status)
 
     def __init__(self, file_pairs: List[Tuple[Path, Path, str]],
@@ -344,8 +343,6 @@ class DiffWorker(QThread):
         self._completed_count = 0
         self._pulse_counter = 0
         self._lock = threading.Lock()
-        self._global_step = 0
-        self._total_steps = 0
 
     def _safe_emit(self, signal, *args) -> None:
         """Безопасный эмит сигнала — ловит TypeError если QThread уже уничтожен."""
@@ -403,39 +400,51 @@ class DiffWorker(QThread):
             reverse=True,
         )
 
-        self._global_step = 0
-        self._safe_emit(self.global_progress_updated, 0, self._total_steps, "Запуск...")
+        self._stage_current_stage = ""
 
         use_bindiff = self.engine in ("bindiff", "both")
         use_diaphora = self.engine in ("diaphora", "both")
 
-        # Количество фаз: экспорт (1 или 2) + пост-анализ + HTML
-        phases = 2 + int(use_bindiff) + int(use_diaphora)
-        self._total_steps = total * phases
-
         if use_bindiff:
-            self._stage_current_stage = "BinDiff - Экспорт из БД"
+            self._stage_current_stage = "BinDiff — экспорт"
+            self._safe_emit(self.stage_changed, "BinDiff", "started")
             self._run_pass_with_progress(
                 "BinDiff", self._process_bindiff_pair, all_pairs, total,
                 engine="bindiff", status_text="Экспорт из БД",
             )
+            self._safe_emit(self.stage_changed, "BinDiff", "done")
+
+        if self._cancel_event.is_set():
+            return
 
         if use_diaphora:
-            self._stage_current_stage = "Diaphora - Экспорт из БД"
+            self._stage_current_stage = "Diaphora — экспорт"
+            self._safe_emit(self.stage_changed, "Diaphora", "started")
             self._run_pass_with_progress(
                 "Diaphora", self._process_diaphora_pair, all_pairs, total,
                 engine="diaphora", status_text="Экспорт из БД",
             )
+            self._safe_emit(self.stage_changed, "Diaphora", "done")
+
+        if self._cancel_event.is_set():
+            return
 
         self._stage_current_stage = "Пост-анализ"
+        self._safe_emit(self.stage_changed, "Пост-анализ", "started")
         self._run_pass_with_progress(
             "Post", self._process_post_pair, all_pairs, total,
             engine=None, status_text="Пост-анализ",
         )
+        self._safe_emit(self.stage_changed, "Пост-анализ", "done")
+
+        if self._cancel_event.is_set():
+            return
 
         # Финальный этап: генерация HTML-отчётов
         self._stage_current_stage = "Генерация HTML"
+        self._safe_emit(self.stage_changed, "Генерация HTML", "started")
         self._generate_reports(all_pairs, total)
+        self._safe_emit(self.stage_changed, "Генерация HTML", "done")
 
         # ----- Доанализ: если выбран BinDiff и есть add_output_dir -----
         if self.engine == "bindiff" and self.add_output_dir is not None:
@@ -500,11 +509,6 @@ class DiffWorker(QThread):
                         self._safe_emit(self.pair_status_updated, rel_key, "bindiff", "\u2713")
                     if self.engine in ("diaphora", "both"):
                         self._safe_emit(self.pair_status_updated, rel_key, "diaphora", "\u2713")
-
-                with self._lock:
-                    self._global_step += 1
-                    self._safe_emit(self.global_progress_updated, self._global_step, self._total_steps,
-                                    "Генерация HTML")
 
                 self._safe_emit_stage("Report", idx + 1, total, jf.stem, "Генерация HTML-отчётов...")
 
@@ -590,35 +594,37 @@ class DiffWorker(QThread):
         # Копируем существующие .diff.json в add_output_dir
         self._prepare_add_diff_files(add_pairs)
 
-        # Пересчитываем общее количество шагов с учётом доанализа
-        add_steps = len(add_pairs) * 3  # Diaphora + пост-анализ + HTML
-        self._total_steps += add_steps
-
         add_total = len(add_pairs)
 
         # Фаза 4: Diaphora (доанализ)
         self._stage_current_stage = "Доанализ Diaphora"
+        self._safe_emit(self.stage_changed, "Доанализ (Diaphora)", "started")
         self._run_pass_with_progress(
             "AddDiaphora", self._process_add_diaphora_pair, add_pairs, add_total,
             engine="diaphora", status_text="Доанализ (Diaphora)",
         )
+        self._safe_emit(self.stage_changed, "Доанализ (Diaphora)", "done")
 
         if self._cancel_event.is_set():
             return
 
         # Фаза 5: Пост-анализ (доанализ)
         self._stage_current_stage = "Доанализ - Пост-анализ"
+        self._safe_emit(self.stage_changed, "Доанализ (пост-анализ)", "started")
         self._run_pass_with_progress(
             "AddPost", self._process_add_post_pair, add_pairs, add_total,
             engine="diaphora", status_text="Доанализ (пост-анализ)",
         )
+        self._safe_emit(self.stage_changed, "Доанализ (пост-анализ)", "done")
 
         if self._cancel_event.is_set():
             return
 
         # Фаза 6: HTML-отчёты (доанализ)
         self._stage_current_stage = "Доанализ - Генерация HTML"
+        self._safe_emit(self.stage_changed, "Генерация HTML (доанализ)", "started")
         self._generate_add_reports(add_pairs, add_total)
+        self._safe_emit(self.stage_changed, "Генерация HTML (доанализ)", "done")
 
     # ----- Фаза 4: Diaphora (доанализ) -----
     def _process_add_diaphora_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str) -> bool:
@@ -879,11 +885,6 @@ class DiffWorker(QThread):
                 if rel_key:
                     self._safe_emit(self.pair_status_updated, rel_key, "diaphora", "\u2713")
 
-                with self._lock:
-                    self._global_step += 1
-                    self._safe_emit(self.global_progress_updated, self._global_step, self._total_steps,
-                                    "Генерация HTML (доанализ)")
-
                 self._safe_emit_stage("AddReport", idx + 1, total, jf.stem,
                                       "Генерация HTML-отчётов (доанализ)...")
 
@@ -956,10 +957,6 @@ class DiffWorker(QThread):
             with self._lock:
                 completed += 1
                 self._pulse_counter = completed
-                self._global_step += 1
-                desc = self._stage_current_stage or stage_name
-                self._safe_emit(self.global_progress_updated,
-                                self._global_step, self._total_steps, desc)
                 self._safe_emit_stage(stage_name, completed, total,
                                       display_name, self._stage_current_stage)
                 if engine is None:

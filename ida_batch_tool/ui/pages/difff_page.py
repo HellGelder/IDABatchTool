@@ -129,12 +129,28 @@ class DiffPage(QWidget):
         main_layout.addWidget(map_group, 1)
 
         # ---------- Прогресс выполнения ----------
+        # Счётчик «N из M» убран: вместо него — этапы и статусы обработки файлов
+        # в таблице. Полоса остаётся как индикатор занятости (неопределённый режим).
         progress_group = QGroupBox("Прогресс выполнения")
         progress_layout = QVBoxLayout(progress_group)
-        self.progress_label = QLabel("Прогресс выполнения: ожидание...")
+
+        stages_row = QHBoxLayout()
+        stages_row.setSpacing(12)
+        self._stages_row_layout = stages_row
+        self.stage_labels: dict = {}
+        for name in ("BinDiff", "Diaphora", "Пост-анализ", "Генерация HTML"):
+            lbl = QLabel(name)
+            stages_row.addWidget(lbl)
+            self.stage_labels[name] = lbl
+        stages_row.addStretch()
+        progress_layout.addLayout(stages_row)
+
+        self.current_file_label = QLabel("Файл: —")
+        progress_layout.addWidget(self.current_file_label)
+
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        progress_layout.addWidget(self.progress_label)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setVisible(False)
         progress_layout.addWidget(self.progress_bar)
         main_layout.addWidget(progress_group)
 
@@ -426,13 +442,11 @@ class DiffPage(QWidget):
         self.diff_started.emit()
         self.start_btn.setEnabled(False)
 
-        # Единый прогресс: фаз = экспорт (1 или 2) + пост-анализ + HTML
-        use_bindiff = engine in ("bindiff", "both")
-        use_diaphora = engine in ("diaphora", "both")
-        total_steps = len(pairs) * (2 + int(use_bindiff) + int(use_diaphora))
-        self.progress_bar.setRange(0, total_steps)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText(f"Прогресс выполнения: 0 / {total_steps}")
+        # Сбрасываем индикацию этапов и включаем индикатор занятости
+        self._reset_stages()
+        self.progress_bar.setVisible(True)
+        self.current_file_label.setText("Файл: —")
+        self.map_status_label.setText("Идёт сравнение...")
 
         # Очищаем колонки статусов BinDiff / Diaphora
         for row in range(1, self.pairs_table.rowCount()):
@@ -448,8 +462,8 @@ class DiffPage(QWidget):
         self._worker = DiffWorker(pairs, idat_path, bindiff_path, output_path,
                                    engine=engine, left_dir=left_dir, right_dir=right_dir,
                                    add_output_dir=add_output_path)
+        self._worker.stage_changed.connect(self._on_stage_changed)
         self._worker.stage_updated.connect(self._on_stage_updated)
-        self._worker.global_progress_updated.connect(self._on_global_progress)
         self._worker.pair_status_updated.connect(self._on_pair_status)
         self._worker.error_occurred.connect(self._on_error)
         self._worker.finished.connect(self._on_diff_finished)
@@ -466,15 +480,48 @@ class DiffPage(QWidget):
     def _cancel_comparison(self) -> None:
         if self._worker:
             self._worker.cancel()
-            self.progress_label.setText("Прогресс выполнения: отменён")
+            self.map_status_label.setText("Сравнение: отменено")
+            self.progress_bar.setVisible(False)
             self.cancel_btn.setEnabled(False)
 
     # ----------------------------------------------------------------
     # Обработчики сигналов воркера
     # ----------------------------------------------------------------
-    def _on_global_progress(self, step: int, total_steps: int, desc: str) -> None:
-        self.progress_bar.setValue(step)
-        self.progress_label.setText(f"Прогресс выполнения: {step} / {total_steps} — {desc}")
+    _BASE_STAGES = ("BinDiff", "Diaphora", "Пост-анализ", "Генерация HTML")
+
+    def _reset_stages(self) -> None:
+        """Сбрасывает этапы к «○ ожидается»; динамические метки доанализа удаляются."""
+        for name in list(self.stage_labels.keys()):
+            lbl = self.stage_labels[name]
+            if name not in self._BASE_STAGES:
+                self._stages_row_layout.removeWidget(lbl)
+                lbl.deleteLater()
+                del self.stage_labels[name]
+            else:
+                lbl.setText(f"○ {name}")
+
+    def _on_stage_changed(self, stage_name: str, phase: str) -> None:
+        """Обновляет строку этапов: ○ ожидается / ▶ идёт / ✔ готов."""
+        display = {
+            "BinDiff": "BinDiff",
+            "Diaphora": "Diaphora",
+            "Пост-анализ": "Пост-анализ",
+            "Генерация HTML": "Генерация HTML",
+            "Доанализ (Diaphora)": "Доанализ (Diaphora)",
+            "Доанализ (пост-анализ)": "Доанализ (пост-анализ)",
+            "Генерация HTML (доанализ)": "Генерация HTML (доанализ)",
+        }.get(stage_name, stage_name)
+        lbl = self.stage_labels.get(display)
+        if lbl is None:
+            # Этапы доанализа добавляются динамически перед stretch
+            lbl = QLabel(display)
+            self.stage_labels[display] = lbl
+            self._stages_row_layout.insertWidget(
+                self._stages_row_layout.count() - 1, lbl)
+        if phase == "started":
+            lbl.setText(f"▶ {display}")
+        elif phase == "done":
+            lbl.setText(f"✔ {display}")
 
     def _on_pair_status(self, rel_key: str, engine: str, status: str) -> None:
         """Обновляет колонку BinDiff (4) или Diaphora (5) для строки с rel_key."""
@@ -487,8 +534,12 @@ class DiffPage(QWidget):
 
     def _on_stage_updated(self, stage_name: str, current: int, total: int,
                            file_stem: str, substage: str) -> None:
-        """Сохраняем для обратной совместимости — используется _on_global_progress."""
-        pass
+        """Показывает этап и файл, обрабатываемый в данный момент."""
+        if file_stem:
+            self.current_file_label.setText(
+                f"{stage_name}: {file_stem} ({current} / {total}) — {substage}")
+        elif substage:
+            self.current_file_label.setText(f"{stage_name} — {substage}")
 
     def _on_error(self, message: str) -> None:
         self.error_text.append(message)
@@ -499,8 +550,11 @@ class DiffPage(QWidget):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
 
-        self.progress_bar.setValue(self.progress_bar.maximum())
-        self.progress_label.setText(f"Прогресс выполнения: завершён ({success_count}/{total})")
+        self.progress_bar.setVisible(False)
+        # Итог — в строку текущего файла: map_status_label будет перезаписан
+        # _analyze_directories() ниже.
+        self.current_file_label.setText(
+            f"Сравнение завершено: успешно {success_count} из {total} пар")
 
         # Обновляем статусы в таблице
         self._analyze_directories()
