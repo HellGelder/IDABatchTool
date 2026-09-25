@@ -3979,8 +3979,10 @@ def main():
       "function_summaries_only", bd.function_summaries_only
     )
     bd.min_ea = int(bd.get_value_for("from_address", "0"), 16)
+    # Ключ был "self.export_microcode" — такое env-имя (DIAPHORA_SELF.EXPORT_MICROCODE)
+    # не задать, микрокод не отключался через окружение. Исправлено.
     bd.export_microcode = bd.get_value_for(
-      "self.export_microcode", bd.export_microcode
+      "export_microcode", bd.export_microcode
     )
 
     _to_ea = bd.get_value_for("to_address", None)

@@ -640,19 +640,23 @@ class DiffWorker(QThread):
                 self._safe_emit_stage("AddDiaphora", self._pulse_counter, len(self.file_pairs),
                                       primary_i64.name, msg)
 
-            if not self._run_diaphora_export(primary_i64, diaphora_db_pr, pulse_callback=_pulse):
-                self._safe_emit(self.error_occurred, f"Diaphora доанализ экспорт primary {stem}")
-                # Cleanup
-                for p in (diaphora_db_pr, diaphora_db_sc, diaphora_result):
-                    try: p.unlink(missing_ok=True)
-                    except OSError: pass
-                return False
-            if not self._run_diaphora_export(secondary_i64, diaphora_db_sc, pulse_callback=_pulse):
-                self._safe_emit(self.error_occurred, f"Diaphora доанализ экспорт secondary {stem}")
-                for p in (diaphora_db_pr, diaphora_db_sc, diaphora_result):
-                    try: p.unlink(missing_ok=True)
-                    except OSError: pass
-                return False
+            if not self._diaphora_cache_get(primary_i64, diaphora_db_pr):
+                if not self._run_diaphora_export(primary_i64, diaphora_db_pr, pulse_callback=_pulse):
+                    self._safe_emit(self.error_occurred, f"Diaphora доанализ экспорт primary {stem}")
+                    # Cleanup
+                    for p in (diaphora_db_pr, diaphora_db_sc, diaphora_result):
+                        try: p.unlink(missing_ok=True)
+                        except OSError: pass
+                    return False
+                self._diaphora_cache_put(primary_i64, diaphora_db_pr)
+            if not self._diaphora_cache_get(secondary_i64, diaphora_db_sc):
+                if not self._run_diaphora_export(secondary_i64, diaphora_db_sc, pulse_callback=_pulse):
+                    self._safe_emit(self.error_occurred, f"Diaphora доанализ экспорт secondary {stem}")
+                    for p in (diaphora_db_pr, diaphora_db_sc, diaphora_result):
+                        try: p.unlink(missing_ok=True)
+                        except OSError: pass
+                    return False
+                self._diaphora_cache_put(secondary_i64, diaphora_db_sc)
 
             if diaphora_db_pr.is_file() and diaphora_db_sc.is_file():
                 if self._run_diaphora_diff(diaphora_db_pr, diaphora_db_sc, diaphora_result):
@@ -1028,6 +1032,49 @@ class DiffWorker(QThread):
             self._safe_emit(self.error_occurred, f"Ошибка BinDiff {stem}: {e}")
             return False
 
+    # ----- Кэш экспортов Diaphora -----
+    # Экспорт зависит только от одного .i64; разные пары часто содержат один
+    # и тот же файл (например, 7z2501 против 7z2600), поэтому готовый sqlite
+    # можно переиспользовать. Ключ — имя .i64 + mtime; хранение — отдельная
+    # папка cache/ рядом с output_dir (параллельные пары копируют, не линкуют).
+    def _diaphora_cache_dir(self) -> Optional[Path]:
+        base = self.output_dir if self.output_dir is not None else self.add_output_dir
+        return base / "diaphora_cache" if base is not None else None
+
+    def _diaphora_cache_key(self, i64_path: Path) -> str:
+        try:
+            mtime = int(i64_path.stat().st_mtime)
+        except OSError:
+            mtime = 0
+        return f"{i64_path.name}_{mtime}"
+
+    def _diaphora_cache_get(self, i64_path: Path, dest: Path) -> bool:
+        """Кладёт готовый экспорт из кэша в dest. Возвращает True при попадании."""
+        cache_dir = self._diaphora_cache_dir()
+        if cache_dir is None:
+            return False
+        src = cache_dir / f"{self._diaphora_cache_key(i64_path)}.diaphora.sqlite"
+        if not src.is_file() or src.stat().st_size == 0:
+            return False
+        try:
+            shutil.copy2(str(src), str(dest))
+            logger.info(f"Diaphora экспорт {i64_path.name}: переиспользован из кэша ({src.name})")
+            return True
+        except OSError:
+            return False
+
+    def _diaphora_cache_put(self, i64_path: Path, exported: Path) -> None:
+        """Сохраняет свежий экспорт в кэш (лучшее усилие, ошибки игнорируются)."""
+        cache_dir = self._diaphora_cache_dir()
+        if cache_dir is None or not exported.is_file() or exported.stat().st_size == 0:
+            return
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(exported), str(cache_dir / f"{self._diaphora_cache_key(i64_path)}.diaphora.sqlite"))
+            logger.info(f"Diaphora экспорт {i64_path.name}: сохранён в кэш")
+        except OSError:
+            pass
+
     # ----- ФАЗА 2: Diaphora -----
     def _process_diaphora_pair(self, primary_i64: Path, secondary_i64: Path, rel_key: str) -> bool:
         stem = _safe_filename(rel_key)
@@ -1047,12 +1094,16 @@ class DiffWorker(QThread):
                 self._safe_emit_stage("Diaphora", self._pulse_counter, len(self.file_pairs),
                                       primary_i64.name, msg)
 
-            if not self._run_diaphora_export(primary_i64, diaphora_db_pr, pulse_callback=_pulse):
-                self._safe_emit(self.error_occurred, f"Diaphora экспорт primary {stem}")
-                return False
-            if not self._run_diaphora_export(secondary_i64, diaphora_db_sc, pulse_callback=_pulse):
-                self._safe_emit(self.error_occurred, f"Diaphora экспорт secondary {stem}")
-                return False
+            if not self._diaphora_cache_get(primary_i64, diaphora_db_pr):
+                if not self._run_diaphora_export(primary_i64, diaphora_db_pr, pulse_callback=_pulse):
+                    self._safe_emit(self.error_occurred, f"Diaphora экспорт primary {stem}")
+                    return False
+                self._diaphora_cache_put(primary_i64, diaphora_db_pr)
+            if not self._diaphora_cache_get(secondary_i64, diaphora_db_sc):
+                if not self._run_diaphora_export(secondary_i64, diaphora_db_sc, pulse_callback=_pulse):
+                    self._safe_emit(self.error_occurred, f"Diaphora экспорт secondary {stem}")
+                    return False
+                self._diaphora_cache_put(secondary_i64, diaphora_db_sc)
 
             if diaphora_db_pr.is_file() and diaphora_db_sc.is_file():
                 if self._run_diaphora_diff(diaphora_db_pr, diaphora_db_sc, diaphora_result):
@@ -1239,6 +1290,11 @@ class DiffWorker(QThread):
         env = os.environ.copy()
         env["DIAPHORA_AUTO"] = "1"
         env["DIAPHORA_EXPORT_FILE"] = str(out_sqlite)
+        # Профиль доанализа: псевдокод-эвристики работают, микрокод off
+        # (Hex-Rays вызывается один раз на функцию, а не дважды).
+        env["DIAPHORA_USE_DECOMPILER"] = "1"
+        env["DIAPHORA_EXPORT_MICROCODE"] = "0"
+        env["DIAPHORA_FUNCTION_SUMMARIES_ONLY"] = "0"
 
         # Флаги IDA для больших баз
         extra_flags = []
@@ -1390,11 +1446,19 @@ class DiffWorker(QThread):
     def _run_diaphora_diff(self, db1: Path, db2: Path, out_sqlite: Path) -> bool:
         """Запускает diaphora.py --diff (не требует IDA).
         В standalone-режиме использует argparse: diaphora.py db1 db2 -o out"""
+        env = os.environ.copy()
+        # Быстрый профиль: для доанализа (пары < 99% по BinDiff) медленные и
+        # экспериментальные эвристики избыточны; таймаут эвристики снижен,
+        # чтобы одна тяжёлая эвристика не растягивала диф на часы.
+        env["DIAPHORA_SLOW_HEURISTICS"] = "0"
+        env["DIAPHORA_EXPERIMENTAL"] = "0"
+        env["DIAPHORA_UNRELIABLE"] = "0"
+        env["DIAPHORA_SQL_TIMEOUT_LIMIT"] = "60"
         cmd = [sys.executable, str(_DIAPHORA_SCRIPT), str(db1), str(db2), "-o", str(out_sqlite)]
         logger.info(f"Diaphora diff: {' '.join(cmd)}")
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
-                                  encoding="utf-8", errors="replace")
+                                  encoding="utf-8", errors="replace", env=env)
             return proc.returncode == 0 and out_sqlite.is_file()
         except Exception as e:
             logger.warning(f"Ошибка Diaphora diff: {e}")
